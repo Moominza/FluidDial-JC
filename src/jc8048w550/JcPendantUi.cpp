@@ -91,6 +91,26 @@ float PendantUi::step_value(uint8_t index, uint8_t axis) {
     return values[index < kStepCount ? index : 0];
 }
 
+void PendantUi::preview_jog(float signed_distance) {
+    // Builds the command the real controller would receive and submits it to
+    // the authorization gate. The gate has no sink and the build policy blocks
+    // everything, so this only logs a preview; nothing is transmitted.
+    const JcAxisProfile& axis = _profile.axes[_selected_axis];
+    const float feed = axis.max_feed < 1000.0f ? axis.max_feed : 1000.0f;
+    const JcCommand command = jc_jog_incremental(_profile, _selected_axis, signed_distance, feed);
+    JcAuthContext context;
+    context.live = _live_mode;
+    context.now_ms = millis();
+    context.command_issued_ms = context.now_ms;
+    if (!command.ok) {
+        Serial.printf("preview: jog rejected by validation (error %u)\n",
+                      static_cast<unsigned>(command.error));
+        return;
+    }
+    const JcAuthDecision decision = _gate.submit(command.cls, command.text, context);
+    Serial.printf("preview: [%s] NOT SENT (%s)\n", command.text, jc_auth_name(decision));
+}
+
 uint16_t PendantUi::clamp_x(uint16_t x) const {
     return x < kWidth ? x : kWidth - 1;
 }
@@ -1680,6 +1700,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
             char message[64];
             snprintf(message, sizeof(message), "DEMO %s-  (local only)", axis_name(_selected_axis));
             set_feedback(Feedback::JogNegative, message);
+            preview_jog(-step_value(_selected_step, _selected_axis));
             draw_position(_selected_axis);
             Serial.printf("demo: local %s- position=%.3f step=%.1f %s; no command sent\n",
                           axis_name(_selected_axis), _positions[_selected_axis],
@@ -1704,6 +1725,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
             char message[64];
             snprintf(message, sizeof(message), "DEMO %s+  (local only)", axis_name(_selected_axis));
             set_feedback(Feedback::JogPositive, message);
+            preview_jog(step_value(_selected_step, _selected_axis));
             draw_position(_selected_axis);
             Serial.printf("demo: local %s+ position=%.3f step=%.1f %s; no command sent\n",
                           axis_name(_selected_axis), _positions[_selected_axis],

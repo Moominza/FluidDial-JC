@@ -19,6 +19,7 @@
 #include <strings.h>
 
 #include "GrblParserC.h"
+#include "JcStatusFrame.hpp"
 
 namespace jc8048w550 {
 namespace {
@@ -38,95 +39,17 @@ struct ValidatedStatus {
 };
 
 bool valid_state(const char* state) {
-    static constexpr const char* states[] = {
-        "Idle", "Alarm", "Hold:0", "Hold:1", "Run", "Jog", "Home",
-        "Door:0", "Door:1", "Check", "Sleep"
-    };
-    for (const char* known : states) {
-        if (strcmp(state, known) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool parse_numeric_list(char* value, size_t expected_count) {
-    size_t count = 0;
-    char* cursor = value;
-    while (cursor != nullptr) {
-        char* comma = strchr(cursor, ',');
-        if (comma != nullptr) {
-            *comma = '\0';
-        }
-        char* end = nullptr;
-        const float parsed = strtof(cursor, &end);
-        if (cursor == end || *end != '\0' || !isfinite(parsed)) {
-            return false;
-        }
-        ++count;
-        if (comma == nullptr) {
-            break;
-        }
-        cursor = comma + 1;
-    }
-    return count == expected_count;
+    return jc_valid_machine_state(state);
 }
 
 bool validate_status_frame(const char* frame, size_t length,
                            ValidatedStatus& validated) {
-    if (frame == nullptr || length < 8 || length >= 256
-        || frame[0] != '<' || frame[length - 1] != '>') {
+    JcStatusFrame parsed {};
+    if (!jc_parse_status_frame(frame, length, parsed)) {
         return false;
     }
-
-    char body[256];
-    memcpy(body, frame + 1, length - 2);
-    body[length - 2] = '\0';
-
-    char* first_field_end = strchr(body, '|');
-    if (first_field_end == nullptr || first_field_end == body) {
-        return false;
-    }
-    *first_field_end = '\0';
-    if (!valid_state(body)) {
-        return false;
-    }
-
-    bool has_position = false;
-    bool has_feed_spindle = false;
-    char* field = first_field_end + 1;
-    while (field != nullptr && *field != '\0') {
-        char* next = strchr(field, '|');
-        if (next != nullptr) {
-            *next = '\0';
-            ++next;
-        }
-        char* colon = strchr(field, ':');
-        if (colon == nullptr || colon == field) {
-            return false;
-        }
-        *colon = '\0';
-        char* value = colon + 1;
-
-        if (strcmp(field, "MPos") == 0 || strcmp(field, "WPos") == 0) {
-            if (has_position || !parse_numeric_list(value, 4)) {
-                return false;
-            }
-            has_position = true;
-            validated.machine_position = strcmp(field, "MPos") == 0;
-        } else if (strcmp(field, "WCO") == 0) {
-            if (!parse_numeric_list(value, 4)) {
-                return false;
-            }
-        } else if (strcmp(field, "FS") == 0) {
-            if (!parse_numeric_list(value, 2)) {
-                return false;
-            }
-            has_feed_spindle = true;
-        }
-        field = next;
-    }
-    return has_position && has_feed_spindle;
+    validated.machine_position = parsed.machine_position;
+    return true;
 }
 
 bool is_ipv4_literal(const char* host) {

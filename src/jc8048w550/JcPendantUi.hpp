@@ -8,6 +8,8 @@
 
 #include "JcTouchCalibration.hpp"
 #include "JcTransport.h"
+#include "JcCommandAuth.hpp"
+#include "JcCommandBuilder.hpp"
 #include "JcReadOnlyFluidNc.hpp"
 
 namespace jc8048w550 {
@@ -120,6 +122,8 @@ private:
     Feedback _feedback = Feedback::None;
     uint32_t _feedback_until = 0;
     const char* _last_action = "Tap a control to update the demo";
+    JcMachineProfile _profile = jc_default_profile();
+    JcCommandGate _gate;  // no transmit sink: every command is preview-only
 
     void draw();
     void draw_home();
@@ -176,6 +180,7 @@ private:
     uint16_t clamp_y(uint16_t y) const;
     static const char* axis_name(uint8_t axis);
     static float step_value(uint8_t index, uint8_t axis);
+    void preview_jog(float signed_distance);
 };
 
 } // namespace jc8048w550
