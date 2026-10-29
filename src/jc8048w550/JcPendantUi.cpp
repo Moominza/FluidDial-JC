@@ -84,8 +84,10 @@ const char* PendantUi::axis_name(uint8_t axis) {
     return names[axis < kAxisCount ? axis : 0];
 }
 
-float PendantUi::step_value(uint8_t index) {
-    static constexpr float values[kStepCount] = { 0.1f, 1.0f, 10.0f };
+float PendantUi::step_value(uint8_t index, uint8_t axis) {
+    static constexpr float linear[kStepCount] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f };
+    static constexpr float rotary[kStepCount] = { 0.1f, 1.0f, 10.0f, 45.0f, 90.0f };
+    const float* values = axis == 3 ? rotary : linear;
     return values[index < kStepCount ? index : 0];
 }
 
@@ -319,10 +321,10 @@ void PendantUi::draw_axis_selector(uint8_t axis) {
 }
 
 void PendantUi::draw_step_selector(uint8_t step) {
-    static constexpr const char* linear_steps[kStepCount] = { "0.1 mm", "1.0 mm", "10 mm" };
-    static constexpr const char* rotary_steps[kStepCount] = { "0.1 deg", "1.0 deg", "10 deg" };
+    static constexpr const char* linear_steps[kStepCount] = { "0.1 mm", "1.0 mm", "10 mm", "50 mm", "100 mm" };
+    static constexpr const char* rotary_steps[kStepCount] = { "0.1 deg", "1.0 deg", "10 deg", "45 deg", "90 deg" };
     const char* const* labels = _selected_axis == 3 ? rotary_steps : linear_steps;
-    const Rect bounds { static_cast<int16_t>(310 + step * 116), 325, 104, 38 };
+    const Rect bounds { static_cast<int16_t>(88 + step * 90), 325, 82, 38 };
     draw_button(bounds, labels[step], step == _selected_step);
 }
 
@@ -561,7 +563,7 @@ void PendantUi::draw_home() {
     draw_text_top(_display, 30, 248,
                   _live_mode ? "READ-ONLY LIVE STATUS" : "DEMO JOG CONTROLS",
                   FontId::Button20, WHITE, kPanel);
-    draw_text_top(_display, 250, 253,
+    draw_text_top(_display, 320, 253,
                   _live_mode ? "MOTION DISABLED - NO COMMANDS SENT"
                              : "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
                   FontId::Body16, kMuted, kPanel);
@@ -573,11 +575,11 @@ void PendantUi::draw_home() {
     }
 
     draw_text_top(_display, 30, 331, "STEP", FontId::Body16, kMuted, kPanel);
-    static constexpr const char* linear_steps[kStepCount] = { "0.1 mm", "1.0 mm", "10 mm" };
-    static constexpr const char* rotary_steps[kStepCount] = { "0.1 deg", "1.0 deg", "10 deg" };
+    static constexpr const char* linear_steps[kStepCount] = { "0.1 mm", "1.0 mm", "10 mm", "50 mm", "100 mm" };
+    static constexpr const char* rotary_steps[kStepCount] = { "0.1 deg", "1.0 deg", "10 deg", "45 deg", "90 deg" };
     const char* const* step_labels = _selected_axis == 3 ? rotary_steps : linear_steps;
     for (uint8_t step = 0; step < kStepCount; ++step) {
-        const Rect bounds { static_cast<int16_t>(310 + step * 116), 325, 104, 38 };
+        const Rect bounds { static_cast<int16_t>(88 + step * 90), 325, 82, 38 };
         draw_button(bounds, step_labels[step], step == _selected_step);
     }
 
@@ -1655,7 +1657,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
         }
 
         for (uint8_t step = 0; step < kStepCount; ++step) {
-            const Rect selector { static_cast<int16_t>(310 + step * 116), 325, 104, 38 };
+            const Rect selector { static_cast<int16_t>(88 + step * 90), 325, 82, 38 };
             if (contains(selector, x, y)) {
                 const uint8_t previous_step = _selected_step;
                 _selected_step = step;
@@ -1663,7 +1665,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
                 draw_step_selector(previous_step);
                 draw_step_selector(_selected_step);
                 draw_home_footer();
-                Serial.printf("demo: selected jog step %.1f %s\n", step_value(step),
+                Serial.printf("demo: selected jog step %.1f %s\n", step_value(step, _selected_axis),
                               _selected_axis == 3 ? "deg" : "mm");
                 return;
             }
@@ -1674,14 +1676,14 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
                 Serial.println("safety: ignored jog touch in read-only LIVE mode");
                 return;
             }
-            _positions[_selected_axis] -= step_value(_selected_step);
+            _positions[_selected_axis] -= step_value(_selected_step, _selected_axis);
             char message[64];
             snprintf(message, sizeof(message), "DEMO %s-  (local only)", axis_name(_selected_axis));
             set_feedback(Feedback::JogNegative, message);
             draw_position(_selected_axis);
             Serial.printf("demo: local %s- position=%.3f step=%.1f %s; no command sent\n",
                           axis_name(_selected_axis), _positions[_selected_axis],
-                          step_value(_selected_step), _selected_axis == 3 ? "deg" : "mm");
+                          step_value(_selected_step, _selected_axis), _selected_axis == 3 ? "deg" : "mm");
             return;
         }
         if (contains({ 300, 376, 200, 74 }, x, y)) {
@@ -1698,14 +1700,14 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
                 Serial.println("safety: ignored jog touch in read-only LIVE mode");
                 return;
             }
-            _positions[_selected_axis] += step_value(_selected_step);
+            _positions[_selected_axis] += step_value(_selected_step, _selected_axis);
             char message[64];
             snprintf(message, sizeof(message), "DEMO %s+  (local only)", axis_name(_selected_axis));
             set_feedback(Feedback::JogPositive, message);
             draw_position(_selected_axis);
             Serial.printf("demo: local %s+ position=%.3f step=%.1f %s; no command sent\n",
                           axis_name(_selected_axis), _positions[_selected_axis],
-                          step_value(_selected_step), _selected_axis == 3 ? "deg" : "mm");
+                          step_value(_selected_step, _selected_axis), _selected_axis == 3 ? "deg" : "mm");
         }
         return;
     }

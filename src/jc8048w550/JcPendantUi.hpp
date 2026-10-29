@@ -58,7 +58,7 @@ private:
     static constexpr uint16_t kHeight = 480;
     static constexpr uint8_t kAxisCount = 4;
     static constexpr uint8_t kTransportCount = 3;
-    static constexpr uint8_t kStepCount = 3;
+    static constexpr uint8_t kStepCount = 5;
     static constexpr uint8_t kCalibrationTargetCount = 5;
     static constexpr uint8_t kCalibrationSampleCount = 9;
     static constexpr uint32_t kRecoveryHoldMs = 5000;
@@ -175,7 +175,7 @@ private:
     uint16_t clamp_x(uint16_t x) const;
     uint16_t clamp_y(uint16_t y) const;
     static const char* axis_name(uint8_t axis);
-    static float step_value(uint8_t index);
+    static float step_value(uint8_t index, uint8_t axis);
 };
 
 } // namespace jc8048w550
