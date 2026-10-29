@@ -2,6 +2,16 @@
 
 <img src="http://wiki.fluidnc.com/hardware/fd1.png" alt="M5 Fluid Dial" height="500"><img src="http://wiki.fluidnc.com/cydpendant.jpg" alt="CYD Dial Pendant" height="500">
 
+This community repository preserves the upstream FluidDial history and adds
+an opt-in port for the **Guition JC8048W550C_I** ESP32-S3 touchscreen. The JC
+target is experimental and separate from the existing M5Dial and CYD targets.
+Its current validated dashboard is a local DEMO; it does not provide CNC
+motion control. See the [JC port plan](docs/jc-port-plan.md) for hardware,
+build, validation evidence, and known limitations.
+
+Contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md) and the project
+rules in [AGENTS.md](AGENTS.md).
+
 Wiki pages for more information: [M5 FluidDial Pendant (left image)](http://wiki.fluidnc.com/en/hardware/official/M5Dial_Pendant) and [CYD Dial Pendant (right image)](http://wiki.fluidnc.com/en/hardware/official/CYD_Dial_Pendant).
 
 Both have similar functionality and similar cost, using different hardware.
@@ -110,8 +120,15 @@ Requires [PlatformIO](https://platformio.org/). Install the PlatformIO IDE exten
 
 | Environment | Hardware |
 |---|---|
+| `jc8048w550` | Guition JC8048W550C_I — experimental 800x480 landscape touchscreen target |
 | `m5dial` | M5Stack M5Dial |
 | `cyddial` | CYD (2432S028) — auto-detects resistive or capacitive touch |
+
+Build the JC target without flashing:
+
+```sh
+pio run -e jc8048w550
+```
 
 For example, to build and flash the CYD Dial:
 
