@@ -34,3 +34,20 @@ this firmware sends to a controller is the `?` status query.
 | Simulator integration | Host-integrated | Real TCP to the simulator + real JC C++ logic. The ESP32 Wi-Fi/lwIP firmware itself has NOT been run against it |
 | Machine capability discovery (`$/axes/*`) | Not started | Needs query commands |
 | Physical CNC command transmission | Disabled by design | Needs a separate safety review and owner approval |
+
+## Instruction 003B physical acceptance log
+
+Baseline firmware `4e53f87`, JC on COM3, machine control disabled. Results are
+operator statements; no photographs were supplied, so none are claimed.
+
+| Item | Result |
+| --- | --- |
+| Dashboard DEMO and LIVE, MACHINE/WORK toggle, menu, Back | Operator-confirmed, no defects |
+| Jogging (A in degrees, 50/100 mm, blocked dialog, Cancel/Back) | Operator-confirmed, no defects |
+| Homing page and confirmation dialog | Operator-confirmed, no defects |
+| Live read-only test against FluidNC at 192.168.0.134:23 (reachable: ping and TCP 23 checked from the PC) | Operator-confirmed and approved: four-axis values, MACHINE/WORK, LIVE/DEMO separation, stale on loss, reconnect without arming |
+| Probing, Work Offsets, Files pages | NOT yet operator-verified |
+| Macros, Tools, Settings, Diagnostics pages | NOT yet operator-verified |
+| Settings reboot persistence, brightness PWM, touch responsiveness | NOT yet operator-verified |
+
+Outstanding defects: none reported. No firmware change was made in this round.
