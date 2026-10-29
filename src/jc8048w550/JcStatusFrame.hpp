@@ -24,6 +24,9 @@ struct JcStatusFrame {
     float feed;
     float spindle;
     char  pins[12];  // "Pn:" field (e.g. "P" = probe), empty if absent
+    bool  has_sd;    // "SD:<percent>[,<name>]" job progress
+    float sd_percent;
+    char  sd_name[40];
 };
 
 inline bool jc_valid_machine_state(const char* state) {
@@ -120,6 +123,21 @@ inline bool jc_parse_status_frame(const char* frame, size_t length, JcStatusFram
             parsed.feed = fs[0];
             parsed.spindle = fs[1];
             has_feed_spindle = true;
+        } else if (strcmp(field, "SD") == 0) {
+            // Lenient: a malformed SD field never invalidates position data.
+            char* comma = strchr(value, ',');
+            if (comma != nullptr) {
+                *comma = '\0';
+            }
+            char*       end = nullptr;
+            const float pct = strtof(value, &end);
+            if (end != value && *end == '\0' && isfinite(pct) && pct >= 0.0f && pct <= 100.0f) {
+                parsed.has_sd = true;
+                parsed.sd_percent = pct;
+                if (comma != nullptr) {
+                    strncpy(parsed.sd_name, comma + 1, sizeof(parsed.sd_name) - 1);
+                }
+            }
         } else if (strcmp(field, "Pn") == 0) {
             if (strlen(value) >= sizeof(parsed.pins)) {
                 return false;

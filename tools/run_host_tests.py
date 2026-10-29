@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-src = os.path.join(root, "test", "host", "test_jc_core.cpp")
+sources = [os.path.join(root, "test", "host", n) for n in ("test_jc_core.cpp", "test_jc_app.cpp")]
 
 
 def find_cxx():
@@ -31,9 +31,10 @@ def find_cxx():
 cxx = find_cxx()
 rc = 0
 with tempfile.TemporaryDirectory() as tmp:
-    for enabled in (0, 1):
-        exe = os.path.join(tmp, f"t{enabled}.exe")
-        cmd = cxx + ["-std=c++17", "-Wall", "-Wextra", f"-DJC_MACHINE_CONTROL_ENABLED={enabled}", src, "-o", exe]
-        subprocess.run(cmd, check=True)
-        rc |= subprocess.run([exe]).returncode
+    for src in sources:
+        for enabled in (0, 1):
+            exe = os.path.join(tmp, f"t{os.path.basename(src)}{enabled}.exe")
+            cmd = cxx + ["-std=c++17", "-Wall", "-Wextra", f"-DJC_MACHINE_CONTROL_ENABLED={enabled}", src, "-o", exe]
+            subprocess.run(cmd, check=True)
+            rc |= subprocess.run([exe]).returncode
 sys.exit(rc)

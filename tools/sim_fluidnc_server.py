@@ -84,23 +84,24 @@ def serve(conn, peer, scenario):
             return
         if scenario == "silent" or not data:
             continue
-        frame = (frames[index % len(frames)] + "\r\n").encode()
-        index += 1
-        try:
-            if scenario == "fragmented":
-                for i in range(0, len(frame), 2):
-                    conn.sendall(frame[i:i + 2])
-                    time.sleep(0.05)
-            else:
-                conn.sendall(frame)
-        except OSError:
-            return
-        sent += 1
-        print(f"{peer}: query #{queries} -> {frame.decode().strip()}", flush=True)
-        if scenario == "close" and sent >= 3:
-            print(f"{peer}: closing after {sent} frames", flush=True)
-            conn.close()
-            return
+        for _ in range(data.count(b"?")):  # a real controller answers every '?'
+            frame = (frames[index % len(frames)] + "\r\n").encode()
+            index += 1
+            try:
+                if scenario == "fragmented":
+                    for i in range(0, len(frame), 2):
+                        conn.sendall(frame[i:i + 2])
+                        time.sleep(0.05)
+                else:
+                    conn.sendall(frame)
+            except OSError:
+                return
+            sent += 1
+            print(f"{peer}: query #{queries} -> {frame.decode().strip()}", flush=True)
+            if scenario == "close" and sent >= 3:
+                print(f"{peer}: closing after {sent} frames", flush=True)
+                conn.close()
+                return
 
 
 def main():

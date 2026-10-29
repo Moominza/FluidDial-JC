@@ -8,6 +8,10 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
+#include "JcFrameAssembler.hpp"
+#include "JcLinkTypes.hpp"
+#include "JcStatusFrame.hpp"
+
 namespace jc8048w550 {
 
 struct JcWifiConfig {
@@ -28,35 +32,6 @@ struct JcWifiNetwork {
 };
 
 constexpr uint8_t kJcMaxScannedNetworks = 20;
-
-enum class JcFluidState : uint8_t {
-    Disconnected,
-    WifiConnecting,
-    WifiConnected,
-    Resolving,
-    FluidNcConnecting,
-    Connected,
-    Lost,
-    Stale,
-    InvalidData,
-    Error,
-};
-
-enum class JcCoordinateReference : uint8_t {
-    Unknown,
-    Machine,
-    Work,
-};
-
-struct JcLiveMachineStatus {
-    float axes[4];
-    char machine_state[20];
-    JcCoordinateReference coordinate_reference;
-    uint32_t last_valid_ms;
-    uint32_t update_interval_ms;
-    uint32_t sequence;
-    bool has_data;
-};
 
 class JcReadOnlyFluidNc {
 public:
@@ -121,8 +96,8 @@ private:
     JcFluidState _state = JcFluidState::Disconnected;
     char _last_error[64] {};
     char _resolved_address[16] {};
-    char _status_frame[256] {};
-    uint16_t _status_frame_length = 0;
+    JcFrameAssembler _assembler;
+    JcStatusFrame _pending_frame {};
     int _socket = -1;
     int _connecting_socket = -1;
     uint32_t _connect_deadline_ms = 0;
@@ -136,7 +111,6 @@ private:
     bool _connect_requested = false;
     bool _wifi_scan_running = false;
     bool _wifi_was_connected = false;
-    bool _frame_active = false;
     bool _frame_invalid = false;
     bool _report_has_state = false;
     bool _report_has_axes = false;

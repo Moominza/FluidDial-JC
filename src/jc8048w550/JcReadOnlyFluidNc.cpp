@@ -34,22 +34,8 @@ constexpr size_t kTcpReadBudget = 512;
 
 JcReadOnlyFluidNc* g_active_link = nullptr;
 
-struct ValidatedStatus {
-    bool machine_position;
-};
-
 bool valid_state(const char* state) {
     return jc_valid_machine_state(state);
-}
-
-bool validate_status_frame(const char* frame, size_t length,
-                           ValidatedStatus& validated) {
-    JcStatusFrame parsed {};
-    if (!jc_parse_status_frame(frame, length, parsed)) {
-        return false;
-    }
-    validated.machine_position = parsed.machine_position;
-    return true;
 }
 
 bool is_ipv4_literal(const char* host) {
@@ -225,8 +211,7 @@ void JcReadOnlyFluidNc::connect() {
     close_tcp(false);
     _connect_requested = true;
     _wifi_was_connected = false;
-    _status_frame_length = 0;
-    _frame_active = false;
+    _assembler.reset();
     _frame_invalid = false;
     _resolved_address[0] = '\0';
     _last_error[0] = '\0';
@@ -404,6 +389,14 @@ void JcReadOnlyFluidNc::end_status_report() {
     memcpy(_status.axes, _report_axes, sizeof(_status.axes));
     strlcpy(_status.machine_state, _report_state, sizeof(_status.machine_state));
     _status.coordinate_reference = _report_reference;
+    _status.feed = _pending_frame.feed;
+    _status.spindle = _pending_frame.spindle;
+    _status.has_wco = _pending_frame.has_wco;
+    memcpy(_status.wco, _pending_frame.wco, sizeof(_status.wco));
+    strlcpy(_status.pins, _pending_frame.pins, sizeof(_status.pins));
+    _status.has_sd = _pending_frame.has_sd;
+    _status.sd_percent = _pending_frame.sd_percent;
+    strlcpy(_status.sd_name, _pending_frame.sd_name, sizeof(_status.sd_name));
     _status.last_valid_ms = now;
     _status.has_data = true;
     ++_status.sequence;
@@ -425,7 +418,7 @@ void JcReadOnlyFluidNc::record_invalid_frame(const char* reason) {
 }
 
 void JcReadOnlyFluidNc::parser_putchar(uint8_t byte) {
-    if (byte != static_cast<uint8_t>(StatusReport)) {
+    if (!jc_tx_byte_allowed(byte) || byte != static_cast<uint8_t>(StatusReport)) {
         ++_blocked_transmissions;
         if (_blocked_transmissions == 1) {
             Serial.println("SAFETY: blocked non-status CNC transmission");
@@ -564,8 +557,7 @@ void JcReadOnlyFluidNc::begin_tcp_connect(const char* address) {
         _connecting_socket = -1;
         _next_status_poll_ms = millis();
         _last_status_attempt_ms = 0;
-        _status_frame_length = 0;
-        _frame_active = false;
+        _assembler.reset();
         _state = JcFluidState::FluidNcConnecting;
         Serial.println("net: TCP connected; only '?' status queries are permitted");
         return;
@@ -602,8 +594,7 @@ void JcReadOnlyFluidNc::poll_tcp_connect() {
             _connecting_socket = -1;
             _next_status_poll_ms = millis();
             _last_status_attempt_ms = 0;
-            _status_frame_length = 0;
-            _frame_active = false;
+            _assembler.reset();
             _state = JcFluidState::FluidNcConnecting;
             Serial.println("net: TCP connected; only '?' status queries are permitted");
             return;
@@ -673,8 +664,7 @@ void JcReadOnlyFluidNc::close_tcp(bool schedule_retry) {
         ::close(_socket);
         _socket = -1;
     }
-    _status_frame_length = 0;
-    _frame_active = false;
+    _assembler.reset();
     _last_status_attempt_ms = 0;
     if (schedule_retry && _connect_requested && wifi_connected()) {
         _next_retry_ms = millis() + kTcpRetryDelayMs;
@@ -822,8 +812,7 @@ void JcReadOnlyFluidNc::handle_dns_result() {
 }
 
 bool JcReadOnlyFluidNc::queue_status_frame(const char* frame, uint16_t length) {
-    ValidatedStatus validated {};
-    if (!validate_status_frame(frame, length, validated)) {
+    if (!jc_parse_status_frame(frame, length, _pending_frame)) {
         record_invalid_frame("Malformed or non-four-axis status frame");
         return false;
     }
@@ -837,36 +826,15 @@ bool JcReadOnlyFluidNc::queue_status_frame(const char* frame, uint16_t length) {
 }
 
 void JcReadOnlyFluidNc::consume_tcp_byte(uint8_t byte) {
-    if (!_frame_active) {
-        if (byte == '<') {
-            _frame_active = true;
-            _frame_invalid = false;
-            _status_frame_length = 0;
-            _status_frame[_status_frame_length++] = '<';
-        }
-        return;
-    }
-    if (byte == '<') {
-        record_invalid_frame("Nested status frame start");
-        _status_frame_length = 0;
-        _status_frame[_status_frame_length++] = '<';
-        return;
-    }
-    if (byte < 0x20 || byte > 0x7E
-        || _status_frame_length >= sizeof(_status_frame) - 1) {
-        record_invalid_frame("Status frame exceeded bounds or contained control data");
-        _frame_active = false;
-        _status_frame_length = 0;
-        return;
-    }
-
-    _status_frame[_status_frame_length++] = static_cast<char>(byte);
-    if (byte == '>') {
-        _frame_active = false;
-        if (!queue_status_frame(_status_frame, _status_frame_length)) {
-            _frame_invalid = true;
-        }
-        _status_frame_length = 0;
+    switch (_assembler.push(byte)) {
+        case JcFrameAssembler::Result::None:
+            break;
+        case JcFrameAssembler::Result::Invalid:
+            record_invalid_frame(_assembler.reason());
+            break;
+        case JcFrameAssembler::Result::Frame:
+            _frame_invalid = !queue_status_frame(_assembler.frame(), _assembler.length());
+            break;
     }
 }
 

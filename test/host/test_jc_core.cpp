@@ -99,7 +99,10 @@ static void test_jog_formatting() {
 static void test_other_commands() {
     const JcMachineProfile p = jc_default_profile();
     CHECK_STR(jc_home(p, 0xFF).text, "$H");
-    CHECK_STR(jc_home(p, 3).text, "$HA");
+    CHECK(jc_home(p, 3).error == JcCmdError::Unsupported);  // A has no assumed home switch
+    JcMachineProfile withA = p;
+    withA.axes[3].homing_allowed = true;
+    CHECK_STR(jc_home(withA, 3).text, "$HA");
     JcMachineProfile q = p;
     q.axes[2].homing_allowed = false;
     CHECK(jc_home(q, 2).error == JcCmdError::Unsupported);

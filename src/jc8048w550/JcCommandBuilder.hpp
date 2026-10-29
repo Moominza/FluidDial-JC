@@ -40,7 +40,8 @@ inline JcMachineProfile jc_default_profile() {
     p.axes[0] = { 'X', false, 100.0f, 3000.0f, true, true };
     p.axes[1] = { 'Y', false, 100.0f, 3000.0f, true, true };
     p.axes[2] = { 'Z', false, 100.0f, 1500.0f, true, true };
-    p.axes[3] = { 'A', true, 360.0f, 3600.0f, true, false };  // no A-axis probing
+    // The rotary axis is not assumed to have a homing switch and is never probed.
+    p.axes[3] = { 'A', true, 360.0f, 3600.0f, false, false };
     p.max_probe_travel = 50.0f;
     p.max_probe_feed = 200.0f;
     return p;
@@ -210,6 +211,52 @@ inline JcCommandSequence jc_probe_z_sequence(const JcMachineProfile& p, float tr
     s.steps[0] = probe;
     s.steps[1] = detail::make(JcCommandClass::WorkOffset, "G10 L20 P0 Z%.3f", detail::tidy(plate_thickness));
     s.steps[2] = detail::make(JcCommandClass::Probe, "G91 G0 Z%.3f", detail::tidy(retract));
+    s.steps[3] = detail::make(JcCommandClass::Probe, "G90");
+    s.count = 4;
+    s.ok = s.steps[1].ok && s.steps[2].ok && s.steps[3].ok;
+    return s;
+}
+
+// Continuous jog: a long incremental move that the operator cancels on release
+// with the real-time jog-cancel byte (0x85), as upstream MultiJogScene does.
+// Not generated for the rotary axis: it is not safely supported.
+inline JcCommand jc_jog_continuous(const JcMachineProfile& p, uint8_t axis, int direction, float feed) {
+    using namespace detail;
+    if (!axis_ok(p, axis)) return fail(JcCommandClass::Jog, JcCmdError::BadAxis);
+    const JcAxisProfile& a = p.axes[axis];
+    if (a.rotary) return fail(JcCommandClass::Jog, JcCmdError::Unsupported);
+    if (direction != 1 && direction != -1) return fail(JcCommandClass::Jog, JcCmdError::BadValue);
+    if (!isfinite(feed) || feed < 1.0f || feed > a.max_feed) return fail(JcCommandClass::Jog, JcCmdError::BadFeed);
+    return make(JcCommandClass::Jog, "$J=G91G21F%.0f%c%.0f", feed, a.letter, direction * 10.0f * a.max_step);
+}
+
+// Edge probe on X or Y: probe toward the edge, set the axis to the tool radius
+// offset, retract, restore absolute mode. direction is the probing direction.
+// If the probe moves +X it touches a left edge, so the tool centre is one
+// radius short of it: X := -radius (and +radius for a -X probe).
+inline JcCommandSequence jc_probe_edge_sequence(const JcMachineProfile& p, uint8_t axis, int direction,
+                                                float travel, float feed, float retract, float tool_diameter) {
+    JcCommandSequence s;
+    if (axis > 1 || (direction != 1 && direction != -1)) {
+        s.error = axis > 1 ? JcCmdError::Unsupported : JcCmdError::BadValue;
+        return s;
+    }
+    if (!isfinite(retract) || retract < 0.0f || retract > p.max_probe_travel
+        || !isfinite(tool_diameter) || tool_diameter < 0.0f || tool_diameter > 100.0f
+        || !isfinite(travel) || travel <= 0.0f) {
+        s.error = JcCmdError::BadValue;
+        return s;
+    }
+    JcCommand probe = jc_probe_move(p, axis, direction * travel, feed);
+    if (!probe.ok) {
+        s.error = probe.error;
+        return s;
+    }
+    const char letter = p.axes[axis].letter;
+    s.steps[0] = probe;
+    s.steps[1] = detail::make(JcCommandClass::WorkOffset, "G10 L20 P0 %c%.3f", letter,
+                              detail::tidy(-direction * tool_diameter / 2.0f));
+    s.steps[2] = detail::make(JcCommandClass::Probe, "G91 G0 %c%.3f", letter, detail::tidy(-direction * retract));
     s.steps[3] = detail::make(JcCommandClass::Probe, "G90");
     s.count = 4;
     s.ok = s.steps[1].ok && s.steps[2].ok && s.steps[3].ok;

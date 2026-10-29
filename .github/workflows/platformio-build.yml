@@ -50,3 +50,6 @@ jobs:
 
       - name: Run host unit tests
         run: python tools/run_host_tests.py
+
+      - name: Run simulator integration test
+        run: python tools/run_sim_integration.py
