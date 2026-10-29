@@ -46,8 +46,10 @@ operator statements; no photographs were supplied, so none are claimed.
 | Jogging (A in degrees, 50/100 mm, blocked dialog, Cancel/Back) | Operator-confirmed, no defects |
 | Homing page and confirmation dialog | Operator-confirmed, no defects |
 | Live read-only test against FluidNC at 192.168.0.134:23 (reachable: ping and TCP 23 checked from the PC) | Operator-confirmed and approved: four-axis values, MACHINE/WORK, LIVE/DEMO separation, stale on loss, reconnect without arming |
-| Probing, Work Offsets, Files pages | NOT yet operator-verified |
-| Macros, Tools, Settings, Diagnostics pages | NOT yet operator-verified |
-| Settings reboot persistence, brightness PWM, touch responsiveness | NOT yet operator-verified |
+| Probing, Work Offsets, Files pages | Operator-confirmed, no defects (no photos) |
+| Macros, Tools, Settings, Diagnostics pages | Operator-confirmed, no defects (no photos) |
+| Settings reboot persistence, brightness PWM, touch responsiveness | Operator-confirmed, no defects (no photos) |
 
-Outstanding defects: none reported. No firmware change was made in this round.
+Outstanding defects: none reported. No firmware change was made in this round, so the
+acceptance applies to firmware `4e53f87`. Host tests (111/125 core, 166/163 app) and
+simulator integration were re-run and pass. PlatformIO builds were not re-run (no source change).
