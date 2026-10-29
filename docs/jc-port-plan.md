@@ -342,6 +342,167 @@ positions, and stability beyond the supplied clip is unverified. Keep the
 report at PARTIAL until those measurements are recorded. Do not begin Phase 2
 without the operator's approval.
 
+### Phase 2A — upstream architecture findings and integration boundary
+
+The original application is built around a global `Scene*` and a scene stack
+in `Scene.cpp`. Scenes receive state, DRO, touch, button, encoder, and polling
+callbacks. `dispatch_touch()` depends on the M5 touch event-state API and
+routes screen regions to legacy buttons/encoder before forwarding scene touch
+events. This provides reusable interaction semantics, but it is coupled to
+the upstream `m5::Touch_Class` and 240-pixel CYD/M5 layouts.
+
+Rendering uses `Drawing.h` helpers backed by a global `LGFX_Device` and
+`LGFX_Sprite`. `SystemArduino.cpp::init_system()` unconditionally creates a
+240x240 canvas; `Hardware2432.cpp` and `HardwareM5Dial.cpp` supply separate
+hardware implementations, panel setup, touch/button handling, and display
+layout. The upstream scene assets and coordinates therefore cannot simply be
+scaled to the 800x480 RGB panel. The JC image currently uses Arduino_GFX and
+has no `LGFX_Device` or shared scene implementation.
+
+The shared CNC model in `FluidNCModel.h/.cpp` exposes controller state,
+positions, parser callbacks, `send_line()`, `send_jog_line()`, and
+`send_jog_cancel()`. `MultiJogScene.cpp` and `ProbingScene.cpp` invoke those
+command APIs directly; they are inappropriate for a mock-only demo until a
+separately reviewed safe interaction layer is integrated.
+
+`SystemArduino.cpp` routes the existing `fnc_putchar()`/`fnc_getchar()` byte
+stream according to the saved `TransportMode`: wired UART, Wi-Fi/Telnet
+(despite legacy WebSocket naming), or ESP-NOW. `FileParser` and the pinned
+GrblParser provide the existing line/protocol and machine-state logic. There
+is no Bluetooth LE transport. `TransportScene.cpp` allows manual selection
+between UART, Wi-Fi, and optionally ESP-NOW, and a mode change can shut down
+Wi-Fi and reboot the controller. These runtime paths must not be pulled into
+the mock JC target, which must not connect or send command bytes.
+
+**Phase 2A decision:** keep the JC source filter isolated from all upstream
+scenes and CNC/protocol implementations. Build the first landscape view
+directly on Arduino_GFX, reusing the FluidDial branding, axis/state concepts,
+and familiar transport labels. Add a transport-independent byte-stream
+contract plus explicit Wi-Fi/WebSocket, wired UART, and BLE selection IDs,
+but do not instantiate a transport in the demo. When a later target integrates
+the real controller protocol, an adapter can bind that contract to the
+existing `fnc_putchar()`/`fnc_getchar()` and FileParser/GrblParser logic
+without duplicating the protocol; physical jogging remains outside Phase 2A.
+
+The touchscreen-first home screen will use a 4-axis DRO row for X/Y/Z/A,
+prominent DEMO and IDLE indicators, connection/transport status, selected
+increment, large axis and increment selectors, discrete local-only demo jog
+controls, a visible STOP/CANCEL control, and Settings/Connection navigation.
+Touch actions are processed once on a new single-touch transition, use
+bounds-checked display coordinates, and update only local mock state.
+Settings expose manual transport selection as a configuration choice; that
+selection does not initiate a connection.
+
+#### Phase 2A implementation and verification
+
+The Phase 1 test pattern was replaced by a JC-only `PendantUi` rendered
+directly through the existing Arduino_GFX RGB display. The home view displays
+X/Y/Z/A simultaneously with local mock coordinates `125.450`, `-42.100`,
+`18.250`, and `90.000`; X/Y/Z use `mm`, and A uses `°`. Axis selection is
+independent. Linear step choices are 0.1/1.0/10 mm and A-axis choices are
+0.1/1.0/10 degrees. Discrete demo jog controls change only the selected
+in-memory axis and the STOP/CANCEL button is inert apart from showing
+feedback. The screen identifies DEMO and CNC OFFLINE.
+
+Settings navigate to connection options. The connection page permits manual
+selection of Wi-Fi/WebSocket, wired UART, or Bluetooth LE, but selection is
+volatile and does not start a connection. `JcTransport.h` defines a
+transport-neutral byte-stream interface and the three transport identities;
+it has no implementations or controller adapter in this phase. The existing
+FluidDial line parser/protocol logic is identified for later reuse, but is
+not compiled into this mock image. Bluetooth is only represented as a future
+selection; no BLE code is present.
+
+The first operator report described roughly 10-second control delays and
+freezing after repeated touches. Code inspection found that every selection
+and local jog repainted the entire screen, while jog feedback expiry also
+redrew the whole home view. Page transitions still redraw the full page;
+selection redraws only the two affected axis tiles and controls, and a jog
+redraws only the selected DRO value band, feedback button, and status strip.
+The value band is 167x48 pixels rather than repainting the full 183x101 tile.
+Changing a touch coordinate logs the raw/rotated/bounded diagnostic at most
+once per 100 ms, while logging the initial touch and every release; each
+touch action logs its synchronous processing time in milliseconds. This is a
+code-level optimization only: responsiveness improvement has not yet been
+confirmed by a post-upload operator test, and no benchmark result is claimed.
+
+#### Typography update
+
+The initial JC dashboard used Arduino_GFX's built-in 5x7 bitmap font with
+integer `setTextSize()` enlargement (sizes 1, 2, and 3). Enlarging those
+bitmap pixels caused the reported blocky appearance. The replacement uses
+Roboto Regular/Medium/SemiBold for labels and Roboto Mono Regular for DRO
+digits. The font originals and their SIL Open Font License 1.1 texts are in
+`assets/fonts/`; `tools/generate_jc_fonts.py` reproducibly creates the
+checked-in glyph header from them.
+
+Glyphs are rasterized separately at each size as 4-bit grayscale masks, then
+blended into RGB565 color and sent to Arduino_GFX at native pixel size. This
+is anti-aliased raster text, not enlarged small glyphs or an LVGL runtime font.
+Roboto Mono's fixed-width digits provide tabular numerals. The hierarchy is
+16 px secondary text, 20 px controls/units, 24 px headings, and 30 px normal
+DRO values. A value can use a separate pre-rasterized 28..18 px Roboto Mono
+size when needed to fit the 167 px DRO value band. The band keeps each unit
+on the same baseline, immediately after its value; X/Y/Z show `mm`, and A
+shows `°`. The 18 px fallback fits signed values through `-999999.999` plus
+the 20 px `mm` unit without clipping.
+
+Generated glyph bitmap data is 123,405 bytes across 11 fixed sizes; glyph
+metrics add about 8.5 KB in flash. The renderer uses one 40x40 RGB565 glyph
+scratch buffer (3,200 bytes of static internal RAM); it allocates no PSRAM.
+PlatformIO reports 23,088/327,680 bytes RAM (7.0%) and 459,541/3,342,336
+bytes of application flash (13.7%). The complete upload image is 459,904
+bytes. These are build-time resource figures; no runtime frame-rate or
+perceived-latency benchmark has been recorded.
+
+The dashboard jog path now clears and redraws only the value/unit band rather
+than repainting its entire DRO tile. This also addresses the repeated-press
+code path implicated by the operator's report that only the first press
+felt quick. The firmware's touch-action timing remains available in serial
+diagnostics, but the improvement still needs operator confirmation.
+
+| Phase 2A deliverable | Result |
+| --- | --- |
+| Hardware baseline commit | `08dc0f4` (`Add JC8048W550C_I hardware bring-up target`), local feature branch; not pushed |
+| Four-axis landscape mock UI | Implemented; prior operator photo shows X/Y/Z/A together, A in degrees, DEMO/CNC OFFLINE, jog controls |
+| Touch/navigation | Implemented for dashboard, setup, connection selection, axis/step selection, local +/- changes, and STOP/CANCEL; touch action is one-shot per contact |
+| Transport design | ByteTransport contract and Wi-Fi/WebSocket, UART, BLE selection identities; no transport is instantiated or connected |
+| CNC motion | Not included; mock jog only changes local position values |
+| JC build | PASS: final `pio run -e jc8048w550`; 7.98 seconds; 459,541 bytes app flash and 23,088 bytes RAM |
+| Existing target builds | PASS: `m5dial` 115.56 seconds and `cyddial` 112.39 seconds after the typography code was integrated; neither target source/config was changed |
+| JC-only upload | PASS: final image flashed on COM3; ESP32-S3 identified; firmware and partition hashes verified |
+| Post-upload boot | PASS: 16 MB flash, PSRAM 8,386,279 bytes, 8,386,035 bytes PSRAM free, internal heap 363,708 bytes; ST7262 800x480 initialized; GT911 `0x5D` ACK; demo/offline startup |
+| Typography visual review | PENDING: successful build/upload/boot do not establish legibility; operator photo requested |
+| Repeated-press responsiveness | NOT YET VERIFIED by operator; no latency benchmark claimed |
+| Long-run stability on Phase 2A image | NOT YET VERIFIED |
+
+Phase 2A files added/updated after the Phase 1 baseline commit are
+`src/jc8048w550/JcPendantUi.cpp`,
+`src/jc8048w550/JcPendantUi.hpp`,
+`src/jc8048w550/JcTransport.h`, and
+`src/jc8048w550/HardwareBringup.cpp`. The JC-only source filter continues to
+exclude the upstream scenes, controller parser, Wi-Fi implementation, UART
+controller driver, and all CNC motion paths. The original `m5dial`,
+`cyddial`, and default PlatformIO targets are unchanged.
+
+**Known issues and remaining acceptance:** The user-reported sluggishness
+prompted the partial-redraw optimization, but its physical response time still
+needs confirmation on the newly uploaded image. Touch raw/mapped serial values
+at all five named points and long-duration stability remain open Phase 1C
+acceptance items. The Phase 2A connection-selection page is a local design
+prototype; its setting is not persisted and the transports are not
+implemented. No photo of the post-optimization interaction or operator
+confirmation of the responsiveness fix has been received yet.
+
+**Recommended Phase 2B scope:** first verify responsiveness, touch mapping,
+and state retention on hardware. Then extract a transport-independent
+controller/protocol adapter around the existing FluidDial parser/model,
+define explicit selection persistence and connection lifecycle/error states,
+and implement a read-only CNC status connection for one approved transport.
+Keep all jog/probe command paths disabled until separately designed and
+reviewed with physical safety interlocks and a simulated/disconnected test.
+Do not implement BLE before a distinct authorization and design review.
+
 ### Preliminary architecture and interface plan
 
 1. Keep the upstream M5Dial and CYD environments, source filters, and default
@@ -425,6 +586,97 @@ without the operator's approval.
       user-configured credentials only.
 - [ ] Run desktop/simulator and all supported PlatformIO environment builds;
       check existing M5Dial and CYD behavior for regressions.
+
+## Phase 2A — guided touch calibration
+
+The JC demo now opens the five-point calibration page on first boot when no
+valid mapping exists, before showing the dashboard. It presents one target at
+a time in this order: top-left, top-right, bottom-right, bottom-left, and
+centre. Corner targets are 60 px inward from the panel edges. The existing
+GT911 rotation, reset configuration, RGB pins, and normal mapping are
+preserved until a passing result is explicitly saved.
+
+Each touch attempt requires nine single-touch polling samples and a confirmed
+release. Samples are reduced to per-axis medians; an attempt is rejected if
+any raw or rotated-driver coordinate differs from its median by more than
+20 px, if fewer than nine samples arrive, or if multi-touch is detected. Serial
+diagnostics retain raw GT911, rotated driver, current mapped UI, target,
+candidate mapped UI, and fit-error values.
+
+The four corners derive a six-coefficient affine mapping, which can represent
+axis swapping, inversion, scale, and offsets. The centre is excluded from that
+fit and used as an independent accuracy check. The on-screen result reports
+maximum/average corner error, centre error, axis swap, and inversion. A fit is
+eligible to save only when maximum corner error is at most 35 px and centre
+error is at most 30 px. The candidate does not affect touch handling until
+Save Calibration is selected.
+
+Accepted mappings are stored in ESP32 NVS under namespace `jctouch`, key
+`map`, with schema version 1 and finite/range/determinant checks on load.
+Failed saves leave the active mapping unchanged. Setup offers a confirmed
+factory reset. Recovery is available independent of mapped coordinates by
+holding one finger anywhere on the screen for five seconds, provided the hold
+starts within ten seconds of boot; release, then begin target 1. Once a valid
+mapping is saved, the dashboard is the normal startup page and calibration
+remains available from Setup.
+
+| Validation item | Result |
+| --- | --- |
+| `pio run -e jc8048w550` | PASS at Phase 2A implementation; final acceptance rebuild on 2026-10-29 passed in 6.12 s; 480,697 bytes app flash and 23,492 bytes RAM |
+| `pio run -e m5dial`, then `pio run -e cyddial` | PASS sequentially on 2026-10-29; M5Dial 16.47 s, CYDDial 14.57 s; JC-only source remains excluded from both |
+| `git diff --check` | PASS on 2026-10-29 |
+| JC-only upload to COM3 | PASS; ESP32-S3 identified and firmware/partition hashes verified |
+| Final serial boot | PASS; ESP32-S3 revision 0, 16 MB flash, PSRAM initialized (8,386,279 bytes), 8,386,035 bytes PSRAM free, internal free heap 363,112 bytes; wizard opened before dashboard because no map was saved |
+| Display and touch initialization | PASS in serial diagnostics; ST7262 800x480, backlight GPIO2 HIGH, GT911 address 0x5D ACK, SDA19/SCL20/RST38/INT unconnected |
+| CNC communication and motion | EXCLUDED; JC source filter remains limited to `src/jc8048w550/*.cpp`; no controller code or motion path is included |
+| Five physical targets and orientation | PASS, operator logs captured three times; GT911 driver X and Y both inverted, no axis swap |
+| Calibration fit | PASS on three earlier runs: max/average corner error 3.16/3.16 px, centre error 7.91 px; 2.29/2.29 px, centre 8.93 px; 6.84/6.84 px, centre 7.32 px. Additional COM3 captures on 2026-10-29: 9.55 px max/average corner error, 16.01 px centre error; and 1.38 px max/average corner error, 7.59 px centre error. Both reported X/Y inverted, no swap |
+| Explicit Save and NVS write | PASS; latest COM3 capture recorded `cal: version=1 saved; map=[-1.038324 0.029125 815.862; 0.005397 -1.009969 471.359]` and `cal: accepted mapping applied; returning to settings.` An earlier acceptance-session map was `[-1.022496 0.040038 794.848; -0.001630 -1.084273 499.244]`. The Save hit-test bug was fixed by separating wizard control mapping from dashboard mapping |
+| Retry and cancel wizard | PASS, operator reports both actions completed |
+| Persistence after latest save | PASS; after the saved-map capture, COM3 showed a fresh ESP-ROM `rst:0x1 (POWERON)` boot and `cal: version 1 mapping loaded from NVS`, followed by dashboard startup with `saved calibration active` |
+| Factory-reset cancellation | PASS; latest serial confirmed `cal: factory reset cancelled; existing mapping retained.` |
+| Existing calibration backup before reset | Saved version-1 map coefficients were captured before reset: `[-1.038324 0.029125 815.862; 0.005397 -1.009969 471.359]`. The earlier map `[-1.022496 0.040038 794.848; -0.001630 -1.084273 499.244]` was confirmed loading after a fresh power-on. Preserve these captured values; recovery remains available via the five-second one-finger hold during the first 10 seconds after reboot. |
+| Confirmed factory reset and recovery | PASS per operator report; prior saved map coefficients were captured before reset. COM3 evidence for the reset action itself was not present in the captured log. Recovery uses a five-second one-finger hold begun within 10 seconds of reboot, then recalibrate all five points and explicitly save. |
+| Dashboard controls and visual review | PASS with evidence limits; operator dashboard photo received 2026-10-29 shows all X/Y/Z/A DROs and units, DEMO/CNC OFFLINE indicators, axis and step selectors, and local jog/STOP controls. Operator reports very responsive controls and no flicker. COM3 captured selection of Wired UART and Bluetooth LE with `connection not started`. Operator calibration PASS/RETRY photos exposed header/target remnants; the centred-header redraw correction was uploaded and operator confirmed the latest calibration page/result header look correct. A separate Setup-page photo and individual X/Y/Z/A selection log were not supplied. |
+| Stability run | PASS per operator confirmation on the latest firmware: a continuous observation within the requested 15–30-minute interval completed without reported resets, lockups, display corruption, touch issues, or flicker. Exact elapsed minutes were not recorded. |
+| Overall Phase 2A acceptance | PASS; operator approved the Phase 2A checkpoint on 2026-10-29 after confirming the 15–30-minute stability run. Setup-page photo and exact run duration are documentation gaps, not operator-reported defects. |
+
+#### Phase 2A final acceptance checkpoint (2026-10-29)
+
+The local working branch is `feature/jc8048w550`. During acceptance-session
+serial capture, the operator completed two five-point runs and explicitly
+saved passing maps. The second run's max/average corner error was 1.38 px and
+its independent centre error was 7.59 px. The latest map is recorded above.
+Reset cancellation was confirmed in serial; selection of Wired UART and
+Bluetooth LE was logged without starting either connection. The previously
+saved map was observed loading after reboot. The JC environment remains
+opt-in and compiles only `src/jc8048w550/*.cpp`; M5Dial and CYDDial retain their
+existing source filters and both rebuilt successfully after the JC build.
+Review of the isolated JC sources found no controller transport or motion
+implementation: transport identifiers and labels are selection-only, demo
+jogging updates local coordinates, and STOP/CANCEL has no controller to stop.
+Font originals retain the SIL Open Font License texts. No credentials,
+firmware binaries, or temporary test output are intended project deliverables;
+`.pio` build output is ignored. On 2026-10-29 the operator explicitly approved
+the Phase 2A checkpoint and confirmed a continuous 15–30-minute observation
+of the latest firmware without reported resets, lockups, display corruption,
+touch issues, or flicker. The exact duration and a separate Setup-page photo
+were not recorded.
+
+The operator subsequently reported completing wizard Retry/Cancel and
+confirmed factory reset/recovery, described the touchscreen as very
+responsive with no flicker, and identified stale calibration text/target
+graphics remaining between points. `JcPendantUi.cpp` now clears the label and
+progress bands and previous target marker when advancing, and clears the body
+when showing the result, avoiding a full-area wipe on each step. Operator
+photos showed the PASS and RETRY result pages but also revealed target-ring
+graphics intruding into the header. The calibration page now uses a compact
+centred header clear of the corner targets and redraws that header after
+clearing the result page. The final JC rebuild passed on 2026-10-29 (480,909
+bytes app flash, 23,492 bytes RAM); upload to COM3 passed with verified flash
+hashes. Post-upload serial confirmed ESP32-S3 boot, PSRAM, 800x480 ST7262,
+GT911 ACK, and version-1 calibration loaded from NVS. The operator confirmed
+that the latest target transitions and result header look correct.
 
 ## Sources and references
 
