@@ -52,6 +52,9 @@ public:
     }
 
     bool has_status() const { return _has_status; }
+    // Freshness of the active transport, maintained by the application shell.
+    void set_fresh(bool fresh) { _fresh = fresh; }
+    bool fresh() const { return _fresh; }
     const JcLiveMachineStatus& status() const { return _status; }
     const char* state() const { return _has_status ? _status.machine_state : ""; }
 
@@ -109,6 +112,7 @@ public:
 private:
     JcLiveMachineStatus _status {};
     bool                _has_status = false;
+    bool                _fresh = false;
     float               _wco[4] {};
     bool                _wco_known = false;
     JcHistoryEntry      _history[kHistory] {};

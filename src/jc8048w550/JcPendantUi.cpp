@@ -84,6 +84,64 @@ const char* PendantUi::axis_name(uint8_t axis) {
     return names[axis < kAxisCount ? axis : 0];
 }
 
+bool PendantUi::use_uart() const {
+    return _app.settings().transport == 1 && _uart.running();
+}
+
+const JcLiveMachineStatus& PendantUi::live_status() const {
+    return use_uart() ? _uart.status() : _fluidnc.status();
+}
+
+bool PendantUi::live_fresh() const {
+    return use_uart() ? _uart.status_is_fresh() : _fluidnc.status_is_fresh();
+}
+
+JcFluidState PendantUi::live_state() const {
+    return use_uart() ? _uart.state() : _fluidnc.state();
+}
+
+void PendantUi::update_model() {
+    const JcLiveMachineStatus& status = live_status();
+    if (&status != _model_source || status.sequence != _model_sequence) {
+        _model_source = &status;
+        _model_sequence = status.sequence;
+        if (status.has_data) {
+            _app.feed_status(status);
+        }
+    }
+    _app.note_link_fresh(live_fresh());
+}
+
+void PendantUi::app_leave_thunk(void* user, JcLeaveTarget target) {
+    static_cast<PendantUi*>(user)->handle_app_leave(target);
+}
+
+void PendantUi::handle_app_leave(JcLeaveTarget target) {
+    switch (target) {
+        case JcLeaveTarget::Dashboard:
+            _page = Page::Home;
+            _last_action = "Dashboard";
+            break;
+        case JcLeaveTarget::Connections:
+            _page = Page::Connections;
+            break;
+        case JcLeaveTarget::WifiSettings:
+            _edit_wifi_config = _fluidnc.config();
+            _wifi_field = WifiField::Ssid;
+            _keyboard_symbols = false;
+            _keyboard_shift = false;
+            _keyboard_visible = true;
+            _page = Page::WifiSettings;
+            Serial.println("net: Wi-Fi configuration opened; connect remains manual");
+            break;
+        case JcLeaveTarget::Calibration:
+            Serial.println("ui: guided calibration opened from application settings");
+            begin_calibration();
+            return;
+    }
+    redraw();
+}
+
 float PendantUi::step_value(uint8_t index, uint8_t axis) {
     static constexpr float linear[kStepCount] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f };
     static constexpr float rotary[kStepCount] = { 0.1f, 1.0f, 10.0f, 45.0f, 90.0f };
@@ -126,6 +184,7 @@ bool PendantUi::contains(Rect bounds, uint16_t x, uint16_t y) const {
 
 void PendantUi::begin() {
     _fluidnc.begin();
+    _app.begin(&PendantUi::app_leave_thunk, this);
     _edit_wifi_config = _fluidnc.config();
     _calibration_loaded = load_calibration();
     _recovery_window_until = millis() + kRecoveryWindowMs;
@@ -141,6 +200,8 @@ void PendantUi::begin() {
 
 void PendantUi::poll(TAMC_GT911& touch) {
     _fluidnc.poll();
+    _uart.poll();
+    update_model();
     touch.read();
 
     if (touch.isTouched && touch.touches > 0) {
@@ -255,6 +316,9 @@ void PendantUi::poll(TAMC_GT911& touch) {
             _last_displayed_link_state = UINT32_MAX;
             _has_displayed_live_axes = false;
         }
+    }
+    if (_page == Page::App) {
+        _app.tick();
     }
     draw_live_status_updates();
 }
@@ -451,13 +515,18 @@ void PendantUi::draw_position(uint8_t axis) {
                       kValueWidth, kValueHeight, fill);
 
     char value[20];
-    const JcLiveMachineStatus& status = _fluidnc.status();
-    const bool live_has_value = _live_mode && status.has_data;
-    const float position = _live_mode ? status.axes[axis] : _positions[axis];
-    if (_live_mode && !live_has_value) {
+    float position = _positions[axis];
+    bool has_value = true;
+    if (_live_mode) {
+        // Positions come from the machine model in the selected reference; an
+        // unknown work offset is shown as unavailable, never as zero.
+        has_value = _app.model().position(axis, _display_reference, position);
+    }
+    if (!has_value) {
         strlcpy(value, "---.---", sizeof(value));
     } else {
-        snprintf(value, sizeof(value), "%.3f", position);
+        snprintf(value, sizeof(value), "%.*f", static_cast<int>(_app.settings().coordinate_decimals),
+                 static_cast<double>(position));
     }
     const char* const unit = axis == 3 ? "°" : "mm";
     static constexpr FontId dro_fonts[] = {
@@ -476,7 +545,7 @@ void PendantUi::draw_position(uint8_t axis) {
 
     const int16_t value_x = bounds.x + kValueLeft;
     const int16_t baseline = bounds.y + kValueBaseline;
-    const uint16_t value_color = _live_mode && !_fluidnc.status_is_fresh()
+    const uint16_t value_color = _live_mode && !live_fresh()
         ? kMuted : WHITE;
     draw_text(_display, value_x, baseline, value, value_font, value_color, fill);
     draw_text(_display, value_x + text_width(value_font, value) + 4, baseline,
@@ -487,15 +556,15 @@ void PendantUi::draw_header(const char* title) {
     _display.fillRect(0, 0, kWidth, 64, kPanel);
     draw_text_top(_display, 18, 12, title, FontId::Heading24, WHITE, kPanel);
 
-    const JcFluidState link_state = _fluidnc.state();
-    const bool live_fresh = _fluidnc.status_is_fresh();
+    const JcFluidState link_state = live_state();
+    const bool is_fresh = live_fresh();
     const char* mode_label = _live_mode
-        ? (live_fresh ? "LIVE" : "LIVE STALE")
+        ? (is_fresh ? "LIVE" : "LIVE STALE")
         : "DEMO MODE";
     const uint16_t mode_fill = _live_mode
-        ? (live_fresh ? 0x0320 : kAccentDark)
+        ? (is_fresh ? 0x0320 : kAccentDark)
         : kAccentDark;
-    const uint16_t mode_border = _live_mode && live_fresh ? kSuccess : RED;
+    const uint16_t mode_border = _live_mode && is_fresh ? kSuccess : RED;
     _display.fillRect(212, 13, 144, 38, mode_fill);
     _display.drawRect(212, 13, 144, 38, mode_border);
     draw_text_centered(_display, { 212, 13, 144, 38 }, mode_label,
@@ -517,7 +586,7 @@ void PendantUi::draw_header(const char* title) {
 void PendantUi::draw_machine_status() {
     _display.fillRect(16, 185, 768, 48, kPanel);
     _display.drawRect(16, 185, 768, 48, kBorder);
-    const JcLiveMachineStatus& status = _fluidnc.status();
+    const JcLiveMachineStatus& status = live_status();
     if (!_live_mode) {
         draw_text_top(_display, 30, 198, "MACHINE", FontId::Button20, kMuted, kPanel);
         draw_text_top(_display, 124, 198, "IDLE", FontId::Button20, kSuccess, kPanel);
@@ -529,21 +598,31 @@ void PendantUi::draw_machine_status() {
         return;
     }
 
-    const bool fresh = _fluidnc.status_is_fresh();
-    const JcFluidState link_state = _fluidnc.state();
+    const bool fresh = live_fresh();
+    const JcFluidState link_state = live_state();
     const char* machine_state = fresh ? status.machine_state
         : (status.has_data ? "STALE" : "NO DATA");
     const char* link_text = JcReadOnlyFluidNc::state_name(link_state);
-    const uint16_t machine_color = fresh ? kSuccess : RED;
+    uint16_t machine_color = kSuccess;
+    if (!fresh || strcmp(status.machine_state, "Alarm") == 0) {
+        machine_color = RED;
+    } else if (strcmp(status.machine_state, "Idle") != 0) {
+        machine_color = kInfo;
+    }
     draw_text_top(_display, 30, 198, "MACHINE", FontId::Body16, kMuted, kPanel);
     draw_text_top(_display, 112, 198, machine_state, FontId::Button20,
                   machine_color, kPanel);
     draw_text_top(_display, 270, 198, "LINK", FontId::Body16, kMuted, kPanel);
     draw_text_top(_display, 315, 198, link_text, FontId::Body16,
                   fresh ? kSuccess : RED, kPanel);
-    draw_text_top(_display, 608, 198,
-                  JcReadOnlyFluidNc::reference_name(status.coordinate_reference),
-                  FontId::Body16, WHITE, kPanel);
+    {
+        float probe = 0.0f;
+        const bool available = _app.model().position(0, _display_reference, probe);
+        char reference[24];
+        snprintf(reference, sizeof(reference), "%s%s",
+                 _display_reference == JcRef::Work ? "WORK" : "MACHINE", available ? "" : " n/a");
+        draw_button({ 600, 190, 176, 38 }, reference, false, !available);
+    }
 }
 
 void PendantUi::draw() {
@@ -552,7 +631,12 @@ void PendantUi::draw() {
             draw_home();
             break;
         case Page::Settings:
-            draw_settings();
+            // The application settings page replaces the legacy settings page.
+            _page = Page::App;
+            _app.open_settings();
+            break;
+        case Page::App:
+            _app.resume();
             break;
         case Page::Connections:
             draw_connections();
@@ -569,7 +653,7 @@ void PendantUi::draw() {
 void PendantUi::draw_home() {
     _display.fillScreen(kBackground);
     draw_header("FLUID DIAL");
-    draw_button(kSettingsButton, "SETUP");
+    draw_button(kSettingsButton, "MENU");
     draw_button(kConnectionsButton, "LINK");
 
     for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
@@ -587,6 +671,13 @@ void PendantUi::draw_home() {
                   _live_mode ? "MOTION DISABLED - NO COMMANDS SENT"
                              : "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
                   FontId::Body16, kMuted, kPanel);
+
+    if (_live_mode) {
+        draw_live_info(true);
+        draw_jog_buttons();
+        draw_home_footer();
+        return;
+    }
 
     draw_text_top(_display, 30, 281, "AXIS", FontId::Body16, kMuted, kPanel);
     for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
@@ -606,6 +697,68 @@ void PendantUi::draw_home() {
     draw_jog_buttons();
 
     draw_home_footer();
+}
+
+void PendantUi::draw_live_info(bool force) {
+    if (force) {
+        for (auto& slot : _info) {
+            slot.invalidate();
+        }
+    }
+    const JcLiveMachineStatus& status = live_status();
+    const bool fresh = live_fresh();
+    const uint16_t ok = fresh ? WHITE : kMuted;
+    char value[48];
+    static constexpr const char* labels[6] = { "FEED RATE", "SPINDLE", "ACTIVE WCS", "ALARM", "JOB", "TRANSPORT" };
+    for (uint8_t i = 0; i < 6; ++i) {
+        const int16_t x = 30 + (i % 3) * 252;
+        const int16_t y = 278 + (i / 3) * 62;
+        uint16_t color = ok;
+        switch (i) {
+            case 0:
+                if (status.has_data) {
+                    snprintf(value, sizeof(value), "%g /min", static_cast<double>(status.feed));
+                } else {
+                    snprintf(value, sizeof(value), "--");
+                }
+                break;
+            case 1:
+                if (!status.has_data) {
+                    snprintf(value, sizeof(value), "--");
+                } else if (status.spindle > 0.0f) {
+                    snprintf(value, sizeof(value), "%g RPM", static_cast<double>(status.spindle));
+                } else {
+                    snprintf(value, sizeof(value), "OFF");
+                }
+                break;
+            case 2:
+                snprintf(value, sizeof(value), "unknown (needs $G)");
+                color = kMuted;
+                break;
+            case 3:
+                if (status.has_data && strcmp(status.machine_state, "Alarm") == 0) {
+                    snprintf(value, sizeof(value), "ALARM ACTIVE");
+                    color = RED;
+                } else {
+                    snprintf(value, sizeof(value), "%s", status.has_data ? "none" : "--");
+                }
+                break;
+            case 4:
+                if (status.has_data && status.has_sd) {
+                    snprintf(value, sizeof(value), "%.0f%% %s", static_cast<double>(status.sd_percent), status.sd_name);
+                } else {
+                    snprintf(value, sizeof(value), "%s", status.has_data ? "none" : "--");
+                }
+                break;
+            default:
+                snprintf(value, sizeof(value), "%s%s",
+                         transport_name(static_cast<TransportKind>(_app.settings().transport)),
+                         use_uart() ? " (UART)" : "");
+                break;
+        }
+        draw_text_top(_display, x, y, labels[i], FontId::Body16, kMuted, kPanel);
+        _info[i].draw(_display, { x, static_cast<int16_t>(y + 20), 240, 28 }, value, FontId::Button20, color, kPanel);
+    }
 }
 
 void PendantUi::draw_settings() {
@@ -1262,12 +1415,12 @@ void PendantUi::draw_live_status_updates() {
         return;
     }
 
-    const JcFluidState link_state = _fluidnc.state();
+    const JcFluidState link_state = live_state();
     const bool link_changed = _last_displayed_link_state
         != static_cast<uint32_t>(link_state);
     if (link_changed) {
         draw_header("FLUID DIAL");
-        draw_button(kSettingsButton, "SETUP");
+        draw_button(kSettingsButton, "MENU");
         draw_button(kConnectionsButton, "LINK");
         draw_machine_status();
         _last_displayed_link_state = static_cast<uint32_t>(link_state);
@@ -1281,8 +1434,9 @@ void PendantUi::draw_live_status_updates() {
     if (!_live_mode) {
         return;
     }
-    const JcLiveMachineStatus& status = _fluidnc.status();
+    const JcLiveMachineStatus& status = live_status();
     if (_last_displayed_status_sequence != status.sequence) {
+        draw_live_info(false);
         bool position_changed = !_has_displayed_live_axes;
         for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
             if (!_has_displayed_live_axes
@@ -1303,6 +1457,10 @@ void PendantUi::draw_live_status_updates() {
         _last_displayed_reference = status.coordinate_reference;
         _last_displayed_status_sequence = status.sequence;
         _has_displayed_live_axes = status.has_data;
+    }
+    if (millis() - _last_live_info_ms >= 500) {
+        _last_live_info_ms = millis();
+        draw_live_info(false);  // refreshes stale colouring and the transport label
     }
 }
 
@@ -1374,7 +1532,7 @@ void PendantUi::set_live_mode(bool live) {
     if (live == _live_mode) {
         return;
     }
-    if (live && !_fluidnc.status_is_fresh()) {
+    if (live && !live_fresh()) {
         Serial.println("live: activation denied; no fresh valid FluidNC status");
         _last_action = "LIVE unavailable - connect and receive valid 4-axis status";
         _wifi_notice = "LIVE unavailable - connect and receive valid 4-axis status.";
@@ -1636,16 +1794,27 @@ void PendantUi::redraw() {
 }
 
 void PendantUi::handle_touch(uint16_t x, uint16_t y) {
+    if (_page == Page::App) {
+        _app.touch(x, y);
+        return;
+    }
     if (_page == Page::Home) {
         if (contains({ 212, 13, 144, 38 }, x, y)) {
             set_live_mode(!_live_mode);
             return;
         }
         if (contains(kSettingsButton, x, y)) {
-            _page = Page::Settings;
-            _last_action = "Settings opened";
-            redraw();
-            Serial.println("ui: page=settings");
+            _page = Page::App;
+            _app.open();
+            Serial.println("ui: page=application menu");
+            return;
+        }
+        if (_live_mode && contains({ 600, 190, 176, 38 }, x, y)) {
+            _display_reference = _display_reference == JcRef::Work ? JcRef::Machine : JcRef::Work;
+            draw_machine_status();
+            for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
+                draw_position(axis);
+            }
             return;
         }
         if (contains(kConnectionsButton, x, y)) {
@@ -1659,7 +1828,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
         for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
             const Rect tile { static_cast<int16_t>(16 + axis * 195), 76, 183, 101 };
             const Rect selector { static_cast<int16_t>(88 + axis * 82), 276, 70, 38 };
-            if (contains(tile, x, y) || contains(selector, x, y)) {
+            if (!_live_mode && (contains(tile, x, y) || contains(selector, x, y))) {
                 const uint8_t previous_axis = _selected_axis;
                 _selected_axis = axis;
                 _last_action = "Axis selected";
@@ -1678,7 +1847,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
 
         for (uint8_t step = 0; step < kStepCount; ++step) {
             const Rect selector { static_cast<int16_t>(88 + step * 90), 325, 82, 38 };
-            if (contains(selector, x, y)) {
+            if (!_live_mode && contains(selector, x, y)) {
                 const uint8_t previous_step = _selected_step;
                 _selected_step = step;
                 _last_action = "Jog increment selected";

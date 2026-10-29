@@ -10,7 +10,9 @@
 #include "JcTransport.h"
 #include "JcCommandAuth.hpp"
 #include "JcCommandBuilder.hpp"
+#include "JcApp.hpp"
 #include "JcReadOnlyFluidNc.hpp"
+#include "JcUartLink.hpp"
 
 namespace jc8048w550 {
 
@@ -34,6 +36,7 @@ private:
         Connections,
         WifiSettings,
         TouchCalibration,
+        App,
     };
 
     enum class WifiField : uint8_t {
@@ -82,6 +85,13 @@ private:
     JcWifiConfig _edit_wifi_config {};
     WifiField _wifi_field = WifiField::Ssid;
     bool _live_mode = false;
+    JcUartLink _uart;
+    JcApp _app { _display, _fluidnc, _uart, _live_mode };
+    uint32_t _model_sequence = 0;
+    const JcLiveMachineStatus* _model_source = nullptr;
+    JcRef _display_reference = JcRef::Work;
+    uint32_t _last_live_info_ms = 0;
+    ui::Slot _info[6];
     bool _keyboard_visible = true;
     bool _show_scan_results = false;
     const char* _wifi_notice = nullptr;
@@ -127,6 +137,14 @@ private:
 
     void draw();
     void draw_home();
+    void draw_live_info(bool force);
+    bool use_uart() const;
+    const JcLiveMachineStatus& live_status() const;
+    bool live_fresh() const;
+    JcFluidState live_state() const;
+    void update_model();
+    void handle_app_leave(JcLeaveTarget target);
+    static void app_leave_thunk(void* user, JcLeaveTarget target);
     void draw_settings();
     void draw_connections();
     void draw_wifi_settings();
