@@ -783,3 +783,32 @@ authorized.
   [Tactility Guition JC8048W550C device definition](https://github.com/TactilityProject/Tactility/blob/0e276da2076950de4370162ee5cf60194d99737d/Devices/guition-jc8048w550c/guition%2Cjc8048w550c.dts).
 - RGB framebuffer modes, memory and bounce-buffer considerations:
   [ESP-IDF RGB LCD peripheral documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/lcd/rgb_lcd.html).
+
+## Phase 2A acceptance record
+
+The operator confirmed the Phase 2A dashboard and Setup page and reported
+15-30 minutes of stable operation. Phase 2A is accepted; its checkpoint is
+commit `ed9f700`.
+
+## Phase 2B simulated FluidNC test harness (instruction 002B.1)
+
+`tools/sim_fluidnc_server.py` is a simulated FluidNC status server. It must
+listen on TCP port 23, because the JC client's port is fixed. Run it on the PC
+(allow it through the firewall) and enter the PC's LAN address as the JC
+"FluidNC host". It never contacts a real controller. Scenarios: `normal`
+(negative values, A in degrees), `work` (WPos + WCO), `fragmented`,
+`malformed`, `three-axis` (JC must reject; it requires four axes), `close`
+(reconnect) and `silent` (stale). The server audits every byte received and
+exits non-zero if any byte other than `?` arrives.
+
+| Item | Result |
+| --- | --- |
+| Simulator self-check on loopback (`close` scenario) | PASS: `?` queries answered; connection closed after three frames as designed |
+| Firmware run against simulator scenarios | NOT YET RUN. Needs the operator to enter Wi-Fi credentials on the JC and point it at the PC. |
+| Automated host-side unit tests of the firmware parser | NOT DONE. `JcReadOnlyFluidNc` depends on ESP32 Wi-Fi/lwIP and has no host stubs. |
+| Jog step selector | 50 mm / 100 mm added for X/Y/Z (rotary: 45 / 90 deg). Local DEMO values only; builds and uploads to COM3 passed. Visual confirmation pending. |
+| Status header overlap | Subtitle moved right to avoid the header text. Visual confirmation pending. |
+
+The firmware's only transmit path remains `parser_putchar()`, which sends
+exactly one `?` byte and blocks and counts everything else. This is verified
+by source inspection only. No machine motion is enabled.
