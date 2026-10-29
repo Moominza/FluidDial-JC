@@ -9,15 +9,15 @@
 namespace jc8048w550 {
 
 enum class TransportKind : uint8_t {
-    WifiWebSocket,
+    WifiFluidNcTcp,
     WiredUart,
     BluetoothLe,
 };
 
 inline const char* transport_name(TransportKind kind) {
     switch (kind) {
-        case TransportKind::WifiWebSocket:
-            return "Wi-Fi / WebSocket";
+        case TransportKind::WifiFluidNcTcp:
+            return "Wi-Fi / Telnet TCP";
         case TransportKind::WiredUart:
             return "Wired UART";
         case TransportKind::BluetoothLe:

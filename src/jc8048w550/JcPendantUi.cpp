@@ -103,12 +103,14 @@ bool PendantUi::contains(Rect bounds, uint16_t x, uint16_t y) const {
 }
 
 void PendantUi::begin() {
+    _fluidnc.begin();
+    _edit_wifi_config = _fluidnc.config();
     _calibration_loaded = load_calibration();
     _recovery_window_until = millis() + kRecoveryWindowMs;
     if (_calibration_loaded) {
         _page = Page::Home;
         draw();
-        Serial.println("ui: landscape demo started; saved calibration active; recovery hold available for 10s; transport and motion disabled.");
+        Serial.println("ui: landscape demo started; saved calibration active; recovery hold available for 10s; manual read-only status available; motion disabled.");
     } else {
         Serial.println("ui: no saved calibration; opening guided calibration before dashboard.");
         begin_calibration();
@@ -116,6 +118,7 @@ void PendantUi::begin() {
 }
 
 void PendantUi::poll(TAMC_GT911& touch) {
+    _fluidnc.poll();
     touch.read();
 
     if (touch.isTouched && touch.touches > 0) {
@@ -226,8 +229,12 @@ void PendantUi::poll(TAMC_GT911& touch) {
         if (_page == Page::Home) {
             draw_jog_button(expired_feedback);
             draw_home_footer();
+            _last_displayed_status_sequence = 0;
+            _last_displayed_link_state = UINT32_MAX;
+            _has_displayed_live_axes = false;
         }
     }
+    draw_live_status_updates();
 }
 
 void PendantUi::log_touch(uint8_t count, const TP_Point& point,
@@ -321,13 +328,13 @@ void PendantUi::draw_step_selector(uint8_t step) {
 
 void PendantUi::draw_transport_card(uint8_t index) {
     static constexpr const char* titles[kTransportCount] = {
-        "WI-FI / WS", "WIRED UART", "BLUETOOTH LE"
+        "WI-FI / TELNET TCP", "WIRED UART", "BLUETOOTH LE"
     };
     static constexpr const char* details[kTransportCount] = {
         "FluidNC TCP adapter", "Serial byte stream", "Future transport"
     };
     static constexpr TransportKind transports[kTransportCount] = {
-        TransportKind::WifiWebSocket,
+        TransportKind::WifiFluidNcTcp,
         TransportKind::WiredUart,
         TransportKind::BluetoothLe
     };
@@ -374,6 +381,23 @@ void PendantUi::draw_jog_buttons() {
 }
 
 void PendantUi::draw_jog_button(Feedback feedback) {
+    if (_live_mode) {
+        switch (feedback) {
+            case Feedback::JogNegative:
+            case Feedback::JogPositive:
+                draw_button(feedback == Feedback::JogNegative
+                                ? Rect { 30, 376, 260, 74 }
+                                : Rect { 510, 376, 260, 74 },
+                            "MOTION DISABLED", false, true);
+                break;
+            case Feedback::Stop:
+                draw_button({ 300, 376, 200, 74 }, "READ ONLY", false, true);
+                break;
+            case Feedback::None:
+                break;
+        }
+        return;
+    }
     switch (feedback) {
         case Feedback::JogNegative:
             draw_button({ 30, 376, 260, 74 }, "JOG -", _feedback == feedback);
@@ -405,7 +429,14 @@ void PendantUi::draw_position(uint8_t axis) {
                       kValueWidth, kValueHeight, fill);
 
     char value[20];
-    snprintf(value, sizeof(value), "%.3f", _positions[axis]);
+    const JcLiveMachineStatus& status = _fluidnc.status();
+    const bool live_has_value = _live_mode && status.has_data;
+    const float position = _live_mode ? status.axes[axis] : _positions[axis];
+    if (_live_mode && !live_has_value) {
+        strlcpy(value, "---.---", sizeof(value));
+    } else {
+        snprintf(value, sizeof(value), "%.3f", position);
+    }
     const char* const unit = axis == 3 ? "°" : "mm";
     static constexpr FontId dro_fonts[] = {
         FontId::Dro30, FontId::Dro28, FontId::Dro26, FontId::Dro24,
@@ -423,7 +454,9 @@ void PendantUi::draw_position(uint8_t axis) {
 
     const int16_t value_x = bounds.x + kValueLeft;
     const int16_t baseline = bounds.y + kValueBaseline;
-    draw_text(_display, value_x, baseline, value, value_font, WHITE, fill);
+    const uint16_t value_color = _live_mode && !_fluidnc.status_is_fresh()
+        ? kMuted : WHITE;
+    draw_text(_display, value_x, baseline, value, value_font, value_color, fill);
     draw_text(_display, value_x + text_width(value_font, value) + 4, baseline,
               unit, FontId::Button20, kMuted, fill);
 }
@@ -432,15 +465,63 @@ void PendantUi::draw_header(const char* title) {
     _display.fillRect(0, 0, kWidth, 64, kPanel);
     draw_text_top(_display, 18, 12, title, FontId::Heading24, WHITE, kPanel);
 
-    _display.fillRect(212, 13, 144, 38, kAccentDark);
-    _display.drawRect(212, 13, 144, 38, RED);
-    draw_text_centered(_display, { 212, 13, 144, 38 }, "DEMO MODE",
-                       FontId::Button20, WHITE, kAccentDark);
+    const JcFluidState link_state = _fluidnc.state();
+    const bool live_fresh = _fluidnc.status_is_fresh();
+    const char* mode_label = _live_mode
+        ? (live_fresh ? "LIVE" : "LIVE STALE")
+        : "DEMO MODE";
+    const uint16_t mode_fill = _live_mode
+        ? (live_fresh ? 0x0320 : kAccentDark)
+        : kAccentDark;
+    const uint16_t mode_border = _live_mode && live_fresh ? kSuccess : RED;
+    _display.fillRect(212, 13, 144, 38, mode_fill);
+    _display.drawRect(212, 13, 144, 38, mode_border);
+    draw_text_centered(_display, { 212, 13, 144, 38 }, mode_label,
+                       FontId::Button20, WHITE, mode_fill);
 
-    _display.fillRect(368, 13, 208, 38, kBackground);
-    _display.drawRect(368, 13, 208, 38, kBorder);
-    draw_text_centered(_display, { 368, 13, 208, 38 }, "CNC OFFLINE",
-                       FontId::Button20, kMuted, kBackground);
+    const bool connected = link_state == JcFluidState::Connected;
+    const char* link_label = connected ? "FLUIDNC LINK"
+        : (_live_mode && (link_state == JcFluidState::Stale
+                          || link_state == JcFluidState::Lost
+                          || link_state == JcFluidState::InvalidData)
+            ? "DISCONNECTED" : "CNC OFFLINE");
+    const uint16_t link_fill = connected ? 0x0320 : kBackground;
+    _display.fillRect(368, 13, 208, 38, link_fill);
+    _display.drawRect(368, 13, 208, 38, connected ? kSuccess : kBorder);
+    draw_text_centered(_display, { 368, 13, 208, 38 }, link_label,
+                       FontId::Button20, connected ? WHITE : kMuted, link_fill);
+}
+
+void PendantUi::draw_machine_status() {
+    _display.fillRect(16, 185, 768, 48, kPanel);
+    _display.drawRect(16, 185, 768, 48, kBorder);
+    const JcLiveMachineStatus& status = _fluidnc.status();
+    if (!_live_mode) {
+        draw_text_top(_display, 30, 198, "MACHINE", FontId::Button20, kMuted, kPanel);
+        draw_text_top(_display, 124, 198, "IDLE", FontId::Button20, kSuccess, kPanel);
+        draw_text_top(_display, 230, 198, "LINK", FontId::Button20, kMuted, kPanel);
+        draw_text_top(_display, 290, 198, "DEMO", FontId::Button20, WHITE, kPanel);
+        draw_text_top(_display, 405, 198, "TRANSPORT", FontId::Button20, kMuted, kPanel);
+        draw_text_top(_display, 525, 198, transport_name(_selected_transport),
+                      FontId::Button20, WHITE, kPanel);
+        return;
+    }
+
+    const bool fresh = _fluidnc.status_is_fresh();
+    const JcFluidState link_state = _fluidnc.state();
+    const char* machine_state = fresh ? status.machine_state
+        : (status.has_data ? "STALE" : "NO DATA");
+    const char* link_text = JcReadOnlyFluidNc::state_name(link_state);
+    const uint16_t machine_color = fresh ? kSuccess : RED;
+    draw_text_top(_display, 30, 198, "MACHINE", FontId::Body16, kMuted, kPanel);
+    draw_text_top(_display, 112, 198, machine_state, FontId::Button20,
+                  machine_color, kPanel);
+    draw_text_top(_display, 270, 198, "LINK", FontId::Body16, kMuted, kPanel);
+    draw_text_top(_display, 315, 198, link_text, FontId::Body16,
+                  fresh ? kSuccess : RED, kPanel);
+    draw_text_top(_display, 608, 198,
+                  JcReadOnlyFluidNc::reference_name(status.coordinate_reference),
+                  FontId::Body16, WHITE, kPanel);
 }
 
 void PendantUi::draw() {
@@ -453,6 +534,9 @@ void PendantUi::draw() {
             break;
         case Page::Connections:
             draw_connections();
+            break;
+        case Page::WifiSettings:
+            draw_wifi_settings();
             break;
         case Page::TouchCalibration:
             draw_touch_calibration();
@@ -470,22 +554,16 @@ void PendantUi::draw_home() {
         draw_axis_tile(axis, { static_cast<int16_t>(16 + axis * 195), 76, 183, 101 });
     }
 
-    _display.fillRect(16, 185, 768, 48, kPanel);
-    _display.drawRect(16, 185, 768, 48, kBorder);
-    draw_text_top(_display, 30, 198, "MACHINE", FontId::Button20, kMuted, kPanel);
-    draw_text_top(_display, 124, 198, "IDLE", FontId::Button20, kSuccess, kPanel);
-    draw_text_top(_display, 230, 198, "LINK", FontId::Button20, kMuted, kPanel);
-    draw_text_top(_display, 290, 198, "DEMO", FontId::Button20, WHITE, kPanel);
-    draw_text_top(_display, 405, 198, "TRANSPORT", FontId::Button20, kMuted, kPanel);
-    draw_text_top(_display, 525, 198, transport_name(_selected_transport),
-                  FontId::Button20, WHITE, kPanel);
+    draw_machine_status();
 
     _display.fillRect(16, 243, 768, 225, kPanel);
     _display.drawRect(16, 243, 768, 225, kBorder);
-    draw_text_top(_display, 30, 248, "DEMO JOG CONTROLS",
+    draw_text_top(_display, 30, 248,
+                  _live_mode ? "READ-ONLY LIVE STATUS" : "DEMO JOG CONTROLS",
                   FontId::Button20, WHITE, kPanel);
     draw_text_top(_display, 250, 253,
-                  "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
+                  _live_mode ? "MOTION DISABLED - NO COMMANDS SENT"
+                             : "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
                   FontId::Body16, kMuted, kPanel);
 
     draw_text_top(_display, 30, 281, "AXIS", FontId::Body16, kMuted, kPanel);
@@ -503,12 +581,7 @@ void PendantUi::draw_home() {
         draw_button(bounds, step_labels[step], step == _selected_step);
     }
 
-    const Rect jog_negative { 30, 376, 260, 74 };
-    const Rect stop { 300, 376, 200, 74 };
-    const Rect jog_positive { 510, 376, 260, 74 };
-    draw_button(jog_negative, "JOG -", _feedback == Feedback::JogNegative);
-    draw_button(stop, "STOP / CANCEL", false, _feedback == Feedback::Stop);
-    draw_button(jog_positive, "JOG +", _feedback == Feedback::JogPositive);
+    draw_jog_buttons();
 
     draw_home_footer();
 }
@@ -919,15 +992,609 @@ void PendantUi::draw_connections() {
 
     _display.fillRect(16, 290, 768, 152, kAccentDark);
     _display.drawRect(16, 290, 768, 152, RED);
-    draw_text_top(_display, 34, 307, "DEMO MODE - NOT CONNECTED",
-                  FontId::Button20, WHITE, kAccentDark);
-    draw_text_top(_display, 34, 348,
-                  "Choose a transport for future setup. This demo does not initialize",
-                  FontId::Body16, kMuted, kAccentDark);
-    draw_text_top(_display, 34, 372,
-                  "Wi-Fi, UART CNC pins, Bluetooth, or send protocol bytes.",
-                  FontId::Body16, kMuted, kAccentDark);
+    draw_text_centered(_display, { 34, 300, 732, 34 },
+                       "READ-ONLY STATUS CONNECTION",
+                       FontId::Button20, WHITE, kAccentDark);
+    draw_text_centered(_display, { 34, 340, 732, 26 },
+                       "Wi-Fi opens network and FluidNC settings.",
+                       FontId::Body16, kMuted, kAccentDark);
+    draw_text_centered(_display, { 34, 368, 732, 26 },
+                       "No G-code or motion commands are sent.",
+                       FontId::Body16, kMuted, kAccentDark);
+    draw_text_centered(_display, { 34, 394, 732, 26 },
+                       "UART and Bluetooth are not implemented.",
+                       FontId::Body16, kMuted, kAccentDark);
     draw_transport_status();
+}
+
+void PendantUi::draw_wifi_settings() {
+    _display.fillScreen(kBackground);
+    draw_header("WI-FI / FLUIDNC");
+    draw_button(kHomeButton, "HOME");
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        draw_wifi_field(i);
+    }
+    draw_button({ 20, 204, 154, 42 },
+                _fluidnc.wifi_scan_running() ? "SCANNING..." : "SCAN WI-FI");
+    draw_wifi_diagnostics();
+
+    if (_show_scan_results) {
+        draw_wifi_scan_results();
+    } else if (_keyboard_visible) {
+        draw_keyboard();
+    } else {
+        draw_text_centered(_display, { 90, 320, 620, 42 },
+                           "Keyboard hidden - tap an SSID, password or host field.",
+                           FontId::Body16, kMuted, kBackground);
+    }
+    draw_button({ 18, 449, 172, 27 }, "SAVE");
+    draw_button({ 200, 449, 200, 27 },
+                _fluidnc.connect_requested() ? "DISCONNECT" : "CONNECT");
+    draw_button({ 410, 449, 180, 27 }, _live_mode ? "LIVE ACTIVE" : "USE LIVE",
+                _live_mode, !_live_mode && !_fluidnc.status_is_fresh());
+    draw_button({ 600, 449, 180, 27 }, "BACK");
+    _last_displayed_scan_count = _fluidnc.scanned_network_count();
+    _last_displayed_scan_running = _fluidnc.wifi_scan_running();
+}
+
+void PendantUi::draw_wifi_field(uint8_t index) {
+    static constexpr Rect fields[] = {
+        { 20, 72, 760, 40 },
+        { 20, 116, 760, 40 },
+        { 20, 160, 760, 40 },
+    };
+    static constexpr const char* labels[] = {
+        "SSID", "PASSWORD", "FLUIDNC HOST / IP"
+    };
+    if (index >= 3) {
+        return;
+    }
+
+    const char* values[] = {
+        _edit_wifi_config.ssid,
+        _edit_wifi_config.password,
+        _edit_wifi_config.host,
+    };
+    const bool selected = static_cast<uint8_t>(_wifi_field) == index;
+    const uint16_t fill = selected ? kPanelLight : kPanel;
+    _display.fillRect(fields[index].x, fields[index].y,
+                      fields[index].width, fields[index].height, fill);
+    _display.drawRect(fields[index].x, fields[index].y,
+                      fields[index].width, fields[index].height,
+                      selected ? CYAN : kBorder);
+    draw_text_top(_display, fields[index].x + 10, fields[index].y + 2,
+                  labels[index], FontId::Body16, kMuted, fill);
+    char masked[64];
+    char display_value[48];
+    const char* shown = values[index];
+    if (index == static_cast<uint8_t>(WifiField::Password)) {
+        const size_t count = strlen(values[index]);
+        const size_t masked_count = count < sizeof(masked) - 1
+            ? count : sizeof(masked) - 1;
+        memset(masked, '*', masked_count);
+        masked[masked_count] = '\0';
+        shown = masked;
+    }
+    const size_t shown_length = strlen(shown);
+    if (shown_length >= sizeof(display_value)) {
+        const size_t suffix_length = sizeof(display_value) - 4;
+        memcpy(display_value, "...", 3);
+        memcpy(display_value + 3, shown + shown_length - suffix_length,
+               suffix_length);
+        display_value[sizeof(display_value) - 1] = '\0';
+        shown = display_value;
+    }
+    draw_text_top(_display, fields[index].x + 245, fields[index].y + 2,
+                  shown[0] ? shown : "(tap to edit)",
+                  FontId::Button20, WHITE, fill);
+}
+
+void PendantUi::draw_wifi_diagnostics() {
+    _display.fillRect(186, 200, 594, 54, kBackground);
+    char status_line[96];
+    snprintf(status_line, sizeof(status_line), "Wi-Fi: %s  |  FluidNC: %s",
+             _fluidnc.wifi_connected() ? "CONNECTED" : "DISCONNECTED",
+             JcReadOnlyFluidNc::state_name(_fluidnc.state()));
+    draw_text_top(_display, 190, 202, status_line, FontId::Body16, kInfo, kBackground);
+
+    const uint32_t age = _fluidnc.last_status_age_ms();
+    char diagnostic_line[112];
+    if (age == UINT32_MAX) {
+        snprintf(diagnostic_line, sizeof(diagnostic_line),
+                 "Status: none  |  attempts: %lu  |  errors: %lu",
+                 static_cast<unsigned long>(_fluidnc.reconnect_attempts()),
+                 static_cast<unsigned long>(_fluidnc.parse_errors()));
+    } else {
+        snprintf(diagnostic_line, sizeof(diagnostic_line),
+                 "Age: %lu ms  |  interval: %lu ms  |  attempts: %lu  |  errors: %lu",
+                 static_cast<unsigned long>(age),
+                 static_cast<unsigned long>(_fluidnc.status().update_interval_ms),
+                 static_cast<unsigned long>(_fluidnc.reconnect_attempts()),
+                 static_cast<unsigned long>(_fluidnc.parse_errors()));
+    }
+    draw_text_top(_display, 190, 222, diagnostic_line, FontId::Body16,
+                  kMuted, kBackground);
+    const char* message = _fluidnc.last_error()[0]
+        ? _fluidnc.last_error()
+        : (_wifi_notice != nullptr
+            ? _wifi_notice
+            : "NVS is unencrypted; connect only on a trusted LAN.");
+    draw_text_top(_display, 190, 242, message, FontId::Body16,
+                  _fluidnc.last_error()[0] ? RED
+                    : (_wifi_notice != nullptr ? RED : kMuted), kBackground);
+}
+
+void PendantUi::draw_wifi_scan_results() {
+    _display.fillRect(18, 258, 764, 150, kBackground);
+    if (_fluidnc.wifi_scan_running()) {
+        draw_text_top(_display, 28, 264, "Scanning nearby access points...",
+                      FontId::Button20, kInfo, kBackground);
+        return;
+    }
+
+    const uint8_t count = _fluidnc.scanned_network_count();
+    if (count == 0) {
+        draw_text_top(_display, 28, 264, "No networks found. Tap SCAN WI-FI to retry.",
+                      FontId::Body16, kMuted, kBackground);
+        return;
+    }
+
+    draw_text_top(_display, 28, 260,
+                  "Select network by SSID and BSSID (access-point MAC):",
+                  FontId::Body16, kMuted, kBackground);
+    constexpr uint8_t kVisibleNetworks = 4;
+    const uint8_t first = static_cast<uint8_t>(_scan_page * kVisibleNetworks);
+    for (uint8_t row = 0; row < kVisibleNetworks; ++row) {
+        const uint8_t index = static_cast<uint8_t>(first + row);
+        const JcWifiNetwork* network = _fluidnc.scanned_network(index);
+        if (network == nullptr) {
+            break;
+        }
+        char label[96];
+        snprintf(label, sizeof(label),
+                 "%s  %d dBm  Ch %u  %02X:%02X:%02X:%02X:%02X:%02X",
+                 network->ssid, network->rssi, network->channel,
+                 network->bssid[0], network->bssid[1], network->bssid[2],
+                 network->bssid[3], network->bssid[4], network->bssid[5]);
+        draw_button({ 18, static_cast<int16_t>(282 + row * 32), 764, 30 },
+                    label, _edit_wifi_config.bssid_pinned
+                        && memcmp(_edit_wifi_config.bssid, network->bssid, 6) == 0);
+    }
+    draw_button({ 18, 416, 128, 27 }, "PREVIOUS",
+                _scan_page > 0);
+    draw_button({ 152, 416, 128, 27 }, "NEXT",
+                first + kVisibleNetworks < count);
+    draw_button({ 286, 416, 180, 27 }, "TYPE SSID");
+}
+
+void PendantUi::draw_keyboard(bool draw_panel) {
+    static constexpr const char* alpha_rows[] = {
+        "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm.-_"
+    };
+    static constexpr const char* symbol_rows[] = {
+        "1234567890", "!@#$%^&*()", "-_=+[]{};:", ",.?/'\"\\|~"
+    };
+
+    if (draw_panel) {
+        _display.fillRect(14, 254, 772, 166, kPanel);
+        _display.drawRect(14, 254, 772, 166, kBorder);
+        draw_text_top(_display, 24, 254, "TOUCH KEYBOARD",
+                      FontId::Body16, CYAN, kPanel);
+    }
+    for (uint8_t row = 0; row < 4; ++row) {
+        const char* keys = _keyboard_symbols ? symbol_rows[row] : alpha_rows[row];
+        const size_t count = strlen(keys);
+        const int16_t cell_width = 76;
+        const int16_t start_x = static_cast<int16_t>(
+            18 + ((10 - static_cast<int16_t>(count)) * cell_width) / 2);
+        const int16_t y = static_cast<int16_t>(270 + row * 38);
+        for (size_t column = 0; column < count; ++column) {
+            char label[2] = { keys[column], '\0' };
+            if (!_keyboard_symbols && _keyboard_shift && row > 0) {
+                if (label[0] >= 'a' && label[0] <= 'z') {
+                    label[0] = static_cast<char>(label[0] - 'a' + 'A');
+                }
+            }
+            const Rect key_bounds {
+                static_cast<int16_t>(start_x + column * cell_width), y, 68, 34
+            };
+            const uint16_t key_fill = 0x04B2;
+            _display.fillRect(key_bounds.x, key_bounds.y,
+                              key_bounds.width, key_bounds.height, key_fill);
+            _display.drawRect(key_bounds.x, key_bounds.y,
+                              key_bounds.width, key_bounds.height, CYAN);
+            draw_text_centered(_display, key_bounds, label,
+                               FontId::Button20, WHITE, key_fill);
+        }
+    }
+    if (draw_panel) {
+        draw_button({ 18, 416, 116, 27 }, _keyboard_symbols ? "ABC" : "123");
+        draw_button({ 140, 416, 100, 27 }, "SHIFT");
+        draw_button({ 246, 416, 100, 27 }, "SPACE");
+        draw_button({ 352, 416, 100, 27 }, "BACK");
+        draw_button({ 458, 416, 100, 27 }, "CLEAR");
+        draw_button({ 564, 416, 216, 27 }, "DONE");
+    }
+}
+
+void PendantUi::draw_live_status_updates() {
+    const uint32_t now = millis();
+    if (_page == Page::WifiSettings && now - _last_wifi_refresh_ms >= 500) {
+        _last_wifi_refresh_ms = now;
+        draw_wifi_diagnostics();
+        const uint8_t scan_count = _fluidnc.scanned_network_count();
+        const bool scan_running = _fluidnc.wifi_scan_running();
+        if (scan_count != _last_displayed_scan_count
+            || scan_running != _last_displayed_scan_running) {
+            draw_button({ 20, 204, 154, 42 },
+                        scan_running ? "SCANNING..." : "SCAN WI-FI");
+            if (_show_scan_results) {
+                draw_wifi_scan_results();
+            }
+            _last_displayed_scan_count = scan_count;
+            _last_displayed_scan_running = scan_running;
+        }
+    }
+    if (_page != Page::Home) {
+        return;
+    }
+
+    const JcFluidState link_state = _fluidnc.state();
+    const bool link_changed = _last_displayed_link_state
+        != static_cast<uint32_t>(link_state);
+    if (link_changed) {
+        draw_header("FLUID DIAL");
+        draw_button(kSettingsButton, "SETUP");
+        draw_button(kConnectionsButton, "LINK");
+        draw_machine_status();
+        _last_displayed_link_state = static_cast<uint32_t>(link_state);
+        if (_live_mode) {
+            for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
+                draw_position(axis);
+            }
+        }
+    }
+
+    if (!_live_mode) {
+        return;
+    }
+    const JcLiveMachineStatus& status = _fluidnc.status();
+    if (_last_displayed_status_sequence != status.sequence) {
+        bool position_changed = !_has_displayed_live_axes;
+        for (uint8_t axis = 0; axis < kAxisCount; ++axis) {
+            if (!_has_displayed_live_axes
+                || _last_displayed_live_axes[axis] != status.axes[axis]) {
+                draw_position(axis);
+                _last_displayed_live_axes[axis] = status.axes[axis];
+                position_changed = true;
+            }
+        }
+        const bool state_changed = strcmp(_last_displayed_machine_state,
+                                          status.machine_state) != 0
+            || _last_displayed_reference != status.coordinate_reference;
+        if (state_changed || position_changed) {
+            draw_machine_status();
+        }
+        strlcpy(_last_displayed_machine_state, status.machine_state,
+                sizeof(_last_displayed_machine_state));
+        _last_displayed_reference = status.coordinate_reference;
+        _last_displayed_status_sequence = status.sequence;
+        _has_displayed_live_axes = status.has_data;
+    }
+}
+
+void PendantUi::append_keyboard_character(char character) {
+    char* value = nullptr;
+    size_t capacity = 0;
+    switch (_wifi_field) {
+        case WifiField::Ssid:
+            value = _edit_wifi_config.ssid;
+            capacity = sizeof(_edit_wifi_config.ssid);
+            break;
+        case WifiField::Password:
+            value = _edit_wifi_config.password;
+            capacity = sizeof(_edit_wifi_config.password);
+            break;
+        case WifiField::Host:
+            value = _edit_wifi_config.host;
+            capacity = sizeof(_edit_wifi_config.host);
+            break;
+    }
+    if (value == nullptr || capacity == 0) {
+        return;
+    }
+    if (_wifi_field == WifiField::Host
+        && !((character >= 'a' && character <= 'z')
+             || (character >= 'A' && character <= 'Z')
+             || (character >= '0' && character <= '9')
+             || character == '.' || character == '-')) {
+        return;
+    }
+    const size_t length = strlen(value);
+    if (length + 1 < capacity) {
+        value[length] = character;
+        value[length + 1] = '\0';
+        if (_wifi_field == WifiField::Ssid) {
+            _edit_wifi_config.bssid_pinned = false;
+            memset(_edit_wifi_config.bssid, 0, sizeof(_edit_wifi_config.bssid));
+            _edit_wifi_config.channel = 0;
+            _wifi_notice = nullptr;
+        }
+        draw_wifi_field(static_cast<uint8_t>(_wifi_field));
+    }
+}
+
+void PendantUi::erase_keyboard_character() {
+    char* value = nullptr;
+    switch (_wifi_field) {
+        case WifiField::Ssid: value = _edit_wifi_config.ssid; break;
+        case WifiField::Password: value = _edit_wifi_config.password; break;
+        case WifiField::Host: value = _edit_wifi_config.host; break;
+    }
+    if (value == nullptr) {
+        return;
+    }
+    const size_t length = strlen(value);
+    if (length > 0) {
+        value[length - 1] = '\0';
+        if (_wifi_field == WifiField::Ssid) {
+            _edit_wifi_config.bssid_pinned = false;
+            memset(_edit_wifi_config.bssid, 0, sizeof(_edit_wifi_config.bssid));
+            _edit_wifi_config.channel = 0;
+            _wifi_notice = nullptr;
+        }
+        draw_wifi_field(static_cast<uint8_t>(_wifi_field));
+    }
+}
+
+void PendantUi::set_live_mode(bool live) {
+    if (live == _live_mode) {
+        return;
+    }
+    if (live && !_fluidnc.status_is_fresh()) {
+        Serial.println("live: activation denied; no fresh valid FluidNC status");
+        _last_action = "LIVE unavailable - connect and receive valid 4-axis status";
+        _wifi_notice = "LIVE unavailable - connect and receive valid 4-axis status.";
+        if (_page == Page::Home) {
+            draw_home_footer();
+        } else if (_page == Page::WifiSettings) {
+            draw_wifi_diagnostics();
+        }
+        return;
+    }
+    _live_mode = live;
+    _wifi_notice = nullptr;
+    _has_displayed_live_axes = false;
+    _last_displayed_status_sequence = 0;
+    strlcpy(_last_displayed_machine_state, "", sizeof(_last_displayed_machine_state));
+    _last_displayed_reference = JcCoordinateReference::Unknown;
+    _last_action = live ? "LIVE read-only - machine motion disabled"
+                        : "DEMO mode - simulated coordinates";
+    Serial.printf("ui: mode=%s\n", live ? "LIVE read-only" : "DEMO");
+    if (_page == Page::Home) {
+        redraw();
+    } else if (_page == Page::WifiSettings) {
+        draw_header("WI-FI / FLUIDNC");
+        draw_button(kHomeButton, "HOME");
+        draw_button({ 410, 449, 180, 27 }, _live_mode ? "LIVE ACTIVE" : "USE LIVE",
+                    _live_mode, !_live_mode && !_fluidnc.status_is_fresh());
+        draw_wifi_diagnostics();
+    }
+}
+
+void PendantUi::handle_wifi_touch(uint16_t x, uint16_t y) {
+    if (contains(kHomeButton, x, y)) {
+        _page = Page::Home;
+        redraw();
+        return;
+    }
+
+    static constexpr Rect fields[] = {
+        { 20, 72, 760, 40 },
+        { 20, 116, 760, 40 },
+        { 20, 160, 760, 40 },
+    };
+    for (uint8_t i = 0; i < 3; ++i) {
+        if (contains(fields[i], x, y)) {
+            _wifi_field = static_cast<WifiField>(i);
+            _keyboard_visible = true;
+            _show_scan_results = false;
+            Serial.printf("ui: Wi-Fi editor opened for %s; values are not logged\n",
+                          i == 0 ? "SSID" : (i == 1 ? "password" : "FluidNC host"));
+            draw_wifi_field(i);
+            draw_keyboard();
+            return;
+        }
+    }
+
+    if (contains({ 20, 204, 154, 42 }, x, y)) {
+        _keyboard_visible = false;
+        _show_scan_results = true;
+        _scan_page = 0;
+        _wifi_notice = nullptr;
+        if (!_fluidnc.start_wifi_scan()) {
+            Serial.println("net: Wi-Fi scan request rejected");
+        }
+        draw_button({ 20, 204, 154, 42 },
+                    _fluidnc.wifi_scan_running() ? "SCANNING..." : "SCAN WI-FI");
+        draw_wifi_scan_results();
+        return;
+    }
+
+    if (contains({ 18, 449, 172, 27 }, x, y)) {
+        if (_fluidnc.save_config(_edit_wifi_config)) {
+            _edit_wifi_config = _fluidnc.config();
+            _wifi_notice = _edit_wifi_config.bssid_pinned
+                ? "Saved; connection will use the selected access-point BSSID."
+                : "Local settings saved; NVS is not encrypted.";
+            Serial.println("net: configuration saved; credentials were not logged");
+            for (uint8_t i = 0; i < 3; ++i) {
+                draw_wifi_field(i);
+            }
+        } else {
+            _wifi_notice = "Could not save Wi-Fi settings; previous values retained.";
+        }
+        draw_wifi_diagnostics();
+        return;
+    }
+    if (contains({ 200, 449, 200, 27 }, x, y)) {
+        if (_fluidnc.connect_requested()) {
+            _fluidnc.disconnect();
+        } else if (_fluidnc.save_config(_edit_wifi_config)) {
+            _edit_wifi_config = _fluidnc.config();
+            _fluidnc.connect();
+        } else {
+            _wifi_notice = "Could not save Wi-Fi settings; connection not started.";
+        }
+        draw_button({ 200, 449, 200, 27 },
+                    _fluidnc.connect_requested() ? "DISCONNECT" : "CONNECT");
+        draw_wifi_diagnostics();
+        return;
+    }
+    if (contains({ 410, 449, 180, 27 }, x, y)) {
+        set_live_mode(!_live_mode);
+        return;
+    }
+    if (contains({ 600, 449, 180, 27 }, x, y)) {
+        _page = Page::Connections;
+        redraw();
+        return;
+    }
+
+    if (_show_scan_results) {
+        constexpr uint8_t kVisibleNetworks = 4;
+        const uint8_t first = static_cast<uint8_t>(_scan_page * kVisibleNetworks);
+        for (uint8_t row = 0; row < kVisibleNetworks; ++row) {
+            const uint8_t index = static_cast<uint8_t>(first + row);
+            const Rect row_bounds { 18, static_cast<int16_t>(282 + row * 32),
+                                    764, 30 };
+            const JcWifiNetwork* network = _fluidnc.scanned_network(index);
+            if (network == nullptr) {
+                break;
+            }
+            if (contains(row_bounds, x, y)) {
+                strlcpy(_edit_wifi_config.ssid, network->ssid,
+                        sizeof(_edit_wifi_config.ssid));
+                memcpy(_edit_wifi_config.bssid, network->bssid,
+                       sizeof(_edit_wifi_config.bssid));
+                _edit_wifi_config.channel = network->channel;
+                _edit_wifi_config.bssid_pinned = true;
+                _wifi_field = WifiField::Password;
+                _keyboard_visible = true;
+                _show_scan_results = false;
+                char notice[64];
+                snprintf(notice, sizeof(notice),
+                         "Selected AP BSSID %02X:%02X:%02X:%02X:%02X:%02X.",
+                         network->bssid[0], network->bssid[1], network->bssid[2],
+                         network->bssid[3], network->bssid[4], network->bssid[5]);
+                static char selected_ap_notice[64];
+                strlcpy(selected_ap_notice, notice, sizeof(selected_ap_notice));
+                _wifi_notice = selected_ap_notice;
+                Serial.println("net: scanned access point selected; SSID and credentials not logged");
+                draw_wifi_field(static_cast<uint8_t>(_wifi_field));
+                draw_keyboard();
+                return;
+            }
+        }
+        const uint8_t count = _fluidnc.scanned_network_count();
+        if (contains({ 18, 416, 128, 27 }, x, y) && _scan_page > 0) {
+            --_scan_page;
+            draw_wifi_scan_results();
+            return;
+        }
+        if (contains({ 152, 416, 128, 27 }, x, y)
+            && first + kVisibleNetworks < count) {
+            ++_scan_page;
+            draw_wifi_scan_results();
+            return;
+        }
+        if (contains({ 286, 416, 180, 27 }, x, y)) {
+            _show_scan_results = false;
+            _keyboard_visible = true;
+            _wifi_field = WifiField::Ssid;
+            _wifi_notice = nullptr;
+            redraw();
+            return;
+        }
+        return;
+    }
+
+    if (!_keyboard_visible) {
+        return;
+    }
+
+    if (contains({ 18, 416, 116, 27 }, x, y)) {
+        _keyboard_symbols = !_keyboard_symbols;
+        draw_keyboard(false);
+        return;
+    }
+    if (contains({ 140, 416, 100, 27 }, x, y)) {
+        _keyboard_shift = !_keyboard_shift;
+        draw_keyboard(false);
+        return;
+    }
+    if (contains({ 246, 416, 100, 27 }, x, y)) {
+        append_keyboard_character(' ');
+        return;
+    }
+    if (contains({ 352, 416, 100, 27 }, x, y)) {
+        erase_keyboard_character();
+        return;
+    }
+    if (contains({ 458, 416, 100, 27 }, x, y)) {
+        switch (_wifi_field) {
+            case WifiField::Ssid:
+                _edit_wifi_config.ssid[0] = '\0';
+                _edit_wifi_config.bssid_pinned = false;
+                memset(_edit_wifi_config.bssid, 0, sizeof(_edit_wifi_config.bssid));
+                _edit_wifi_config.channel = 0;
+                _wifi_notice = nullptr;
+                break;
+            case WifiField::Password: _edit_wifi_config.password[0] = '\0'; break;
+            case WifiField::Host: _edit_wifi_config.host[0] = '\0'; break;
+        }
+        draw_wifi_field(static_cast<uint8_t>(_wifi_field));
+        return;
+    }
+    if (contains({ 564, 416, 216, 27 }, x, y)) {
+        _keyboard_visible = false;
+        _display.fillRect(14, 254, 772, 189, kBackground);
+        draw_text_centered(_display, { 90, 320, 620, 42 },
+                           "Keyboard hidden - tap an SSID, password or host field.",
+                           FontId::Body16, kMuted, kBackground);
+        return;
+    }
+
+    const int16_t row_y[] = { 270, 308, 346, 384 };
+    static constexpr const char* alpha_rows[] = {
+        "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm.-_"
+    };
+    static constexpr const char* symbol_rows[] = {
+        "1234567890", "!@#$%^&*()", "-_=+[]{};:", ",.?/'\"\\|~"
+    };
+    for (uint8_t row = 0; row < 4; ++row) {
+        const Rect row_bounds { 18, row_y[row], 764, 34 };
+        if (!contains(row_bounds, x, y)) {
+            continue;
+        }
+        const char* keys = _keyboard_symbols ? symbol_rows[row] : alpha_rows[row];
+        const size_t count = strlen(keys);
+        const int16_t cell_width = 76;
+        const int16_t start_x = static_cast<int16_t>(
+            18 + ((10 - static_cast<int16_t>(count)) * cell_width) / 2);
+        const size_t column = static_cast<size_t>((x - start_x) / cell_width);
+        if (column >= count) {
+            return;
+        }
+        char character = keys[column];
+        if (!_keyboard_symbols && _keyboard_shift
+            && character >= 'a' && character <= 'z') {
+            character = static_cast<char>(character - 'a' + 'A');
+        }
+        append_keyboard_character(character);
+        return;
+    }
 }
 
 void PendantUi::set_feedback(Feedback feedback, const char* message) {
@@ -948,6 +1615,10 @@ void PendantUi::redraw() {
 
 void PendantUi::handle_touch(uint16_t x, uint16_t y) {
     if (_page == Page::Home) {
+        if (contains({ 212, 13, 144, 38 }, x, y)) {
+            set_live_mode(!_live_mode);
+            return;
+        }
         if (contains(kSettingsButton, x, y)) {
             _page = Page::Settings;
             _last_action = "Settings opened";
@@ -999,6 +1670,10 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
         }
 
         if (contains({ 30, 376, 260, 74 }, x, y)) {
+            if (_live_mode) {
+                Serial.println("safety: ignored jog touch in read-only LIVE mode");
+                return;
+            }
             _positions[_selected_axis] -= step_value(_selected_step);
             char message[64];
             snprintf(message, sizeof(message), "DEMO %s-  (local only)", axis_name(_selected_axis));
@@ -1010,11 +1685,19 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
             return;
         }
         if (contains({ 300, 376, 200, 74 }, x, y)) {
+            if (_live_mode) {
+                Serial.println("safety: STOP/CANCEL has no command in read-only LIVE mode");
+                return;
+            }
             set_feedback(Feedback::Stop, "DEMO STOP/CANCEL - no motion active");
             Serial.println("demo: STOP/CANCEL; no controller or motion active");
             return;
         }
         if (contains({ 510, 376, 260, 74 }, x, y)) {
+            if (_live_mode) {
+                Serial.println("safety: ignored jog touch in read-only LIVE mode");
+                return;
+            }
             _positions[_selected_axis] += step_value(_selected_step);
             char message[64];
             snprintf(message, sizeof(message), "DEMO %s+  (local only)", axis_name(_selected_axis));
@@ -1057,7 +1740,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
         }
 
         static constexpr TransportKind transports[kTransportCount] = {
-            TransportKind::WifiWebSocket,
+            TransportKind::WifiFluidNcTcp,
             TransportKind::WiredUart,
             TransportKind::BluetoothLe
         };
@@ -1071,15 +1754,31 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
                     }
                 }
                 _selected_transport = transports[i];
-                _last_action = "Transport selected; demo remains offline";
                 draw_transport_card(previous);
                 draw_transport_card(i);
                 draw_transport_status();
-                Serial.printf("demo: selected transport=%s; connection not started\n",
-                              transport_name(_selected_transport));
+                if (_selected_transport == TransportKind::WifiFluidNcTcp) {
+                    _edit_wifi_config = _fluidnc.config();
+                    _wifi_field = WifiField::Ssid;
+                    _keyboard_symbols = false;
+                    _keyboard_shift = false;
+                    _keyboard_visible = true;
+                    _page = Page::WifiSettings;
+                    Serial.println("net: Wi-Fi configuration opened; connect remains manual");
+                    redraw();
+                } else {
+                    _last_action = "Transport selection only; no connection started";
+                    Serial.printf("demo: selected transport=%s; connection not started\n",
+                                  transport_name(_selected_transport));
+                }
                 return;
             }
         }
+        return;
+    }
+
+    if (_page == Page::WifiSettings) {
+        handle_wifi_touch(x, y);
         return;
     }
 

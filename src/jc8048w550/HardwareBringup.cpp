@@ -89,7 +89,7 @@ void setup() {
     touch.setRotation(ROTATION_NORMAL);
     Serial.println("touch: configured SDA=19, SCL=20, RST=38, INT=NC, rotation=normal.");
     ui.begin();
-    Serial.println("Ready. Demo mode only; no CNC transport or motion commands.");
+    Serial.println("Ready. Demo mode by default; manual read-only status only; motion commands disabled.");
 }
 
 void loop() {

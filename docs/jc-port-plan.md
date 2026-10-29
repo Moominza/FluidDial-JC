@@ -678,6 +678,82 @@ hashes. Post-upload serial confirmed ESP32-S3 boot, PSRAM, 800x480 ST7262,
 GT911 ACK, and version-1 calibration loaded from NVS. The operator confirmed
 that the latest target transitions and result header look correct.
 
+## Phase 2B — read-only FluidNC status over Wi-Fi (implementation in progress)
+
+The pinned upstream Wi-Fi client is not a WebSocket client: its FluidNC
+connection is raw Telnet-style TCP on port 23. The JC target therefore labels
+the transport as Telnet TCP and does not compile the upstream shared
+`WiFiConnection.cpp`, whose general-purpose transmit path can send
+machine-changing commands and other control bytes.
+
+The JC-only `JcReadOnlyFluidNc` client uses a manual connect action, stores
+SSID/password/host in local Preferences NVS, performs DNS lookup away from the
+UI polling loop, and polls the TCP socket with bounded work. It accepts a
+bounded status frame only after validating a recognized machine state, exactly
+four finite MPos or WPos values, and the parser-required FS pair. The pinned
+GrblParser then supplies the four-axis status callbacks. The displayed
+coordinate reference is retained as MACHINE or WORK rather than converted
+implicitly. A stale connection retains its last valid live values but clearly
+marks them stale; LIVE mode never substitutes simulated positions.
+
+All socket output is guarded by `parser_putchar()`: only the single `?` status
+query is sent. Any other byte is blocked and counted. The source has no
+G-code, jog, stop, probe, reset, cycle-start, or hold send path. The JC source
+filter remains limited to `src/jc8048w550/*.cpp`; M5Dial/CYDDial source filters
+are unchanged. Their builds were rerun below as regression checks.
+
+The Wi-Fi page is reached only by selecting Wi-Fi in Connection Options.
+It provides a touch keyboard for SSID, masked password, and host/IP entry.
+Tapping any field explicitly opens and redraws the keyboard. An asynchronous
+Wi-Fi scan displays SSID, signal strength, channel, and BSSID for each access
+point; selecting a row pins that BSSID and channel in local Preferences, and
+the ESP32 connection/retry calls pass the selected BSSID to `WiFi.begin()`.
+Manual SSID editing clears the pin. NVS Save and network Connect are explicit
+actions, with no startup auto-connect. The dashboard can switch to LIVE only after a fresh valid
+four-axis report. Axis/increment selection remains local, while jog and
+STOP/CANCEL controls are visibly disabled and guarded in LIVE mode. Live
+positions update incrementally instead of redrawing the entire dashboard.
+
+Operator feedback found that the Wi-Fi page's keyboard was not appearing on
+field edit, and the long read-only warning text on the Connection Options
+screen overlapped. Field selection now forces a page redraw with the keyboard
+visible; connection warning copy is shortened and centered to fit. Hardware
+visual verification of these fixes and the new AP scan/BSSID selection is
+pending.
+
+Credentials are not logged or committed, but this prototype does not enable
+NVS encryption. The FluidNC status connection uses unencrypted TCP on the
+local network and has no authentication in this client; use only on a trusted
+LAN. No credentials have been entered, and no FluidNC connection or CNC
+command has been made during this implementation/build session.
+
+| Phase 2B verification item | Result |
+| --- | --- |
+| `pio run -e jc8048w550` | PASS after keyboard/scan/BSSID changes; 950,941 bytes app flash, 54,536 bytes RAM, 10.77 s. Compile output shows only `HardwareBringup.cpp`, `JcPendantUi.cpp`, and `JcReadOnlyFluidNc.cpp` from the application source. |
+| `pio run -e m5dial` | PASS sequentially; 1,262,241 bytes app flash, 71,616 bytes RAM, 16.99 s. |
+| `pio run -e cyddial` | PASS sequentially; 1,185,829 bytes app flash, 70,456 bytes RAM, 15.55 s. |
+| `git diff --check` | PASS after the final three builds. |
+| Socket transmit audit | PASS by source inspection: one direct `send()` call, guarded to exactly one `?`; the parser callback blocks and counts all other bytes. |
+| JC upload to COM3 | PASS for prior read-only firmware on 2026-10-29 after COM3 became available. Esptool identified ESP32-S3 revision v0.2; wrote bootloader, partitions, and application to COM3 and verified each flash hash. No other device was selected. |
+| Boot diagnostics after prior upload | PASS; final serial log shows ESP32-S3 revision 0, 16,777,216-byte flash, PSRAM initialized (8,386,279 bytes; free PSRAM 8,386,035 bytes), internal free heap 323,980 bytes, ST7262 800x480, GPIO2 backlight HIGH, GT911 0x5D ACK, and version-1 touch calibration loaded from NVS. Startup clearly reports DEMO by default, manual read-only status only, and motion commands disabled; auto-connect is disabled. |
+| Upload of scan/BSSID and keyboard/text fixes | PASS on COM3; esptool recognized the ESP32-S3 and verified bootloader, partition table, and application flash hashes. |
+| Boot of scan/BSSID and keyboard/text firmware | PASS; serial diagnostics show PSRAM/display/GT911 initialization and saved touch calibration load. No Wi-Fi credentials are configured; auto-connect remains disabled. Touch navigation to Setup was logged. |
+| Startup network configuration | PASS; reports `local configuration not configured; auto-connect disabled` with no missing-key error logs. No credentials were entered. |
+| Header SETUP/LINK controls | Operator photo showed the header controls missing. Root cause: a live link-state refresh redrew the full header after the controls had been drawn, covering them. The refresh now redraws SETUP and LINK after the header. JC build passed (946,869 bytes flash; 53,608 bytes RAM), upload to COM3 passed with verified hashes, and the final firmware booted with PSRAM/display/touch/calibration diagnostics. Awaiting operator visual confirmation that both buttons are visible and tappable. |
+| Touch keyboard visibility, access-point scan, BSSID pin/persistence, text fit, and operator visual check | Firmware is uploaded and booted; OPERATOR TEST PENDING. |
+| Live protocol / four-axis status / reconnect / stale behavior on physical FluidNC | NOT YET TESTED. |
+| Credential persistence, LIVE/Demo toggle, real DRO, and stability on updated firmware | NOT YET TESTED. No credentials were entered, and no FluidNC connection has occurred. |
+
+**Current classification: PARTIAL / implementation, builds, JC upload, and
+boot verified.** Before claiming Phase 2B acceptance, have the operator test
+that field taps reveal the keyboard, scan and select the intended BSSID, and
+confirm warning text fits. Then enter credentials locally and confirm the
+configured controller host is `192.168.0.134`. Verify four reported axes,
+coordinate reference, freshness, disconnect/reconnect, and read-only behavior
+without sending anything except `?`. Operator visual and stability evidence
+is also still required. No push, merge, or CNC-controller operation is
+authorized.
+
 ## Sources and references
 
 - User-supplied manufacturer documents: `JC8048W550 Specifications-EN .pdf`

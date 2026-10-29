@@ -8,6 +8,7 @@
 
 #include "JcTouchCalibration.hpp"
 #include "JcTransport.h"
+#include "JcReadOnlyFluidNc.hpp"
 
 namespace jc8048w550 {
 
@@ -29,7 +30,14 @@ private:
         Home,
         Settings,
         Connections,
+        WifiSettings,
         TouchCalibration,
+    };
+
+    enum class WifiField : uint8_t {
+        Ssid,
+        Password,
+        Host,
     };
 
     enum class CalibrationPhase : uint8_t {
@@ -58,7 +66,7 @@ private:
 
     Arduino_GFX& _display;
     Page _page = Page::Home;
-    TransportKind _selected_transport = TransportKind::WifiWebSocket;
+    TransportKind _selected_transport = TransportKind::WifiFluidNcTcp;
     uint8_t _selected_axis = 0;
     uint8_t _selected_step = 1;
     float _positions[kAxisCount] = { 125.450f, -42.100f, 18.250f, 90.000f };
@@ -68,6 +76,25 @@ private:
     uint16_t _last_driver_x = UINT16_MAX;
     uint16_t _last_driver_y = UINT16_MAX;
     uint32_t _last_touch_log_ms = 0;
+    JcReadOnlyFluidNc _fluidnc;
+    JcWifiConfig _edit_wifi_config {};
+    WifiField _wifi_field = WifiField::Ssid;
+    bool _live_mode = false;
+    bool _keyboard_visible = true;
+    bool _show_scan_results = false;
+    const char* _wifi_notice = nullptr;
+    bool _keyboard_symbols = false;
+    bool _keyboard_shift = false;
+    uint8_t _scan_page = 0;
+    uint8_t _last_displayed_scan_count = UINT8_MAX;
+    bool _last_displayed_scan_running = false;
+    uint32_t _last_displayed_status_sequence = 0;
+    uint32_t _last_displayed_link_state = UINT32_MAX;
+    uint32_t _last_wifi_refresh_ms = 0;
+    char _last_displayed_machine_state[20] {};
+    JcCoordinateReference _last_displayed_reference = JcCoordinateReference::Unknown;
+    float _last_displayed_live_axes[kAxisCount] {};
+    bool _has_displayed_live_axes = false;
     TouchMap _touch_map { 1, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
     CalibrationPhase _calibration_phase = CalibrationPhase::Ready;
     CalibrationPhase _calibration_previous_phase = CalibrationPhase::Ready;
@@ -98,11 +125,18 @@ private:
     void draw_home();
     void draw_settings();
     void draw_connections();
+    void draw_wifi_settings();
+    void draw_wifi_field(uint8_t index);
+    void draw_wifi_scan_results();
     void draw_touch_calibration();
     void draw_calibration_header();
     void draw_calibration_target();
     void draw_calibration_result();
     void draw_header(const char* title);
+    void draw_machine_status();
+    void draw_live_status_updates();
+    void draw_wifi_diagnostics();
+    void draw_keyboard(bool draw_panel = true);
     void draw_button(Rect bounds, const char* label, bool selected = false,
                      bool emphasized = false);
     void draw_axis_tile(uint8_t axis, Rect bounds);
@@ -116,6 +150,10 @@ private:
     void draw_jog_button(Feedback feedback);
     void draw_position(uint8_t axis);
     void handle_touch(uint16_t x, uint16_t y);
+    void handle_wifi_touch(uint16_t x, uint16_t y);
+    void append_keyboard_character(char character);
+    void erase_keyboard_character();
+    void set_live_mode(bool live);
     void begin_calibration();
     void begin_calibration_touch(uint8_t count, const TP_Point& point);
     void collect_calibration_sample(uint8_t count, const TP_Point& point);
