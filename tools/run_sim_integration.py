@@ -63,6 +63,12 @@ class Sim:
         time.sleep(0.2)
 
     def stop(self):
+        if os.name == "nt":
+            # A virtual-environment python.exe is a launcher that starts the real
+            # interpreter as a child; terminate() would leave that child (and its
+            # listening socket) behind. Kill the whole tree.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.p.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.p.terminate()
         try:
             out = self.p.communicate(timeout=3)[0]
@@ -233,6 +239,10 @@ def main():
                           ("reset", "18"), ("jog-cancel", "85"), ("unlock", "2458"), ("G-code", "4730")):
             check(tool.cmd("TX " + hx, reply=True) == "0", f"{label} bytes blocked")
         tool.close()
+
+        # Read-only capability queries (Instruction 005).
+        import sim_caps_tests
+        sim_caps_tests.run_all(exe, check, Sim, Tool, PORT)
 
     print("\nRESULT:", "FAIL (%d)" % len(failures) if failures else "PASS")
     return 1 if failures else 0

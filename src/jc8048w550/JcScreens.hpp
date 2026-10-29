@@ -247,6 +247,42 @@ private:
     void draw_toggle();
 };
 
+class JcCapsScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::Capabilities; }
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+
+private:
+    void draw_values();
+    uint32_t _last_tick = 0;
+    uint32_t _drawn_key = 0;  // redraw the value area only when the loader state changes
+};
+
+class JcDryRunScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::DryRun; }
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+
+private:
+    static constexpr uint8_t kActions = 8;
+    void draw_actions();
+    void draw_report();
+    void build_report(uint8_t action);
+    uint8_t _selected = 0;
+    JcDryRunReport _report;
+};
+
 class JcDiagnosticsScreen : public JcScreen {
 public:
     JcDiagnosticsScreen(JcAppServices& services, JcUartLink& uart) : JcScreen(services), _uart(uart) {}

@@ -13,6 +13,7 @@
 
 #include "JcCommandAuth.hpp"
 #include "JcCommandBuilder.hpp"
+#include "JcCommandExec.hpp"
 
 namespace jc8048w550 {
 
@@ -22,6 +23,7 @@ struct JcDispatchContext {
     const char* machine_state = "";
     bool        operator_confirmed = false;
     uint32_t    now_ms = 0;
+    uint8_t     limits_mask = 0;  // bit i set: axis i limits confirmed by the controller
 };
 
 struct JcDispatchRecord {
@@ -38,11 +40,9 @@ public:
 
     explicit JcDispatcher(JcCommandSink sink = nullptr) : _gate(sink) {}
 
-    JcAuthDecision submit(const JcCommand& command, const JcDispatchContext& ctx) {
-        if (!command.ok) {
-            record(command, JcAuthDecision::BlockedBadState, false, ctx.now_ms);
-            return JcAuthDecision::BlockedBadState;
-        }
+    // The one place a decision context is built, shared by submit() and the
+    // side-effect-free evaluate() used by the dry-run page.
+    JcAuthContext make_auth(const JcCommand& command, const JcDispatchContext& ctx) const {
         JcAuthContext auth;
         auth.armed = _armed;
         auth.live = ctx.live;
@@ -50,7 +50,28 @@ public:
         auth.operator_confirmed = ctx.operator_confirmed;
         auth.now_ms = ctx.now_ms;
         auth.command_issued_ms = ctx.now_ms;
+        const bool moves_axis = (command.cls == JcCommandClass::Jog || command.cls == JcCommandClass::Probe)
+                                && command.axis != 0xFF;
+        auth.limits_required = moves_axis;
+        auth.limits_confirmed = moves_axis && command.axis < 4 && ((ctx.limits_mask >> command.axis) & 1u) != 0;
         strncpy(auth.machine_state, ctx.machine_state ? ctx.machine_state : "", sizeof(auth.machine_state) - 1);
+        return auth;
+    }
+
+    // Decision only: no record, no counter, no sink. Same rules as submit().
+    JcAuthDecision evaluate(const JcCommand& command, const JcDispatchContext& ctx) const {
+        if (!command.ok) {
+            return JcAuthDecision::BlockedBadState;
+        }
+        return jc_authorize(command.cls, make_auth(command, ctx));
+    }
+
+    JcAuthDecision submit(const JcCommand& command, const JcDispatchContext& ctx) {
+        if (!command.ok) {
+            record(command, JcAuthDecision::BlockedBadState, false, ctx.now_ms);
+            return JcAuthDecision::BlockedBadState;
+        }
+        const JcAuthContext auth = make_auth(command, ctx);
         const JcAuthDecision decision = _gate.submit(command.cls, command.text, auth);
         record(command, decision, true, ctx.now_ms);
         return decision;
@@ -58,20 +79,62 @@ public:
 
     // Submits steps in order and stops at the first one that is not allowed.
     // Returns that decision (or Allowed if every step was authorized).
+    //
+    // With a transmit sink installed a step is only followed by the next one
+    // after the controller acknowledged it: the first transmitted step is sent,
+    // the remaining steps are held, and advance_sequence() releases each next
+    // step with a freshly built context (so a stale link, an alarm or a lost
+    // connection between steps stops the sequence). Held steps are dropped on
+    // any failed outcome and on link loss; they are never replayed.
     JcAuthDecision submit_sequence(const JcCommandSequence& seq, const JcDispatchContext& ctx) {
+        _pending_count = 0;
         if (!seq.ok || seq.count == 0) {
             JcCommand bad;
             record(bad, JcAuthDecision::BlockedBadState, false, ctx.now_ms);
             return JcAuthDecision::BlockedBadState;
         }
         for (uint8_t i = 0; i < seq.count; ++i) {
+            const uint32_t sent_before = _gate.sent();
             const JcAuthDecision d = submit(seq.steps[i], ctx);
             if (d != JcAuthDecision::Allowed) {
                 return d;
             }
+            if (_gate.sent() != sent_before && i + 1 < seq.count) {
+                for (uint8_t k = i + 1; k < seq.count; ++k) {
+                    _pending[k - i - 1] = seq.steps[k];
+                }
+                _pending_count = static_cast<uint8_t>(seq.count - i - 1);
+                _pending_next = 0;
+                return JcAuthDecision::Allowed;
+            }
         }
         return JcAuthDecision::Allowed;
     }
+
+    bool sequence_active() const { return _pending_next < _pending_count; }
+    uint8_t sequence_steps_left() const { return static_cast<uint8_t>(_pending_count - _pending_next); }
+    void abort_sequence() { _pending_count = 0; _pending_next = 0; }
+
+    // Called with the outcome of the step just sent. Anything but an
+    // acknowledgement abandons the rest of the sequence.
+    JcAuthDecision advance_sequence(JcExecOutcome last, const JcDispatchContext& ctx) {
+        if (!sequence_active()) {
+            return JcAuthDecision::BlockedBadState;
+        }
+        if (last != JcExecOutcome::Acked && last != JcExecOutcome::SentNoAck) {
+            abort_sequence();
+            return JcAuthDecision::BlockedBadState;
+        }
+        const JcCommand step = _pending[_pending_next++];
+        const JcAuthDecision d = submit(step, ctx);
+        if (d != JcAuthDecision::Allowed || _gate.last() != JcAuthDecision::Allowed) {
+            abort_sequence();
+        }
+        return d;
+    }
+
+    // Test-only transmit hook; the firmware never calls this.
+    void set_sink_ex(JcCommandSinkEx sink, void* user) { _gate.set_sink_ex(sink, user); }
 
     // Explicit operator arming. Nothing in the shipping UI calls arm().
     void arm() { _armed = true; }
@@ -79,7 +142,10 @@ public:
     bool armed() const { return _armed; }
 
     // Any loss of the link drops arming; reconnecting never restores it.
-    void on_link_lost() { _armed = false; }
+    void on_link_lost() {
+        _armed = false;
+        abort_sequence();
+    }
 
     uint32_t blocked() const { return _gate.blocked(); }
     uint32_t sent() const { return _gate.sent(); }
@@ -117,6 +183,9 @@ private:
     }
 
     JcCommandGate    _gate;
+    JcCommand        _pending[kJcMaxSequenceSteps];
+    uint8_t          _pending_count = 0;
+    uint8_t          _pending_next = 0;
     bool             _armed = false;
     JcDispatchRecord _history[kHistory] {};
     uint8_t          _next = 0;

@@ -9,6 +9,8 @@
 #include <freertos/task.h>
 
 #include "JcFrameAssembler.hpp"
+#include "JcQuery.hpp"
+#include "JcStreamSplitter.hpp"
 #include "JcLinkTypes.hpp"
 #include "JcStatusFrame.hpp"
 
@@ -35,7 +37,22 @@ constexpr uint8_t kJcMaxScannedNetworks = 20;
 
 class JcReadOnlyFluidNc {
 public:
+    using LineListener = void (*)(void* user, const char* line);
+
     JcReadOnlyFluidNc();
+
+    // Text lines that are not status frames (replies such as "ok", "error:3",
+    // "$/axes/x/steps_per_mm=80.000") are passed to the listener.
+    void set_line_listener(LineListener listener, void* user) {
+        _line_listener = listener;
+        _line_user = user;
+    }
+    // Sends ONE allowlisted read-only query (see JcQuery.hpp). Anything that is
+    // not on the allowlist is refused and counted, never transmitted.
+    bool send_query_line(const char* line);
+    bool tcp_connected() const { return _socket >= 0; }
+    uint32_t rejected_query_lines() const { return _rejected_queries; }
+    uint32_t queries_sent() const { return _queries_sent; }
 
     void begin();
     void poll();
@@ -96,7 +113,11 @@ private:
     JcFluidState _state = JcFluidState::Disconnected;
     char _last_error[64] {};
     char _resolved_address[16] {};
-    JcFrameAssembler _assembler;
+    JcStreamSplitter _assembler;
+    LineListener _line_listener = nullptr;
+    void* _line_user = nullptr;
+    uint32_t _rejected_queries = 0;
+    uint32_t _queries_sent = 0;
     JcStatusFrame _pending_frame {};
     int _socket = -1;
     int _connecting_socket = -1;

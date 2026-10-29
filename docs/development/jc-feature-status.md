@@ -7,8 +7,10 @@ flashed and booted on the JC (boot log checked) but not operator-confirmed.
 blocks every transmission. A successful compile is never counted as hardware
 verification. Instruction 004 checkpoint.
 
-Machine control is disabled (`JC_MACHINE_CONTROL_ENABLED=0`). The only byte
-this firmware sends to a controller is the `?` status query.
+Machine control is disabled (`JC_MACHINE_CONTROL_ENABLED=0`). This firmware
+sends a controller only the `?` status query and, when the operator taps READ
+FROM CONTROLLER, a closed set of read-only configuration queries (Instruction
+005). It sends no jog, home, probe, offset, job, macro or unlock command.
 
 | Area | Status | Evidence / blocker |
 | --- | --- | --- |
@@ -32,7 +34,11 @@ this firmware sends to a controller is the `?` status query.
 | Command builders (jog, continuous, home, WCS, zero/set, probe, edge probe, file, macro) | Host-tested | Not transmitted |
 | Dispatcher / authorization gate | Host-tested | Blocks every class in the shipping build; no replay; disarm on link loss |
 | Simulator integration | Host-integrated | Real TCP to the simulator + real JC C++ logic. The ESP32 Wi-Fi/lwIP firmware itself has NOT been run against it |
-| Machine capability discovery (`$/axes/*`) | Not started | Needs query commands |
+| Controller capability read (`$I`, `$G`, `$/axes/*`, `$/probe/*`), Controller Capabilities page | Host-tested + Host-integrated; page Uploaded (see 005 section) | Read-only, operator-triggered, allowlisted; never run on the real controller until the operator taps READ |
+| Reply handling: `ok` / `error:N` / `ALARM:N`, timeouts, connection loss, no resend | Host-tested + Host-integrated | `JcCommandExec`; real-controller reply formats unverified |
+| Limits replaced by controller values only when confirmed; unconfirmed jog/probe blocked when control is enabled | Host-tested | Placeholders remain until a read completes; discarded on link loss |
+| Dispatcher: sequences step only after acknowledgement | Host-tested (fake transport) | No sink exists in the firmware |
+| Dry-run page | Uploaded | Evaluates only; records/sends nothing |
 | Physical CNC command transmission | Disabled by design | Needs a separate safety review and owner approval |
 
 ## Instruction 003B physical acceptance log

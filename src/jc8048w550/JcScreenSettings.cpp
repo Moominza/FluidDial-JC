@@ -229,6 +229,7 @@ void JcJogSettingsScreen::on_touch(uint16_t x, uint16_t y) {
 
 namespace {
 constexpr ui::Rect kAHoming { 16, 300, 360, 56 };
+constexpr ui::Rect kCapsButton { 400, 300, 384, 56 };
 }  // namespace
 
 void JcMachineScreen::draw_toggle() {
@@ -244,6 +245,7 @@ void JcMachineScreen::on_draw() {
     ui::text(sv.display, 330, 80, "MAX FEED", FontId::Body16, ui::kMuted, ui::kBg);
     ui::text(sv.display, 480, 80, "HOME", FontId::Body16, ui::kMuted, ui::kBg);
     ui::text(sv.display, 580, 80, "PROBE", FontId::Body16, ui::kMuted, ui::kBg);
+    ui::text(sv.display, 672, 80, "LIMITS", FontId::Body16, ui::kMuted, ui::kBg);
     for (uint8_t i = 0; i < 4; ++i) {
         const JcAxisProfile& a = sv.profile.axes[i];
         const int16_t y = 104 + i * 40;
@@ -256,14 +258,19 @@ void JcMachineScreen::on_draw() {
         ui::text(sv.display, 330, y, feed, FontId::Body16, WHITE, ui::kBg);
         ui::text(sv.display, 480, y, a.homing_allowed ? "yes" : "no", FontId::Body16, a.homing_allowed ? ui::kGood : ui::kMuted, ui::kBg);
         ui::text(sv.display, 580, y, a.probe_allowed ? "yes" : "no", FontId::Body16, a.probe_allowed ? ui::kGood : ui::kMuted, ui::kBg);
+        ui::text(sv.display, 672, y, a.limits_confirmed ? "controller" : "default", FontId::Body16,
+                 a.limits_confirmed ? ui::kGood : ui::kWarn, ui::kBg);
     }
-    ui::wrap(sv.display, { 16, 268, 768, 28 }, "Limits below are conservative defaults used for command validation.",
-             FontId::Body16, ui::kWarn, ui::kBg);
+    const bool all = jc_profile_limits_mask(sv.profile) == 0x0F;
+    ui::wrap(sv.display, { 16, 268, 768, 28 },
+             all ? "All limits were read from the controller." : "Axes marked default use conservative placeholder limits.",
+             FontId::Body16, all ? ui::kGood : ui::kWarn, ui::kBg);
     draw_toggle();
+    ui::button(sv.display, kCapsButton, "CONTROLLER CAPABILITIES");
     ui::wrap(sv.display, { 16, 372, 768, 96 },
-             "Controller capabilities and axis travel are NOT read from FluidNC (that needs $/axes queries, which "
-             "this build does not send). Machine information is limited to the live status fields: state, "
-             "positions, feed, spindle, probe pin, job progress. Verify all limits against your machine.",
+             "Capabilities are read from FluidNC with read-only queries when you ask (CONTROLLER CAPABILITIES). "
+             "Placeholders are replaced only by values the controller confirmed, and are dropped again if the "
+             "connection is lost. Whether A is rotary cannot be read: it is declared here and measured in degrees.",
              FontId::Body16, ui::kMuted, ui::kBg);
 }
 
@@ -272,6 +279,8 @@ void JcMachineScreen::on_touch(uint16_t x, uint16_t y) {
         sv.settings.a_axis_has_homing = !sv.settings.a_axis_has_homing;
         sv.host.save_settings();  // also rebuilds the machine profile
         draw();
+    } else if (ui::hit(kCapsButton, x, y)) {
+        sv.host.go(JcPage::Capabilities);
     }
 }
 

@@ -16,7 +16,9 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 
+#include "JcCapsLoader.hpp"
 #include "JcCommandBuilder.hpp"
+#include "JcDryRun.hpp"
 #include "JcDispatch.hpp"
 #include "JcMachineModel.hpp"
 #include "JcNav.hpp"
@@ -52,6 +54,10 @@ public:
     virtual void save_settings() = 0;       // persist + refresh derived state
     virtual void apply_brightness() = 0;
     virtual void leave(JcLeaveTarget target) = 0;
+    // Starts the read-only capability read. Returns nullptr when it started, or
+    // the reason it cannot start. Transmits only allowlisted queries.
+    virtual const char* start_caps_read() = 0;
+    virtual void cancel_caps_read() = 0;
 };
 
 struct JcAppServices {
@@ -61,6 +67,7 @@ struct JcAppServices {
     JcUserSettings&    settings;
     JcMachineProfile&  profile;
     JcDispatcher&      dispatcher;
+    JcCapsLoader&      loader;
     const bool&        live_mode;
     JcAppHost&         host;
 
@@ -73,6 +80,7 @@ struct JcAppServices {
         c.machine_state = model.state();
         c.operator_confirmed = confirmed;
         c.now_ms = millis();
+        c.limits_mask = jc_profile_limits_mask(profile);
         return c;
     }
 };

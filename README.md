@@ -8,8 +8,10 @@ target is experimental and separate from the existing M5Dial and CYD targets.
 Its current firmware provides a four-axis (X/Y/Z linear, A rotary) dashboard
 with a local DEMO mode and an experimental **read-only** Wi-Fi status monitor
 for FluidNC. **Machine control is disabled in this build**: no jog, home,
-probe, offset, job or macro command is transmitted. The only byte sent to the
-controller is the `?` status query. See the
+probe, offset, job or macro command is transmitted. The only things sent to the
+controller are the `?` status query and, when the operator asks for them on the
+Controller Capabilities page, a closed set of read-only configuration queries
+(`$I`, `$G`, `$/axes/<x|y|z|a>/<item>`, `$/probe/...`). See the
 [feature status matrix](docs/development/jc-feature-status.md), the
 [command safety design](docs/development/jc-command-safety.md) and the
 [JC port plan](docs/jc-port-plan.md) for hardware, build, validation

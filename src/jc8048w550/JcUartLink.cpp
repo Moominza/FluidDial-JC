@@ -50,6 +50,22 @@ void JcUartLink::send_status_query() {
     Serial1.write(&byte, 1);
 }
 
+bool JcUartLink::send_query_line(const char* line) {
+    if (!jc_query_allowed(line)) {
+        ++_rejected_queries;
+        ++_blocked;
+        Serial.println("SAFETY: blocked a line that is not an allowlisted read-only query");
+        return false;
+    }
+    if (!_running) {
+        return false;
+    }
+    Serial1.print(line);
+    Serial1.print('\n');
+    ++_queries_sent;
+    return true;
+}
+
 void JcUartLink::accept_frame(const char* frame, uint16_t length) {
     JcStatusFrame parsed {};
     const uint32_t now = millis();
@@ -94,9 +110,13 @@ void JcUartLink::poll() {
             break;
         }
         switch (_assembler.push(static_cast<uint8_t>(byte))) {
-            case JcFrameAssembler::Result::None: break;
-            case JcFrameAssembler::Result::Invalid: _tracker.on_invalid(); break;
-            case JcFrameAssembler::Result::Frame: accept_frame(_assembler.frame(), _assembler.length()); break;
+            case JcStreamSplitter::Event::None: break;
+            case JcStreamSplitter::Event::InvalidFrame: _tracker.on_invalid(); break;
+            case JcStreamSplitter::Event::Frame: accept_frame(_assembler.frame(), _assembler.frame_length()); break;
+            case JcStreamSplitter::Event::Line:
+                if (_line_listener != nullptr) _line_listener(_line_user, _assembler.line());
+                break;
+            case JcStreamSplitter::Event::LineOverflow: _tracker.on_invalid(); break;
         }
     }
 }

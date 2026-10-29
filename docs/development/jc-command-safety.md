@@ -9,7 +9,7 @@ Status: **experimental**. Machine control is disabled in the shipping firmware.
 | Status parsing | `src/jc8048w550/JcStatusFrame.hpp` | Pure parser used by firmware and host tests. Accepts only a known state, exactly four finite MPos/WPos values and an FS pair. Also extracts WCO, feed, spindle and `Pn` pins. `jc_convert_position()` refuses to convert between machine and work coordinates when no WCO is known. |
 | Command generation | `src/jc8048w550/JcCommandBuilder.hpp` | Pure formatting and validation of jog, cancel, hold/resume, reset, unlock, home, WCS select, axis zero/set, probe move and Z probe sequence, SD file run, macro run and spindle stop. Formats mirror the pinned upstream FluidDial scenes. Nothing is transmitted. |
 | Authorization | `src/jc8048w550/JcCommandAuth.hpp` | `JcCommandGate` is the single submission point for every machine-changing command. |
-| Transport | `JcReadOnlyFluidNc` | Only `?` can leave the device (`parser_putchar()` blocks and counts everything else). The gate has no transmit sink. |
+| Transport | `JcReadOnlyFluidNc`, `JcUartLink` | Only `?` and one allowlisted read-only query line (`send_query_line()`, checked by `jc_query_allowed()` in `JcQuery.hpp`) can leave the device; everything else is blocked and counted. The gate has no transmit sink. |
 
 ## Policy
 
@@ -56,6 +56,63 @@ Status: **experimental**. Machine control is disabled in the shipping firmware.
   every class regardless.
 * Link freshness is one shared rule (`jc_status_fresh`) and the only
   permitted outgoing byte is `?` (`jc_tx_byte_allowed`), used by the Wi-Fi
-  link, the UART link and the host tests.
+  link, the UART link and the host tests. (Instruction 005 adds one further,
+  separately checked path: allowlisted read-only query lines; see below.)
 * The software cancel / STOP controls are not emergency stops and are
   labelled as such on the jogging page and in the job-cancel dialog.
+
+## Instruction 005 additions (machine-control preparation; motion still disabled)
+
+* **Read-only queries.** `JcQuery.hpp` defines the only text besides `?` that may
+  be transmitted: `$I`, `$G`, `$/probe/pin`, `$/probe/toolsetter_pin` and
+  `$/axes/<x|y|z|a>/<steps_per_mm|max_travel_mm|max_rate_mm_per_min|
+  acceleration_mm_per_sec2|homing/cycle|homing/positive_direction>`. A line with
+  `=` (an assignment), a space, a control character or any other text fails
+  `jc_query_allowed()`. Queries are sent one at a time, only after the operator
+  taps READ FROM CONTROLLER, only in LIVE mode with fresh status in the Idle or
+  Alarm state, and are never repeated automatically. Nothing is written to the
+  controller and its configuration is not modified.
+* **Replies and timeouts.** `JcResponse.hpp` classifies controller lines (`ok`,
+  `error:N`, `ALARM:N`, `[MSG:]`, `[GC:]`, `[VER:]`, `$path=value`).
+  `JcStreamSplitter.hpp` separates them from status frames. `JcCommandExec.hpp`
+  allows one request in flight, completes it on `ok` / `error:N` / `ALARM:N`,
+  times it out (2.5 s for queries; per-class values for commands: jog 2 s, home
+  120 s, probe 60 s), and reports a lost connection. A request is never resent.
+  After a timeout or abandonment a 1 s quiet period applies, so a late `ok` is
+  counted as unsolicited and never mistaken for the next request's reply.
+* **Controller values replace placeholders only when confirmed.**
+  `JcCapsLoader.hpp` / `JcMachineCaps.hpp` validate each value (finite, within
+  plausibility ranges, never clamped). An axis's limits become "confirmed" only
+  when steps/mm, travel, maximum rate and acceleration were all read and valid;
+  then `jc_profile_apply_caps()` sets that axis's maximum step (= travel) and
+  feed. Homing permission follows `homing/cycle` (cycle 0 = not homed); for A the
+  operator's "has a home switch" declaration can only restrict it. The values are
+  RAM-only and are discarded when the connection is lost or the mode leaves LIVE.
+* **Authorization.** `JcAuthDecision::BlockedLimitsUnconfirmed`: when machine
+  control is compiled in, a jog or probe move on an axis whose limits are still
+  placeholders is refused. Stop / hold / recovery commands are never gated on it.
+* **Dispatcher.** With a transmit sink installed (host tests only) a sequence is
+  sent one step at a time: the next step is released by `advance_sequence()` only
+  after an acknowledgement, re-authorized with a fresh context; any error, alarm,
+  timeout or link loss drops the remaining steps. `tools/check_no_sink.py` fails
+  the checks if firmware code installs a sink, enables machine control, or adds a
+  raw transmit site outside the two read-only links.
+* **Dry run.** The Dry Run page (Settings > Machine > Controller Capabilities >
+  Dry Run) shows the generated command, the real gate's decision, the expected
+  reply and the timeout / error / link-loss handling. It calls
+  `JcDispatcher::evaluate()`, which records, counts and transmits nothing.
+
+### Outstanding safety requirements before any motion is enabled
+
+* A separate safety review and explicit owner approval (unchanged).
+* Real-controller verification of the reply formats the parser assumes (`$I`,
+  `$G`, `$/axes/...` echoes, error numbers); the simulator uses the same
+  assumptions, so agreement between them proves nothing about FluidNC.
+* A controller-side soft-limit / hard-limit check: FluidNC's `max_travel_mm` is
+  read, but whether soft limits are enabled is not, and the jog step limit equals
+  the full travel.
+* Rotary-axis semantics (degrees, wrap-around, feed units on the A axis) cannot
+  be read from FluidNC and remain operator-declared.
+* Sequence execution and probe-result handling (`[PRB:...]`) are specified and
+  host-tested but have never run against a controller.
+* An independent stop path (physical e-stop) remains the only emergency stop.

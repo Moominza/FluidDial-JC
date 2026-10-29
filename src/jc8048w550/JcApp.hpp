@@ -26,6 +26,7 @@ public:
     void tick();
     void feed_status(const JcLiveMachineStatus& status) { _model.on_status(status); }
     void note_link_fresh(bool fresh);  // drops arming on every loss of fresh data
+    void service();                    // capability-read pump; call every main-loop pass
 
     JcMachineModel& model() { return _model; }
     JcUserSettings& settings() { return _settings; }
@@ -39,14 +40,25 @@ public:
     void save_settings() override;
     void apply_brightness() override;
     void leave(JcLeaveTarget target) override;
+    const char* start_caps_read() override;
+    void cancel_caps_read() override;
 
 private:
     JcScreen* screen_for(JcPage page);
+    bool send_query(const char* line);
+    void refresh_profile();
+    void on_caps_finished();
+    void on_controller_line(const char* line);
+    static void line_thunk(void* user, const char* line) { static_cast<JcApp*>(user)->on_controller_line(line); }
+    bool uart_active() const;
 
+    JcReadOnlyFluidNc& _link;
+    JcUartLink& _uart;
     JcUserSettings _settings;
     JcMachineProfile _profile;
     JcMachineModel _model;
-    JcDispatcher _dispatcher;
+    JcDispatcher _dispatcher;   // no transmit sink is ever installed in this firmware
+    JcCapsLoader _loader;
     JcNav _nav;
     JcAppServices _sv;
     JcMenuScreen _menu;
@@ -62,6 +74,8 @@ private:
     JcDisplaySettingsScreen _display_settings;
     JcJogSettingsScreen _jog_settings;
     JcMachineScreen _machine;
+    JcCapsScreen _caps_screen;
+    JcDryRunScreen _dry_run;
     JcDiagnosticsScreen _diagnostics;
     JcInputScreen _input;
     LeaveFn _leave_fn = nullptr;

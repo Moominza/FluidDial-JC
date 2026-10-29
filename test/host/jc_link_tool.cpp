@@ -13,15 +13,24 @@
 //   RETRY             ask whether a reconnect attempt is due now (prints 0/1)
 //   TX <hex>          report whether each outgoing byte would be permitted
 //   Q                 print a one-line state summary
+//   LOAD              operator starts a read-only capability read (prints started/refused)
+//   NEXT              print the next allowlisted query line to send, or '-'
+//   SENT              the line printed by NEXT was transmitted
+//   TICK              service timeouts at the current clock
+//   LOST              connection lost (also closes the link tracker)
+//   LSUM              print a one-line summary of the capability read
+//   QOK <line>        print 1 if the line would be accepted by the query allowlist
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../src/jc8048w550/JcCapsLoader.hpp"
 #include "../../src/jc8048w550/JcFrameAssembler.hpp"
 #include "../../src/jc8048w550/JcLinkTracker.hpp"
 #include "../../src/jc8048w550/JcMachineModel.hpp"
 #include "../../src/jc8048w550/JcStatusFrame.hpp"
+#include "../../src/jc8048w550/JcStreamSplitter.hpp"
 
 using namespace jc8048w550;
 
@@ -38,7 +47,9 @@ static const char* state_name(JcFluidState s) {
 }
 
 int main() {
-    JcFrameAssembler assembler;
+    JcStreamSplitter assembler;
+    JcCapsLoader loader;
+    uint32_t lines_seen = 0;
     JcLinkTracker tracker;
     JcMachineModel model;
     uint32_t now = 0, sequence = 0;
@@ -53,6 +64,7 @@ int main() {
         } else if (strncmp(line, "CLOSE", 5) == 0) {
             assembler.reset();
             tracker.on_closed(now);
+            loader.on_link_lost(now);
         } else if (strncmp(line, "RETRY", 5) == 0) {
             printf("%d\n", tracker.should_retry(now) ? 1 : 0);
         } else if (strncmp(line, "TX", 2) == 0) {
@@ -62,15 +74,62 @@ int main() {
                 if (!jc_tx_byte_allowed(static_cast<uint8_t>(strtoul(hex, nullptr, 16)))) ok = 0;
             }
             printf("%d\n", ok);
+        } else if (strncmp(line, "LOAD", 4) == 0) {
+            const char* blocker = jc_caps_read_blocker(true, tracker.fresh(now), model.state(), loader.running());
+            const bool started = loader.start(now, blocker);
+            printf("%s%s\n", started ? "started" : "refused: ", started ? "" : blocker);
+        } else if (strncmp(line, "NEXT", 4) == 0) {
+            const char* q = loader.pending_line(now);
+            printf("%s\n", q != nullptr ? q : "-");
+        } else if (strncmp(line, "SENT", 4) == 0) {
+            loader.mark_sent(now);
+        } else if (strncmp(line, "TICK", 4) == 0) {
+            loader.tick(now);
+        } else if (strncmp(line, "LOST", 4) == 0) {
+            assembler.reset();
+            tracker.on_closed(now);
+            loader.on_link_lost(now);
+        } else if (strncmp(line, "QOK ", 4) == 0) {
+            char text[160];
+            snprintf(text, sizeof(text), "%s", line + 4);
+            text[strcspn(text, "\r\n")] = '\0';
+            printf("%d\n", jc_query_allowed(text) ? 1 : 0);
+        } else if (strncmp(line, "LSUM", 4) == 0) {
+            static const char* const names[] = { "Idle", "Running", "Complete", "Failed" };
+            const JcMachineCaps& c = loader.caps();
+            char fail_token[64];
+            snprintf(fail_token, sizeof(fail_token), "%s", jc_load_failure_name(loader.failure()));
+            for (char* t = fail_token; *t; ++t) {
+                if (*t == ' ') *t = '_';
+            }
+            printf("lstate=%s lfail=%s step=%u ok=%u err=%u mask=%u wcs=%s tool=%d lines=%u timeouts=%u losses=%u",
+                   names[static_cast<int>(loader.state())], fail_token,
+                   static_cast<unsigned>(loader.step()), static_cast<unsigned>(c.queries_ok),
+                   static_cast<unsigned>(c.queries_error), static_cast<unsigned>(c.confirmed_axis_mask()),
+                   c.wcs[0] ? c.wcs : "-", c.tool, lines_seen, loader.exec().timeouts(), loader.exec().losses());
+            for (uint8_t a = 0; a < 4; ++a) {
+                printf(" ax%u=", static_cast<unsigned>(a));
+                for (uint8_t f = 0; f < kJcQueryFieldCount; ++f) {
+                    if (f) printf(",");
+                    if (c.axes[a].state[f] == JcFieldState::Valid) printf("%g", static_cast<double>(c.axes[a].value[f]));
+                    else printf("%s", c.axes[a].state[f] == JcFieldState::CtrlError ? "E" : "-");
+                }
+            }
+            printf(" probe=%s\n", c.probe_pin[0] ? c.probe_pin : "-");
         } else if (strncmp(line, "DATA", 4) == 0) {
             for (const char* p = line + 5; p[0] && p[1] && p[0] != '\n'; p += 2) {
                 char hex[3] = { p[0], p[1], 0 };
                 switch (assembler.push(static_cast<uint8_t>(strtoul(hex, nullptr, 16)))) {
-                    case JcFrameAssembler::Result::None: break;
-                    case JcFrameAssembler::Result::Invalid: tracker.on_invalid(); break;
-                    case JcFrameAssembler::Result::Frame: {
+                    case JcStreamSplitter::Event::None: break;
+                    case JcStreamSplitter::Event::Line:
+                        ++lines_seen;
+                        loader.on_line(assembler.line(), now);
+                        break;
+                    case JcStreamSplitter::Event::LineOverflow: tracker.on_invalid(); break;
+                    case JcStreamSplitter::Event::InvalidFrame: tracker.on_invalid(); break;
+                    case JcStreamSplitter::Event::Frame: {
                         JcStatusFrame f {};
-                        if (!jc_parse_status_frame(assembler.frame(), assembler.length(), f)) {
+                        if (!jc_parse_status_frame(assembler.frame(), assembler.frame_length(), f)) {
                             tracker.on_invalid();
                             break;
                         }

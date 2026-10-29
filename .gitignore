@@ -7,3 +7,4 @@ junk
 release
 .DS_Store
 platformio.local.ini
+__pycache__/

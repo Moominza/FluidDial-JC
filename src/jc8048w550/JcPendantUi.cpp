@@ -110,6 +110,7 @@ void PendantUi::update_model() {
         }
     }
     _app.note_link_fresh(live_fresh());
+    _app.service();
 }
 
 void PendantUi::app_leave_thunk(void* user, JcLeaveTarget target) {

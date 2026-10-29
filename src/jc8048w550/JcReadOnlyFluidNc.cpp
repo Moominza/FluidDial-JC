@@ -827,15 +827,50 @@ bool JcReadOnlyFluidNc::queue_status_frame(const char* frame, uint16_t length) {
 
 void JcReadOnlyFluidNc::consume_tcp_byte(uint8_t byte) {
     switch (_assembler.push(byte)) {
-        case JcFrameAssembler::Result::None:
+        case JcStreamSplitter::Event::None:
             break;
-        case JcFrameAssembler::Result::Invalid:
+        case JcStreamSplitter::Event::InvalidFrame:
             record_invalid_frame(_assembler.reason());
             break;
-        case JcFrameAssembler::Result::Frame:
-            _frame_invalid = !queue_status_frame(_assembler.frame(), _assembler.length());
+        case JcStreamSplitter::Event::Frame:
+            _frame_invalid = !queue_status_frame(_assembler.frame(), _assembler.frame_length());
+            break;
+        case JcStreamSplitter::Event::Line:
+            if (_line_listener != nullptr) {
+                _line_listener(_line_user, _assembler.line());
+            }
+            break;
+        case JcStreamSplitter::Event::LineOverflow:
+            record_invalid_frame("Over-long response line discarded");
             break;
     }
+}
+
+bool JcReadOnlyFluidNc::send_query_line(const char* line) {
+    if (!jc_query_allowed(line)) {
+        ++_rejected_queries;
+        ++_blocked_transmissions;
+        Serial.println("SAFETY: blocked a line that is not an allowlisted read-only query");
+        return false;
+    }
+    if (_socket < 0) {
+        return false;
+    }
+    char buffer[80];
+    const int length = snprintf(buffer, sizeof(buffer), "%s\n", line);
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(buffer)) {
+        return false;
+    }
+    const ssize_t sent = ::send(_socket, buffer, static_cast<size_t>(length), MSG_DONTWAIT);
+    if (sent == length) {
+        ++_queries_sent;
+        return true;
+    }
+    // A short or failed write would leave a partial line in the controller's
+    // input: drop the connection so the stream is resynchronised.
+    set_error("Query send failed");
+    close_tcp(true);
+    return false;
 }
 
 void JcReadOnlyFluidNc::set_error(const char* message, bool parse_error) {

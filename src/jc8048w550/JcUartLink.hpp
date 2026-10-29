@@ -17,6 +17,8 @@
 #include "JcFrameAssembler.hpp"
 #include "JcLinkTracker.hpp"
 #include "JcLinkTypes.hpp"
+#include "JcQuery.hpp"
+#include "JcStreamSplitter.hpp"
 #include "JcStatusFrame.hpp"
 
 namespace jc8048w550 {
@@ -30,6 +32,16 @@ struct JcBleTransportInfo {
 
 class JcUartLink {
 public:
+    using LineListener = void (*)(void* user, const char* line);
+
+    void set_line_listener(LineListener listener, void* user) {
+        _line_listener = listener;
+        _line_user = user;
+    }
+    // Sends ONE allowlisted read-only query; anything else is refused and counted.
+    bool send_query_line(const char* line);
+    uint32_t rejected_query_lines() const { return _rejected_queries; }
+    uint32_t queries_sent() const { return _queries_sent; }
     // Returns false (and stays stopped) when pins are not configured.
     bool begin(int8_t rx_pin, int8_t tx_pin, uint32_t baud);
     void end();
@@ -49,7 +61,11 @@ private:
     void accept_frame(const char* frame, uint16_t length);
 
     JcLinkTracker _tracker;
-    JcFrameAssembler _assembler;
+    JcStreamSplitter _assembler;
+    LineListener _line_listener = nullptr;
+    void* _line_user = nullptr;
+    uint32_t _rejected_queries = 0;
+    uint32_t _queries_sent = 0;
     JcLiveMachineStatus _status {};
     bool _running = false;
     uint32_t _next_query_ms = 0;

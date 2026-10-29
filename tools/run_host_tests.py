@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sources = [os.path.join(root, "test", "host", n) for n in ("test_jc_core.cpp", "test_jc_app.cpp")]
+sources = [os.path.join(root, "test", "host", n) for n in ("test_jc_core.cpp", "test_jc_app.cpp", "test_jc_control.cpp")]
 
 
 def find_cxx():
@@ -37,4 +37,5 @@ with tempfile.TemporaryDirectory() as tmp:
             cmd = cxx + ["-std=c++17", "-Wall", "-Wextra", f"-DJC_MACHINE_CONTROL_ENABLED={enabled}", src, "-o", exe]
             subprocess.run(cmd, check=True)
             rc |= subprocess.run([exe]).returncode
+rc |= subprocess.run([sys.executable, os.path.join(root, "tools", "check_no_sink.py")]).returncode
 sys.exit(rc)

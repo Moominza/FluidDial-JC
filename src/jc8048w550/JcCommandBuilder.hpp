@@ -25,10 +25,17 @@ struct JcAxisProfile {
     float max_feed;       // units/min (mm/min or deg/min)
     bool  homing_allowed;
     bool  probe_allowed;
+    // Filled from the controller by jc_profile_apply_caps(); until then max_step
+    // and max_feed are placeholders and limits_confirmed stays false.
+    // No default member initializers: the firmware builds as C++11, where they
+    // would make the brace initializers in jc_default_profile() non-aggregate.
+    float travel_mm;
+    bool  limits_confirmed;
 };
 
-// Conservative placeholders. They are NOT read from the controller yet; they
-// must be reviewed against the real machine ($/axes/*) before enabling motion.
+// Conservative placeholders, used until the controller's own values have been
+// read and validated (JcMachineCaps.hpp); an axis whose limits are unconfirmed
+// is blocked by the authorization gate whenever machine control is enabled.
 struct JcMachineProfile {
     JcAxisProfile axes[4];
     float         max_probe_travel;
@@ -37,11 +44,11 @@ struct JcMachineProfile {
 
 inline JcMachineProfile jc_default_profile() {
     JcMachineProfile p {};
-    p.axes[0] = { 'X', false, 100.0f, 3000.0f, true, true };
-    p.axes[1] = { 'Y', false, 100.0f, 3000.0f, true, true };
-    p.axes[2] = { 'Z', false, 100.0f, 1500.0f, true, true };
+    p.axes[0] = { 'X', false, 100.0f, 3000.0f, true, true, 0.0f, false };
+    p.axes[1] = { 'Y', false, 100.0f, 3000.0f, true, true, 0.0f, false };
+    p.axes[2] = { 'Z', false, 100.0f, 1500.0f, true, true, 0.0f, false };
     // The rotary axis is not assumed to have a homing switch and is never probed.
-    p.axes[3] = { 'A', true, 360.0f, 3600.0f, false, false };
+    p.axes[3] = { 'A', true, 360.0f, 3600.0f, false, false, 0.0f, false };
     p.max_probe_travel = 50.0f;
     p.max_probe_feed = 200.0f;
     return p;
@@ -65,6 +72,7 @@ struct JcCommand {
     JcCmdError     error = JcCmdError::None;
     JcCommandClass cls = JcCommandClass::Other;
     bool           realtime = false;  // single real-time byte in text[0]
+    uint8_t        axis = 0xFF;       // axis moved by a jog / probe move; 0xFF = none
     char           text[kJcMaxCommandLength] = "";
 };
 
@@ -145,7 +153,9 @@ inline JcCommand jc_jog_incremental(const JcMachineProfile& p, uint8_t axis,
         return fail(JcCommandClass::Jog, JcCmdError::BadValue);
     if (!isfinite(feed) || feed < 1.0f || feed > a.max_feed)
         return fail(JcCommandClass::Jog, JcCmdError::BadFeed);
-    return make(JcCommandClass::Jog, "$J=G91G21F%.0f%c%.3f", feed, a.letter, tidy(signed_distance));
+    JcCommand c = make(JcCommandClass::Jog, "$J=G91G21F%.0f%c%.3f", feed, a.letter, tidy(signed_distance));
+    c.axis = axis;
+    return c;
 }
 
 inline JcCommand jc_jog_cancel() { return detail::realtime(JcCommandClass::JogCancel, static_cast<char>(0x85)); }
@@ -190,7 +200,10 @@ inline JcCommand jc_probe_move(const JcMachineProfile& p, uint8_t axis, float si
         return fail(JcCommandClass::Probe, JcCmdError::BadValue);
     if (!isfinite(feed) || feed < 1.0f || feed > p.max_probe_feed)
         return fail(JcCommandClass::Probe, JcCmdError::BadFeed);
-    return make(JcCommandClass::Probe, "G21 G91 G38.2 F%.0f %c%.3f", feed, p.axes[axis].letter, tidy(signed_travel));
+    JcCommand c = make(JcCommandClass::Probe, "G21 G91 G38.2 F%.0f %c%.3f", feed, p.axes[axis].letter,
+                       tidy(signed_travel));
+    c.axis = axis;
+    return c;
 }
 
 // Standard Z tool-setter / touch-plate sequence. Steps 2.. run only if the
@@ -211,6 +224,7 @@ inline JcCommandSequence jc_probe_z_sequence(const JcMachineProfile& p, float tr
     s.steps[0] = probe;
     s.steps[1] = detail::make(JcCommandClass::WorkOffset, "G10 L20 P0 Z%.3f", detail::tidy(plate_thickness));
     s.steps[2] = detail::make(JcCommandClass::Probe, "G91 G0 Z%.3f", detail::tidy(retract));
+    s.steps[2].axis = 2;
     s.steps[3] = detail::make(JcCommandClass::Probe, "G90");
     s.count = 4;
     s.ok = s.steps[1].ok && s.steps[2].ok && s.steps[3].ok;
@@ -227,7 +241,11 @@ inline JcCommand jc_jog_continuous(const JcMachineProfile& p, uint8_t axis, int 
     if (a.rotary) return fail(JcCommandClass::Jog, JcCmdError::Unsupported);
     if (direction != 1 && direction != -1) return fail(JcCommandClass::Jog, JcCmdError::BadValue);
     if (!isfinite(feed) || feed < 1.0f || feed > a.max_feed) return fail(JcCommandClass::Jog, JcCmdError::BadFeed);
-    return make(JcCommandClass::Jog, "$J=G91G21F%.0f%c%.0f", feed, a.letter, direction * 10.0f * a.max_step);
+    // Travel the controller reported when known; otherwise the placeholder rule.
+    const float distance = a.travel_mm > 0.0f ? a.travel_mm : 10.0f * a.max_step;
+    JcCommand c = make(JcCommandClass::Jog, "$J=G91G21F%.0f%c%.0f", feed, a.letter, direction * distance);
+    c.axis = axis;
+    return c;
 }
 
 // Edge probe on X or Y: probe toward the edge, set the axis to the tool radius
@@ -257,6 +275,7 @@ inline JcCommandSequence jc_probe_edge_sequence(const JcMachineProfile& p, uint8
     s.steps[1] = detail::make(JcCommandClass::WorkOffset, "G10 L20 P0 %c%.3f", letter,
                               detail::tidy(-direction * tool_diameter / 2.0f));
     s.steps[2] = detail::make(JcCommandClass::Probe, "G91 G0 %c%.3f", letter, detail::tidy(-direction * retract));
+    s.steps[2].axis = axis;
     s.steps[3] = detail::make(JcCommandClass::Probe, "G90");
     s.count = 4;
     s.ok = s.steps[1].ok && s.steps[2].ok && s.steps[3].ok;

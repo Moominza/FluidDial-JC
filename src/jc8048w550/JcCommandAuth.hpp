@@ -45,6 +45,7 @@ enum class JcAuthDecision : uint8_t {
     BlockedAlarm,          // alarm state blocks everything but unlock/reset/stop
     BlockedUnconfirmed,    // operator confirmation required and missing
     BlockedBadState,       // machine state does not permit this command class
+    BlockedLimitsUnconfirmed,  // axis limits are still placeholders, not controller values
 };
 
 struct JcAuthContext {
@@ -52,6 +53,10 @@ struct JcAuthContext {
     bool        live = false;            // LIVE mode, not DEMO
     bool        link_fresh = false;      // fresh valid status
     bool        operator_confirmed = false;
+    // A move on an axis may only be authorized once that axis's limits were read
+    // from the controller (JcMachineCaps). The dispatcher sets both fields.
+    bool        limits_required = false;
+    bool        limits_confirmed = false;
     char        machine_state[20] = "";  // last reported state
     uint32_t    now_ms = 0;
     uint32_t    command_issued_ms = 0;
@@ -70,6 +75,7 @@ inline const char* jc_auth_name(JcAuthDecision d) {
         case JcAuthDecision::BlockedAlarm: return "blocked: machine in alarm";
         case JcAuthDecision::BlockedUnconfirmed: return "blocked: operator confirmation required";
         case JcAuthDecision::BlockedBadState: return "blocked: machine state does not permit command";
+        case JcAuthDecision::BlockedLimitsUnconfirmed: return "blocked: axis limits not confirmed by the controller";
     }
     return "blocked";
 }
@@ -119,6 +125,9 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     if (strcmp(ctx.machine_state, "Alarm") == 0) {
         return JcAuthDecision::BlockedAlarm;
     }
+    if (ctx.limits_required && !ctx.limits_confirmed) {
+        return JcAuthDecision::BlockedLimitsUnconfirmed;
+    }
     const bool motion_idle_only = cls == JcCommandClass::Home || cls == JcCommandClass::Probe
                                   || cls == JcCommandClass::WorkOffset || cls == JcCommandClass::Macro
                                   || cls == JcCommandClass::Other || cls == JcCommandClass::Spindle;
@@ -139,6 +148,9 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
 // Sink that actually transmits an authorized command. The JC firmware does
 // not provide one in this build, so even an Allowed decision transmits nothing.
 using JcCommandSink = bool (*)(const char* text);
+// Same, with a context pointer (used only by host tests; the firmware never
+// installs a sink - tools/check_no_sink.py enforces that).
+using JcCommandSinkEx = bool (*)(void* user, JcCommandClass cls, const char* text);
 
 class JcCommandGate {
 public:
@@ -151,12 +163,19 @@ public:
             ++_blocked;
             return decision;
         }
-        if (_sink != nullptr && _sink(text)) {
+        const bool transmitted = (_sink_ex != nullptr && _sink_ex(_sink_user, cls, text))
+                                 || (_sink != nullptr && _sink(text));
+        if (transmitted) {
             ++_sent;
         } else {
             ++_previewed;  // authorized but no transmit path: preview only
         }
         return decision;
+    }
+
+    void set_sink_ex(JcCommandSinkEx sink, void* user) {
+        _sink_ex = sink;
+        _sink_user = user;
     }
 
     uint32_t       sent() const { return _sent; }
@@ -166,6 +185,8 @@ public:
 
 private:
     JcCommandSink  _sink;
+    JcCommandSinkEx _sink_ex = nullptr;
+    void*          _sink_user = nullptr;
     uint32_t       _sent = 0;
     uint32_t       _blocked = 0;
     uint32_t       _previewed = 0;

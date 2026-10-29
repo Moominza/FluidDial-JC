@@ -15,6 +15,9 @@ All JC code lives in `src/jc8048w550/` and is compiled only by the
 | Transport | `JcReadOnlyFluidNc.*` (Wi-Fi TCP), `JcUartLink.*` (UART), `JcLinkTracker.hpp` (pure), `JcTransport.h` |
 | Command generation | `JcCommandBuilder.hpp` (pure) |
 | Authorization | `JcCommandAuth.hpp`, `JcDispatch.hpp` (pure) |
+| Controller replies / queries | `JcResponse.hpp`, `JcStreamSplitter.hpp`, `JcQuery.hpp` (allowlist), `JcCommandExec.hpp` (ack/timeout), all pure |
+| Capabilities | `JcMachineCaps.hpp` (validation, profile), `JcCapsLoader.hpp` (query sequence), pages `JcScreenCapabilities.cpp`, `JcScreenDryRun.cpp`, `JcDryRun.hpp` |
+| Sequenced sending (host tests only) | `JcCommandLink.hpp` (sink + reply tracking), `JcDispatch.hpp` (`advance_sequence`) |
 | Persistent settings | `JcSettings.hpp` (pure encode/validate), stored by `JcApp` in NVS namespace `jc_app` |
 
 ## Command flow
