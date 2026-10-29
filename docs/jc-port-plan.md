@@ -812,3 +812,26 @@ exits non-zero if any byte other than `?` arrives.
 The firmware's only transmit path remains `parser_putchar()`, which sends
 exactly one `?` byte and blocks and counts everything else. This is verified
 by source inspection only. No machine motion is enabled.
+
+## Instruction 004 checkpoint: integrated application (experimental)
+
+Implemented: nine-section touch application (dashboard, jogging, homing,
+probing, work offsets, files/jobs, macros, tools, settings + diagnostics),
+shared pure core (frame assembler, machine model, dispatcher, navigation,
+settings blob, link tracker), UART status link, brightness PWM, NVS-persisted
+user settings. See `docs/development/jc-feature-status.md` for the per-feature
+status and `jc-architecture.md` for the module map.
+
+| Check | Result |
+| --- | --- |
+| Host unit tests (`tools/run_host_tests.py`) | PASS: 111 + 125 core checks, 166 + 163 app checks (shipping policy / authorization rules compiled in) |
+| Simulator integration (`tools/run_sim_integration.py`) | PASS: 51 checks. Real TCP to the simulator and the real JC assembler/parser/model/tracker. Not the ESP32 firmware. |
+| `pio run -e jc8048w550` | PASS: 1,010,469 B flash (30.2%), 83,424 B RAM (25.5%) |
+| `pio run -e m5dial`, `pio run -e cyddial` | PASS |
+| Upload to COM3 (CH340, ESP32-S3 rev v0.2, MAC dc:b4:d9:04:1e:50) | PASS, hashes verified |
+| Boot log | PASS: PSRAM 8,386,279 B, ST7262 800x480, GT911 0x5D ACK, saved calibration loaded, auto-connect disabled, "machine control disabled" banner |
+| Operator visual review of every new page | NOT DONE |
+| Touch behaviour, settings persistence across reboot, brightness PWM on hardware | NOT DONE |
+| Firmware run against the simulator over Wi-Fi | NOT DONE (needs Wi-Fi credentials entered on the device) |
+| UART link against a wired controller | NOT DONE |
+| Any CNC command transmitted | NONE. The gate blocks every class and no transmit sink exists. |

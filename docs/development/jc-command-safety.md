@@ -40,3 +40,22 @@ Status: **experimental**. Machine control is disabled in the shipping firmware.
   upstream FluidDial source, not against a live controller.
 * A separate safety review and explicit owner approval are required to enable
   `JC_MACHINE_CONTROL_ENABLED` or to add a transmit sink.
+
+## Instruction 004 additions
+
+* `JcDispatcher` (`JcDispatch.hpp`) is the only path from UI pages to the
+  gate. It keeps no queue and has no resend API, so a command can never be
+  replayed after a connection loss; `on_link_lost()` disarms, and nothing
+  re-arms on reconnect. Nothing in the shipping UI calls `arm()`.
+* Every motion-capable page (jog, homing, probing, offsets, files/jobs,
+  macros, tools) uses the same staged flow: command preview, confirmation
+  dialog, dispatcher, blocked-result dialog. Rejected commands (bad axis,
+  value, feed or path) are recorded as rejected and never reach the gate.
+* DEMO mode and simulated values can never authorize anything: the gate
+  requires LIVE mode and fresh live status, and the shipping build blocks
+  every class regardless.
+* Link freshness is one shared rule (`jc_status_fresh`) and the only
+  permitted outgoing byte is `?` (`jc_tx_byte_allowed`), used by the Wi-Fi
+  link, the UART link and the host tests.
+* The software cancel / STOP controls are not emergency stops and are
+  labelled as such on the jogging page and in the job-cancel dialog.

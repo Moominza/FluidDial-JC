@@ -15,6 +15,12 @@ controller is the `?` status query. See the
 [JC port plan](docs/jc-port-plan.md) for hardware, build, validation
 evidence, and known limitations.
 
+JC application sections (all preview-only; nothing is transmitted): dashboard, jogging,
+homing, probing, work offsets, files and jobs, macros, tools, and settings with
+diagnostics. Transports: Wi-Fi (read-only status), wired UART (read-only status,
+unverified wiring), Bluetooth LE (unavailable: no FluidNC BLE service). See the
+[architecture](docs/development/jc-architecture.md) for the module map.
+
 Build: `pio run -e jc8048w550` (also `m5dial`, `cyddial`). Host unit tests:
 `python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`).
 
