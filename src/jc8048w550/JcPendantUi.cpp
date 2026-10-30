@@ -3,6 +3,8 @@
 
 #include "JcPendantUi.hpp"
 
+#include "JcDashLayout.hpp"
+
 #include <Arduino.h>
 #include <Preferences.h>
 #include <cmath>
@@ -23,9 +25,11 @@ constexpr uint16_t kBorder = 0x5ACB;
 constexpr uint16_t kSuccess = 0x07E0;
 constexpr uint16_t kInfo = 0x051F;
 
-constexpr PendantUi::Rect kHomeButton { 704, 12, 80, 42 };
-constexpr PendantUi::Rect kSettingsButton { 600, 12, 92, 42 };
-constexpr PendantUi::Rect kConnectionsButton { 702, 12, 82, 42 };
+constexpr ui::Rect rect_ui(ui::Rect r) { return r; }
+constexpr PendantUi::Rect rect_of(ui::Rect r) { return { r.x, r.y, r.w, r.h }; }
+constexpr PendantUi::Rect kHomeButton = rect_of(dl::kHomeButton);
+constexpr PendantUi::Rect kSettingsButton = rect_of(dl::kMenuButton);
+constexpr PendantUi::Rect kConnectionsButton = rect_of(dl::kLinkButton);
 constexpr uint16_t kCalibrationTargetX[5] = { 60, 740, 740, 60, 400 };
 constexpr uint16_t kCalibrationTargetY[5] = { 60, 60, 420, 420, 240 };
 constexpr const char* kCalibrationTargetNames[5] = {
@@ -480,10 +484,23 @@ void PendantUi::draw_transport_card(uint8_t index) {
                                    bounds.width, 36 },
                        titles[index], FontId::Button20,
                        selected ? CYAN : WHITE, selected ? kPanelLight : kPanel);
+    char endpoint[48];
+    const char* detail = details[index];
+    if (index == 0) {
+        // The saved endpoint (never a hard-coded address): tap the card to edit it.
+        const JcWifiConfig& cfg = _fluidnc.config();
+        snprintf(endpoint, sizeof(endpoint), "%s:%u", cfg.host[0] ? cfg.host : "host not set",
+                 static_cast<unsigned>(cfg.port != 0 ? cfg.port : 23));
+        detail = endpoint;
+    }
     draw_text_centered(_display, { bounds.x, static_cast<int16_t>(bounds.y + 72),
                                    bounds.width, 28 },
-                       details[index], FontId::Body16, kMuted,
+                       detail, FontId::Body16, index == 0 ? WHITE : kMuted,
                        selected ? kPanelLight : kPanel);
+    if (index == 0) {
+        draw_text_centered(_display, { bounds.x, static_cast<int16_t>(bounds.y + 124), bounds.width, 24 },
+                           "TAP TO EDIT HOST / IP", FontId::Body16, CYAN, selected ? kPanelLight : kPanel);
+    }
     if (selected) {
         draw_text_top(_display, bounds.x + 15, bounds.y + 111, "SELECTED",
                       FontId::Body16, kSuccess, kPanelLight);
@@ -509,32 +526,7 @@ void PendantUi::draw_jog_buttons() {
 }
 
 void PendantUi::draw_jog_button(Feedback feedback) {
-    if (_live_mode) {
-        switch (feedback) {
-            case Feedback::JogNegative:
-            case Feedback::JogPositive:
-                draw_button(feedback == Feedback::JogNegative
-                                ? Rect { 30, 376, 260, 74 }
-                                : Rect { 510, 376, 260, 74 },
-#if JC_JOG_UI
-                            "NO JOG HERE: USE MENU", false, true);
-#else
-                            "MOTION DISABLED", false, true);
-#endif
-                break;
-            case Feedback::Stop:
-#if JC_JOG_UI
-                // This button sends nothing. It must not look like a working cancel.
-                draw_button({ 300, 376, 200, 74 }, "NO CANCEL HERE", false, true);
-#else
-                draw_button({ 300, 376, 200, 74 }, "READ ONLY", false, true);
-#endif
-                break;
-            case Feedback::None:
-                break;
-        }
-        return;
-    }
+    // DEMO mode only: the live dashboard has no jog controls (jogging is MENU > JOGGING).
     switch (feedback) {
         case Feedback::JogNegative:
             draw_button({ 30, 376, 260, 74 }, "JOG -", _feedback == feedback);
@@ -616,10 +608,12 @@ void PendantUi::draw_header(const char* title) {
         ? (is_fresh ? 0x0320 : kAccentDark)
         : kAccentDark;
     const uint16_t mode_border = _live_mode && is_fresh ? kSuccess : RED;
-    _display.fillRect(212, 13, 144, 38, mode_fill);
-    _display.drawRect(212, 13, 144, 38, mode_border);
-    draw_text_centered(_display, { 212, 13, 144, 38 }, mode_label,
-                       FontId::Button20, WHITE, mode_fill);
+    {
+        const Rect chip = rect_of(dl::kModeChip);
+        _display.fillRect(chip.x, chip.y, chip.width, chip.height, mode_fill);
+        _display.drawRect(chip.x, chip.y, chip.width, chip.height, mode_border);
+        draw_text_centered(_display, chip, mode_label, FontId::Body16, WHITE, mode_fill);
+    }
 
     const bool connected = link_state == JcFluidState::Connected;
     // Wi-Fi: the six honest states (WIFI CONNECTING / FLUIDNC CONNECTING / CONNECTED / RECONNECTING /
@@ -630,30 +624,38 @@ void PendantUi::draw_header(const char* title) {
                              || link_state == JcFluidState::InvalidData) ? "DISCONNECTED" : "CNC OFFLINE"))
         : jc_conn_label_text(_fluidnc.conn_label());
     const uint16_t link_fill = connected ? 0x0320 : kBackground;
-    _display.fillRect(368, 13, 208, 38, link_fill);
-    _display.drawRect(368, 13, 208, 38, connected ? kSuccess : kBorder);
-    draw_text_centered(_display, { 368, 13, 208, 38 }, link_label,
-                       strlen(link_label) > 14 ? FontId::Body16 : FontId::Button20, connected ? WHITE : kMuted, link_fill);
+    {
+        const Rect chip = rect_of(dl::kLinkChip);
+        _display.fillRect(chip.x, chip.y, chip.width, chip.height, link_fill);
+        _display.drawRect(chip.x, chip.y, chip.width, chip.height, connected ? kSuccess : kBorder);
+        draw_text_centered(_display, chip, link_label, FontId::Body16, connected ? WHITE : kMuted, link_fill);
+    }
 #if JC_JOG_UI
-    // Prominent banner on every dashboard-style page of the experimental build (x 584..796).
+    // Build banner on every dashboard-style page of the jog-UI builds (x 482..598, clear of MENU / LINK / HOME).
     {
 #if JC_JOG_PREVIEW
-        static const char* const kBanners[3] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY" };
+        static const char* const kBanners[4] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY", "PREVIEW" };
 #else
-        static const char* const kBanners[3] = { "LIVE JOG TEST BUILD", "LIVE JOG TEST BUILD", "LIVE JOG TEST BUILD" };
+        static const char* const kBanners[4] = { "LIVE JOG TEST BUILD", "LIVE JOG TEST", "LIVE JOG", "LIVE JOG" };
 #endif
-        const char* banner = kBanners[2];
+        const char* banner = kBanners[3];
         for (const char* candidate : kBanners) {
-            if (text_width(FontId::Body16, candidate) + 16 <= 796 - 584) {
+            if (text_width(FontId::Body16, candidate) + 16 <= dl::kBannerRight - dl::kBannerLeft) {
                 banner = candidate;
                 break;
             }
         }
         const int16_t bw = static_cast<int16_t>(text_width(FontId::Body16, banner) + 16);
-        const Rect box { 584, 13, bw, 38 };
-        _display.fillRect(box.x, box.y, box.width, box.height, RED);
-        _display.drawRect(box.x, box.y, box.width, box.height, WHITE);
-        draw_text_centered(_display, box, banner, FontId::Body16, WHITE, RED);
+        const Rect box { dl::kBannerLeft, 13, bw, 38 };
+        // PREVIEW (nothing can move) is blue; the live-jog test build (can move) is red: never confusable.
+#if JC_JOG_PREVIEW
+        constexpr uint16_t kBannerFill = ui::kPreviewFill, kBannerBorder = CYAN;
+#else
+        constexpr uint16_t kBannerFill = RED, kBannerBorder = WHITE;
+#endif
+        _display.fillRect(box.x, box.y, box.width, box.height, kBannerFill);
+        _display.drawRect(box.x, box.y, box.width, box.height, kBannerBorder);
+        draw_text_centered(_display, box, banner, FontId::Body16, WHITE, kBannerFill);
     }
 #endif
 }
@@ -759,7 +761,7 @@ void PendantUi::draw_home() {
 
     if (_live_mode) {
         draw_live_info(true);
-        draw_jog_buttons();
+        draw_diagnostics(true);
         draw_home_footer();
         return;
     }
@@ -844,6 +846,42 @@ void PendantUi::draw_live_info(bool force) {
         draw_text_top(_display, x, y, labels[i], FontId::Body16, kMuted, kPanel);
         _info[i].draw(_display, { x, static_cast<int16_t>(y + 20), 240, 28 }, value, FontId::Button20, color, kPanel);
     }
+}
+
+void PendantUi::draw_diagnostics(bool force) {
+    if (force) {
+        for (auto& slot : _diag) {
+            slot.invalidate();
+        }
+    }
+    const JcLiveMachineStatus& status = live_status();
+    const bool fresh = live_fresh();
+    char line[120];
+    if (use_uart()) {
+        snprintf(line, sizeof(line), "Wired UART   Frames: %lu   Errors: %lu", static_cast<unsigned long>(_uart.frames()),
+                 static_cast<unsigned long>(_uart.parse_errors()));
+    } else {
+        const JcWifiConfig& cfg = _fluidnc.config();
+        char age[24];
+        if (status.has_data) {
+            snprintf(age, sizeof(age), "%lu ms", static_cast<unsigned long>(millis() - status.last_valid_ms));
+        } else {
+            snprintf(age, sizeof(age), "--");
+        }
+        snprintf(line, sizeof(line), "Endpoint: %.28s:%u   Age: %s", cfg.host[0] ? cfg.host : "not set",
+                 static_cast<unsigned>(cfg.port != 0 ? cfg.port : 23), age);
+    }
+    _diag[0].draw(_display, rect_ui(dl::kDiagLine1), line, FontId::Body16, fresh ? WHITE : kMuted, kPanel);
+#if JC_JOG_PREVIEW
+    _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Jog rehearsal: MENU > JOGGING.  PREVIEW ONLY - MOTION DISABLED.",
+                  FontId::Body16, CYAN, kPanel);
+#elif JC_JOG_UI
+    _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Restricted X/Y jog: MENU > JOGGING.  LIVE JOG TEST BUILD.",
+                  FontId::Body16, RED, kPanel);
+#else
+    _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Machine control disabled in this build. Nothing is sent.",
+                  FontId::Body16, kMuted, kPanel);
+#endif
 }
 
 void PendantUi::draw_settings() {
@@ -1566,6 +1604,7 @@ void PendantUi::draw_live_status_updates() {
     if (millis() - _last_live_info_ms >= 500) {
         _last_live_info_ms = millis();
         draw_live_info(false);  // refreshes stale colouring and the transport label
+        draw_diagnostics(false);
     }
 }
 
@@ -1946,7 +1985,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
         return;
     }
     if (_page == Page::Home) {
-        if (contains({ 212, 13, 144, 38 }, x, y)) {
+        if (contains(rect_of(dl::kModeChip), x, y)) {
             set_live_mode(!_live_mode);
             return;
         }
@@ -1956,7 +1995,7 @@ void PendantUi::handle_touch(uint16_t x, uint16_t y) {
             Serial.println("ui: page=application menu");
             return;
         }
-        if (_live_mode && contains({ 600, 190, 176, 38 }, x, y)) {
+        if (_live_mode && contains(rect_of(dl::kReferenceButton), x, y)) {
             _display_reference = _display_reference == JcRef::Work ? JcRef::Machine : JcRef::Work;
             draw_machine_status();
             for (uint8_t axis = 0; axis < kAxisCount; ++axis) {

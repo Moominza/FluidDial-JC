@@ -5,23 +5,24 @@
 // The code under JC_LIVE_JOG_TEST belongs to the experimental live-jog test build
 // (PlatformIO env jc8048w550_livejog_test) and is not compiled into anything else.
 
+#include "JcJogLayout.hpp"
 #include "JcScreens.hpp"
 
 namespace jc8048w550 {
 
 namespace {
 
-ui::Rect axis_rect(uint8_t i) { return { static_cast<int16_t>(16 + i * 100), 76, 92, 50 }; }
-ui::Rect step_rect(uint8_t i) { return { static_cast<int16_t>(84 + i * 92), 138, 86, 46 }; }
-ui::Rect feed_rect(uint8_t i) { return { static_cast<int16_t>(84 + i * 130), 194, 122, 46 }; }
-constexpr ui::Rect kIncremental { 484, 194, 150, 46 };
-constexpr ui::Rect kContinuous { 640, 194, 144, 46 };  // the ARM button in the live-jog test build
-constexpr ui::Rect kJogNeg { 16, 254, 250, 84 };
-constexpr ui::Rect kJogStop { 275, 254, 250, 84 };
-constexpr ui::Rect kJogPos { 534, 254, 250, 84 };
-constexpr ui::Rect kDro { 424, 76, 360, 50 };
-constexpr ui::Rect kPanelRect { 16, 350, 768, 122 };
-constexpr ui::Rect kAck { 28, 432, 744, 36 };
+using jl::axis_rect;
+using jl::step_rect;
+using jl::feed_rect;
+using jl::kIncremental;
+using jl::kJogNeg;
+using jl::kJogStop;
+using jl::kJogPos;
+using jl::kDro;
+using jl::kPanelRect;
+using jl::kAck;
+constexpr ui::Rect kContinuous = jl::kArm;  // ARM / READ SETTINGS in the jog-UI builds
 
 #if JC_JOG_PREVIEW
 #define JC_ARM_LABEL "ARM PREVIEW"
@@ -58,10 +59,14 @@ float JcJogScreen::feed_value() const {
 }
 
 void JcJogScreen::on_enter() {
+    _auto_tried = false;
+    _drawn_step = 0xFF;
+    service_caps(millis());
     _dro.invalidate();
     _motion.invalidate();
     _preview.invalidate();
     _result.invalidate();
+    _caps.invalidate();
 }
 
 void JcJogScreen::draw_axes() {
@@ -71,7 +76,7 @@ void JcJogScreen::draw_axes() {
 }
 
 void JcJogScreen::draw_steps() {
-    ui::text(sv.display, 16, 150, "STEP", FontId::Body16, ui::kMuted, ui::kBg);
+    ui::text(sv.display, 16, 138, "STEP", FontId::Body16, ui::kMuted, ui::kBg);
     const float* steps = _axis == 3 ? sv.settings.rotary_steps : sv.settings.linear_steps;
     for (uint8_t i = 0; i < kJcStepPresets; ++i) {
         char label[24];
@@ -89,7 +94,7 @@ void JcJogScreen::draw_steps() {
 }
 
 void JcJogScreen::draw_feeds() {
-    ui::text(sv.display, 16, 206, "FEED", FontId::Body16, ui::kMuted, ui::kBg);
+    ui::text(sv.display, 16, 190, "FEED", FontId::Body16, ui::kMuted, ui::kBg);
     const float* feeds = _axis == 3 ? sv.settings.rotary_feeds : sv.settings.linear_feeds;
     for (uint8_t i = 0; i < kJcFeedPresets; ++i) {
         char label[24];
@@ -115,7 +120,24 @@ void JcJogScreen::draw_mode() {
         snprintf(label, sizeof(label), "ARMED %us", static_cast<unsigned>(sv.dispatcher.arm_remaining_ms(now) / 1000u));
         ui::button(sv.display, kContinuous, label, ui::Btn::Good);
     } else {
-        ui::button(sv.display, kContinuous, JC_ARM_LABEL, ui::Btn::Danger);
+        const JcCapsFlow flow = caps_flow(now);
+        char label[24];
+        switch (flow.phase) {
+            case JcCapsPhase::Current:
+                ui::button(sv.display, kContinuous, JC_ARM_LABEL, ui::Btn::Danger);
+                break;
+            case JcCapsPhase::Reading:
+                snprintf(label, sizeof(label), "READING %u/%u", static_cast<unsigned>(sv.loader.step()),
+                         static_cast<unsigned>(JcCapsLoader::kSteps));
+                ui::button(sv.display, kContinuous, label, ui::Btn::Disabled);
+                break;
+            case JcCapsPhase::NotLive:
+                ui::button(sv.display, kContinuous, jc_caps_action_label(flow), ui::Btn::Disabled);
+                break;
+            default:   // NotRead / Expired / Failed: the prominent action
+                ui::button(sv.display, kContinuous, jc_caps_action_label(flow), flow.can_read ? ui::Btn::Selected : ui::Btn::Disabled);
+                break;
+        }
     }
 #else
     ui::button(sv.display, kContinuous, "CONTINUOUS",
@@ -129,9 +151,9 @@ void JcJogScreen::draw_bottom() {
         ui::button(sv.display, kAck, "ACKNOWLEDGE RESULT", ui::Btn::Danger);
         return;
     }
-    ui::wrap(sv.display, { 28, 436, 744, 34 }, kJcLiveJogWarning, FontId::Body16, RED, ui::kPanel);
+    ui::wrap(sv.display, jl::kWarnRect, kJcLiveJogWarning, FontId::Body16, JC_JOG_PREVIEW ? ui::kInfo : RED, ui::kPanel);
 #else
-    ui::wrap(sv.display, { 28, 436, 744, 34 },
+    ui::wrap(sv.display, jl::kWarnRect,
              "Software cancel is NOT an emergency stop. Use the machine's physical E-stop.",
              FontId::Body16, ui::kWarn, ui::kPanel);
 #endif
@@ -151,19 +173,60 @@ void JcJogScreen::on_draw() {
 #endif
     ui::button(sv.display, kJogStop, "CANCEL JOG", ui::Btn::Danger);
     ui::panel(sv.display, kPanelRect);
-    ui::text(sv.display, 28, 358, "PREVIEW", FontId::Body16, ui::kMuted, ui::kPanel);
-    ui::text(sv.display, 28, 384, "RESULT", FontId::Body16, ui::kMuted, ui::kPanel);
-    ui::text(sv.display, 28, 410, "MOTION", FontId::Body16, ui::kMuted, ui::kPanel);
+    ui::text(sv.display, 28, jl::kLabelPreviewY, "PREVIEW", FontId::Body16, ui::kMuted, ui::kPanel);
+    ui::text(sv.display, 28, jl::kLabelResultY, "RESULT", FontId::Body16, ui::kMuted, ui::kPanel);
+    ui::text(sv.display, 28, jl::kLabelMotionY, "MOTION", FontId::Body16, ui::kMuted, ui::kPanel);
     draw_bottom();
     _dro.invalidate();
     _motion.invalidate();
     _preview.invalidate();
     _result.invalidate();
+    _caps.invalidate();
 #if JC_JOG_UI
-    _live_key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(millis()) ? 2u : 0u);
+    _live_key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(millis()) ? 2u : 0u)
+                | (static_cast<uint32_t>(caps_flow(millis()).phase) << 2);
 #endif
     draw_live();
 }
+
+#if JC_JOG_UI
+JcCapsFlow JcJogScreen::caps_flow(uint32_t now) const {
+    return jc_caps_flow(sv.live_mode, sv.model.fresh(), sv.model.state(), sv.jogs.unresolved(), sv.loader.state(),
+                        sv.loader.caps().complete, sv.loader.caps().completed_ms, now, _auto_tried);
+}
+
+// READ MACHINE SETTINGS: the existing read-only capability read (allowlisted `$` queries only).
+void JcJogScreen::read_settings() {
+    const char* blocker = sv.host.start_caps_read();
+    if (blocker != nullptr) {
+        Serial.printf(JC_JOG_TAG ": settings read refused: %s\n", blocker);
+        show_message("CANNOT READ MACHINE SETTINGS", blocker, "The queries are read-only; nothing is changed.");
+        return;
+    }
+    Serial.println(JC_JOG_TAG ": machine settings read started from the jog page (read-only)");
+    draw();
+}
+
+// Called from enter and the tick: starts ONE automatic read per visit when it is plainly needed and safe.
+void JcJogScreen::service_caps(uint32_t now) {
+    if (!sv.model.fresh()) {
+        _auto_tried = false;   // a lost connection discards the read; allow one automatic read after recovery
+    }
+    const JcCapsFlow flow = caps_flow(now);
+    if (flow.auto_read) {
+        _auto_tried = true;
+        if (const char* blocker = sv.host.start_caps_read()) {
+            Serial.printf(JC_JOG_TAG ": automatic settings read not started: %s\n", blocker);
+        } else {
+            Serial.println(JC_JOG_TAG ": automatic machine settings read started (read-only)");
+        }
+    }
+}
+#else
+JcCapsFlow JcJogScreen::caps_flow(uint32_t) const { return JcCapsFlow(); }
+void JcJogScreen::read_settings() {}
+void JcJogScreen::service_caps(uint32_t) {}
+#endif
 
 void JcJogScreen::draw_live() {
     char value[32];
@@ -191,7 +254,7 @@ void JcJogScreen::draw_live() {
 #else
     snprintf(text, sizeof(text), "%s  [%s]", motion, sv.model.state());
 #endif
-    _motion.draw(sv.display, { 110, 406, 650, 26 }, text, FontId::Body16,
+    _motion.draw(sv.display, jl::kMotionSlot, text, FontId::Body16,
                  sv.model.in_motion() ? ui::kWarn : (sv.model.alarm() ? RED : ui::kGood), ui::kPanel);
 
 #if JC_JOG_UI
@@ -200,7 +263,22 @@ void JcJogScreen::draw_live() {
     const JcJogTone tone = jc_jog_result_line(sv.jogs, sv.live_fresh(), result, sizeof(result), JC_JOG_PREVIEW != 0);
     const uint16_t color = tone == JcJogTone::Alarm ? RED : tone == JcJogTone::Warn ? ui::kWarn
                          : tone == JcJogTone::Info ? ui::kInfo : tone == JcJogTone::Good ? ui::kGood : ui::kMuted;
-    _result.draw(sv.display, { 110, 380, 650, 26 }, result, FontId::Body16, color, ui::kPanel);
+    _result.draw(sv.display, jl::kResultSlot, result, FontId::Body16, color, ui::kPanel);
+
+    // Capability workflow: always visible, so the operator never has to guess why ARM is unavailable.
+    const uint32_t now = millis();
+    const JcCapsFlow flow = caps_flow(now);
+    char caps_text[120], caps_line[140];
+    jc_caps_status_text(flow, sv.loader.step(), JcCapsLoader::kSteps, sv.loader.failure(),
+                        static_cast<uint32_t>(now - sv.loader.caps().completed_ms), caps_text, sizeof(caps_text));
+#if JC_JOG_PREVIEW
+    snprintf(caps_line, sizeof(caps_line), "REAL controller: %s", caps_text);
+#else
+    snprintf(caps_line, sizeof(caps_line), "%s", caps_text);
+#endif
+    _caps.draw(sv.display, jl::kCapsSlot, caps_line, FontId::Body16,
+               flow.phase == JcCapsPhase::Current ? ui::kGood : (flow.phase == JcCapsPhase::Reading ? ui::kInfo : ui::kWarn),
+               ui::kPanel);
 #endif
 }
 
@@ -270,7 +348,7 @@ void JcJogScreen::jog_live(int direction) {
     const uint32_t now = millis();
     const JcCommand command = jc_jog_incremental(sv.profile, _axis, direction * step_value(), feed_value());
     if (!command.ok) {
-        _preview.draw(sv.display, { 110, 354, 650, 26 }, "(no command)", FontId::Body16, ui::kMuted, ui::kPanel);
+        _preview.draw(sv.display, jl::kPreviewSlot, "(no command)", FontId::Body16, ui::kMuted, ui::kPanel);
         char reason[64];
         snprintf(reason, sizeof(reason), "Refused: %s", jc_cmd_error_name(command.error));
         sv.dispatcher.submit(command, sv.dispatch_context(false));  // recorded as rejected
@@ -287,7 +365,7 @@ void JcJogScreen::jog_live(int direction) {
         }
         return;
     }
-    _preview.draw(sv.display, { 110, 354, 650, 26 }, command.text, FontId::Body16, CYAN, ui::kPanel);
+    _preview.draw(sv.display, jl::kPreviewSlot, command.text, FontId::Body16, CYAN, ui::kPanel);
     if (!sv.dispatcher.armed_at(now)) {
         show_message("NOT ARMED", "Tap " JC_ARM_LABEL " first.", "Arming lapses after 120 s, on leaving this page,",
                      "and on any loss of the connection.");
@@ -325,7 +403,7 @@ void JcJogScreen::jog_live(int direction) {
 
 void JcJogScreen::do_cancel() {
     const JcCommand cancel = jc_jog_cancel();
-    _preview.draw(sv.display, { 110, 354, 650, 26 }, "<jog cancel 0x85>", FontId::Body16, CYAN, ui::kPanel);
+    _preview.draw(sv.display, jl::kPreviewSlot, "<jog cancel 0x85>", FontId::Body16, CYAN, ui::kPanel);
 #if JC_JOG_PREVIEW
     const uint32_t before = sv.dispatcher.previewed();
     const JcAuthDecision decision = submit_now(cancel);   // never needs arming or confirmation
@@ -370,15 +448,15 @@ void JcJogScreen::do_jog(int direction) {
     char line[96];
     if (!command.ok) {
         snprintf(line, sizeof(line), "Rejected: %s", jc_cmd_error_name(command.error));
-        _preview.draw(sv.display, { 110, 354, 650, 26 }, "(no command)", FontId::Body16, ui::kMuted, ui::kPanel);
-        _result.draw(sv.display, { 110, 380, 650, 26 }, line, FontId::Body16, RED, ui::kPanel);
+        _preview.draw(sv.display, jl::kPreviewSlot, "(no command)", FontId::Body16, ui::kMuted, ui::kPanel);
+        _result.draw(sv.display, jl::kResultSlot, line, FontId::Body16, RED, ui::kPanel);
         submit_now(command);
         return;
     }
-    _preview.draw(sv.display, { 110, 354, 650, 26 }, command.text, FontId::Body16, CYAN, ui::kPanel);
+    _preview.draw(sv.display, jl::kPreviewSlot, command.text, FontId::Body16, CYAN, ui::kPanel);
     const JcAuthDecision decision = submit_now(command);
     snprintf(line, sizeof(line), "%s - NOT SENT", jc_auth_name(decision));
-    _result.draw(sv.display, { 110, 380, 650, 26 }, line, FontId::Body16, ui::kWarn, ui::kPanel);
+    _result.draw(sv.display, jl::kResultSlot, line, FontId::Body16, ui::kWarn, ui::kPanel);
     Serial.printf("jog: preview [%s] %s\n", command.text, jc_auth_name(decision));
 #endif
 }
@@ -428,6 +506,22 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
     }
     if (ui::hit(kContinuous, x, y)) {
 #if JC_JOG_UI
+        {
+            const uint32_t now = millis();
+            const bool armed_here = sv.dispatcher.armed_at(now) && ((sv.dispatcher.unprotected_ack_mask() >> _axis) & 1u) != 0;
+            const JcCapsFlow flow = caps_flow(now);
+            if (!armed_here && live_axis_allowed(_axis) && flow.phase != JcCapsPhase::Current) {
+                if (flow.phase == JcCapsPhase::Reading) {
+                    show_message("READING MACHINE SETTINGS", "Wait for the read to finish.",
+                                 "ARM stays unavailable until valid, current results are held.");
+                } else if (flow.can_read) {
+                    read_settings();
+                } else {
+                    show_message("CANNOT READ MACHINE SETTINGS", flow.blocker, "The queries are read-only; nothing is changed.");
+                }
+                return;
+            }
+        }
         request_arm();
         return;
 #else
@@ -463,11 +557,11 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
         do_cancel();
 #else
         const JcCommand cancel = jc_jog_cancel();
-        _preview.draw(sv.display, { 110, 354, 650, 26 }, "<jog cancel 0x85>", FontId::Body16, CYAN, ui::kPanel);
+        _preview.draw(sv.display, jl::kPreviewSlot, "<jog cancel 0x85>", FontId::Body16, CYAN, ui::kPanel);
         const JcAuthDecision decision = submit_now(cancel);
         char line[96];
         snprintf(line, sizeof(line), "%s - NOT SENT", jc_auth_name(decision));
-        _result.draw(sv.display, { 110, 380, 650, 26 }, line, FontId::Body16, ui::kWarn, ui::kPanel);
+        _result.draw(sv.display, jl::kResultSlot, line, FontId::Body16, ui::kWarn, ui::kPanel);
 #endif
     }
 }
@@ -476,13 +570,18 @@ void JcJogScreen::on_tick(uint32_t now) {
     if (now - _last_tick >= 250) {
         _last_tick = now;
 #if JC_JOG_UI
-        const uint32_t key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(now) ? 2u : 0u);
+        service_caps(now);
+        const uint32_t key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(now) ? 2u : 0u)
+                             | (static_cast<uint32_t>(caps_flow(now).phase) << 2);
         if (key != _live_key) {
             draw();  // the ACK button or the arming state changed
             return;
         }
         if (sv.dispatcher.armed_at(now)) {
             draw_mode();  // seconds remaining
+        } else if (sv.loader.running() && _drawn_step != sv.loader.step()) {
+            _drawn_step = sv.loader.step();
+            draw_mode();  // read progress
         }
 #endif
         draw_live();

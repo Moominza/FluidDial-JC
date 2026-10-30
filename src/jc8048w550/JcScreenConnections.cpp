@@ -36,8 +36,9 @@ void JcConnectionsScreen::draw_status() {
     const JcUserSettings& s = sv.settings;
     char line[96];
     const JcReadOnlyFluidNc& link = sv.link;
-    snprintf(line, sizeof(line), "%s  |  host: %s", jc_conn_label_text(link.conn_label()),
-             link.config().host[0] ? link.config().host : "not set");
+    snprintf(line, sizeof(line), "%s  |  saved endpoint: %s:%u", jc_conn_label_text(link.conn_label()),
+             link.config().host[0] ? link.config().host : "not set",
+             static_cast<unsigned>(link.config().port != 0 ? link.config().port : 23));
     _wifi.draw(sv.display, { 28, 124, 480, 34 }, line, FontId::Body16,
                link.status_is_fresh() ? ui::kGood : ui::kMuted, ui::kPanel);
     if (_uart.running()) {
@@ -58,7 +59,7 @@ void JcConnectionsScreen::on_draw() {
     ui::button(sv.display, kWifiAuto, sv.link.auto_pref() == JcAutoPref::Off ? "AUTO: OFF" : "AUTO: ON",
                sv.link.auto_pref() == JcAutoPref::Off ? ui::Btn::Normal : ui::Btn::Good);
     ui::button(sv.display, kWifiSelect, t == 0 ? "SELECTED" : "SELECT", t == 0 ? ui::Btn::Selected : ui::Btn::Normal);
-    ui::button(sv.display, kWifiSetup, "WI-FI SETUP");
+    ui::button(sv.display, kWifiSetup, "EDIT HOST / IP");
 
     ui::panel(sv.display, kUartPanel, t == 1 ? ui::kPanelLight : ui::kPanel);
     ui::text(sv.display, 28, 184, "Wired UART  (read-only status)", FontId::Button20, WHITE, t == 1 ? ui::kPanelLight : ui::kPanel);

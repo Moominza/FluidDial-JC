@@ -1,4 +1,4 @@
-# JC first-live-jog readiness report (Instructions 006, 006A and 007)
+# JC first-live-jog readiness report (Instructions 006, 006A, 007 and 008)
 
 Status: **experimental. Nothing was flashed that can move the machine, and no jog or
 cancel byte was transmitted to any controller during this work.**
@@ -644,3 +644,28 @@ checklist is [jc-jog-preview-acceptance.md](jc-jog-preview-acceptance.md); resul
 The simulation proves the interface and the software gate, not any property of the machine. No jog
 or cancel byte has been sent to the controller. The independent emergency-stop system is a required
 physical prerequisite and is **not installed or tested**. Sections 8 and 9 still apply.
+
+## 13. UI corrections and capability-read workflow (Instruction 008)
+
+Defects reported from the panel after Instruction 007, and what was done. The restricted jog implementation
+(X/Y 1 mm at 100 mm/min, Z blocked, A disabled, per-axis acknowledgement, arming, per-jog confirmation,
+fresh Idle, capability validation, transport validation, acknowledgement tracking, motion verification,
+cancel and timeout handling, no replay) is unchanged and its tests still pass.
+
+| Defect | Fix |
+|---|---|
+| Dashboard: MENU / LINK overlapped other content; the live dashboard carried "NO JOG HERE: USE MENU" and "NO CANCEL HERE" placeholder buttons that overlapped the status cells | New shared geometry `JcDashLayout.hpp` (drawn AND hit-tested from the same rectangles): title, mode chip, link chip, build banner, MENU, LINK on one non-overlapping header row. The placeholders are removed. Their space now shows the saved endpoint (host:port), status age and a one-line mode note |
+| Jog page: crowded rows, footer text over a control | New shared geometry `JcJogLayout.hpp`: controls above a status panel; panel rows (preview, result, motion, machine settings) and a two-line bottom area that never overlaps the ACKNOWLEDGE button |
+| "CANNOT ARM THE JOG TEST: no capability read in this LIVE session" required navigating to unrelated pages | Capability workflow on the jog page (below) |
+| Preview and live-jog builds both used a red banner | PREVIEW is blue (cannot move); the live-jog build is red (can move). Wordings differ as well |
+| IP address hint | No address is hard-coded (grep of src, test, tools). The saved endpoint is shown on the dashboard and on the LINK page ("TAP TO EDIT HOST / IP", "EDIT HOST / IP" in Connections); auto-reconnect is unchanged |
+
+**Capability workflow** (`JcCapsWorkflow.hpp`, pure; reads use the existing read-only loader and the same allowlisted queries):
+- On entering the jog page in LIVE, if the settings are not current and a read is safe (LIVE, fresh status, machine Idle or Alarm, no unresolved jog, no read running), **one** automatic read starts per visit; a second one only after a lost-and-recovered connection. A failed read is never retried automatically.
+- The button that shares the ARM slot shows what tapping does: READ SETTINGS / READING n/55 / RETRY READ / ARM / ARMED nnn s. ARM is offered only when the read is complete and current.
+- A status line under the panel says what is known: "Machine settings NOT read", "Reading: n of 55 queries", "Read FAILED: <reason>", "EXPIRED (n min old)", "read n s ago (valid 5 min)". In the preview it is prefixed "REAL controller:" while jog results are prefixed "SIM:", so real and simulated data are never mixed.
+- Expiry (5 minutes) and session binding (the read is discarded on every link loss) are unchanged. UNKNOWN values are never replaced; the gate's own checks still decide.
+
+**Verification (development PC, 2026-10-30).** All host suites PASS (new: 23 checks for the workflow, 71/69 for the preview, existing 1267/1274/1354 jog checks); simulator integration PASS; static guard PASS; renderer: ordinary 8, preview 34, live 32 frames, 0 problems, plus pure geometry checks for the dashboard header/body and the jog page (no overlaps, labels fit, touch targets). 11 mutants for the new rules (arming on an expired read, auto-retry after failure, automatic read with stale status or a moving machine, repeated automatic read, changed expiry, UI arming without a current read, overlapping dashboard / jog geometry) were all caught. All four PlatformIO environments build. The ordinary binary contains no live-jog strings and no `send_jog_bytes` / `jog_tx_thunk`.
+
+**Limits of this verification.** The dashboard is drawn by `PendantUi`, which the host renderer cannot compile; its geometry is verified from the shared layout header, not by rendering the page. The operator's photographs of the dashboard and the jog page are needed to confirm the result on the panel (see [jc-jog-preview-acceptance.md](jc-jog-preview-acceptance.md), part F).

@@ -17,6 +17,7 @@
 #include <Arduino_GFX_Library.h>
 
 #include "JcCapsLoader.hpp"
+#include "JcCapsWorkflow.hpp"
 #include "JcCommandBuilder.hpp"
 #include "JcDryRun.hpp"
 #include "JcDispatch.hpp"

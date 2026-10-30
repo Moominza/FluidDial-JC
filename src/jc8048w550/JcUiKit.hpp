@@ -35,6 +35,7 @@ constexpr uint16_t kBorder = 0x5ACB;
 constexpr uint16_t kGood = 0x07E0;
 constexpr uint16_t kGoodDark = 0x0320;
 constexpr uint16_t kInfo = 0x051F;
+constexpr uint16_t kPreviewFill = 0x0014;   // dark blue: the PREVIEW (cannot move) banner; the live-jog banner is red
 constexpr uint16_t kWarn = 0xFD20;
 
 constexpr Rect kBackButton { 690, 10, 94, 44 };

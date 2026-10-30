@@ -77,9 +77,14 @@ void draw_live_jog_banner(Arduino_GFX& d, const char* title) {
     if (!live_jog_banner(title, box, text)) {
         return;
     }
-    d.fillRect(box.x, box.y, box.w, box.h, RED);
-    d.drawRect(box.x, box.y, box.w, box.h, WHITE);
-    text_center(d, box, text, FontId::Body16, WHITE, RED);
+#if JC_JOG_PREVIEW
+    constexpr uint16_t kFill = kPreviewFill, kBorderCol = CYAN;
+#else
+    constexpr uint16_t kFill = RED, kBorderCol = WHITE;
+#endif
+    d.fillRect(box.x, box.y, box.w, box.h, kFill);
+    d.drawRect(box.x, box.y, box.w, box.h, kBorderCol);
+    text_center(d, box, text, FontId::Body16, WHITE, kFill);
 }
 
 int16_t wrap(Arduino_GFX& d, Rect r, const char* s, FontId font, uint16_t fg, uint16_t bg) {

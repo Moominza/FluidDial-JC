@@ -59,6 +59,9 @@ private:
     void draw_live();
     void draw_bottom();
     void do_jog(int direction);
+    JcCapsFlow caps_flow(uint32_t now) const;
+    void read_settings();
+    void service_caps(uint32_t now);
     float step_value() const;
     float feed_value() const;
     // Experimental live-jog build only (defined under JC_LIVE_JOG_TEST).
@@ -74,7 +77,9 @@ private:
     bool _continuous = false;
     uint32_t _last_tick = 0;
     uint32_t _live_key = 0;
-    ui::Slot _dro, _motion, _preview, _result;
+    bool _auto_tried = false;     // an automatic capability read was already started during this visit
+    uint8_t _drawn_step = 0xFF;   // read progress last drawn on the ARM / READ button
+    ui::Slot _dro, _motion, _preview, _result, _caps;
 };
 
 class JcHomingScreen : public JcScreen {

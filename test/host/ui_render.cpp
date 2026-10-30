@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "../../src/jc8048w550/JcDashLayout.hpp"
+#include "../../src/jc8048w550/JcJogLayout.hpp"
 #include "../../src/jc8048w550/JcScreens.hpp"
 
 // ---- stub globals ----------------------------------------------------------------------
@@ -50,7 +52,8 @@ public:
     void save_settings() override {}
     void apply_brightness() override {}
     void leave(JcLeaveTarget) override {}
-    const char* start_caps_read() override { return nullptr; }
+    const char* start_caps_read() override { ++reads_started; return nullptr; }
+    int reads_started = 0;
     void cancel_caps_read() override {}
 };
 
@@ -359,6 +362,123 @@ static void pure_checks() {
     jc_limits_summary(none, lines, 2);
     check(text_width(FontId::Body16, lines[0]) <= 760 - 6, "the Limits summary (worst case: everything unknown) fits its slot");
 
+    // Dashboard geometry (JcDashLayout.hpp is what PendantUi draws AND hit-tests).
+    {
+        auto hit = [](const ui::Rect& a, const ui::Rect& b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; };
+        const ui::Rect banner_area { dl::kBannerLeft, 13, static_cast<int16_t>(dl::kBannerRight - dl::kBannerLeft), 38 };
+        const ui::Rect title_area { dl::kTitleX, 8, static_cast<int16_t>(dl::kTitleMaxRight - dl::kTitleX), 48 };
+        std::vector<ui::Rect> header = { title_area, dl::kModeChip, dl::kLinkChip, banner_area, dl::kMenuButton, dl::kLinkButton };
+        bool overlap = false, onscreen = true;
+        for (size_t i = 0; i < header.size(); ++i) {
+            if (header[i].x < 0 || header[i].x + header[i].w > 800 || header[i].y + header[i].h > 64) onscreen = false;
+            for (size_t j = i + 1; j < header.size(); ++j) if (hit(header[i], header[j])) overlap = true;
+        }
+        check(!overlap, "dashboard header: title, mode chip, link chip, banner, MENU and LINK never overlap");
+        check(onscreen, "dashboard header controls stay inside the 800 px by 64 px header band");
+        check(!hit(dl::kHomeButton, banner_area) && !hit(dl::kHomeButton, dl::kLinkChip), "the HOME button of the other pages clears the chips and banner");
+        const char* const titles[] = { "FLUID DIAL", "CONNECTION", "WI-FI / FLUIDNC", "SETTINGS" };
+        bool titles_fit = true;
+        for (const char* ti : titles) if (dl::kTitleX + text_width(FontId::Heading24, ti) > dl::kTitleMaxRight) { titles_fit = false; printf("             title too wide: %s\n", ti); }
+        check(titles_fit, "every header title ends before the mode chip");
+        bool chips_fit = true;
+        for (const char* s : { "LIVE", "LIVE STALE", "DEMO MODE" }) if (text_width(FontId::Body16, s) > dl::kModeChip.w - 8) { chips_fit = false; printf("             mode label too wide: %s\n", s); }
+        for (const char* s : { "CNC OFFLINE", "FLUIDNC LINK", "DISCONNECTED", "WIFI CONNECTING", "FLUIDNC CONNECTING", "CONNECTED", "RECONNECTING", "STALE" })
+            if (text_width(FontId::Body16, s) > dl::kLinkChip.w - 8) { chips_fit = false; printf("             link label too wide: %s\n", s); }
+        check(chips_fit, "every mode and link label fits its chip");
+#if JC_JOG_PREVIEW
+        const char* const banners[] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY", "PREVIEW" };
+#else
+        const char* const banners[] = { "LIVE JOG TEST BUILD", "LIVE JOG TEST", "LIVE JOG" };
+#endif
+        bool banner_fits = false;
+        for (const char* b : banners) if (text_width(FontId::Body16, b) + 16 <= banner_area.w) { banner_fits = true; break; }
+        check(banner_fits, "a build banner wording fits beside the link chip on the dashboard");
+        std::vector<ui::Rect> body;
+        for (uint8_t i = 0; i < 4; ++i) body.push_back(dl::axis_card(i));
+        body.push_back(dl::kStatusStrip);
+        body.push_back(dl::kLowerPanel);
+        bool body_overlap = false;
+        for (size_t i = 0; i < body.size(); ++i) for (size_t j = i + 1; j < body.size(); ++j) if (hit(body[i], body[j])) body_overlap = true;
+        check(!body_overlap, "dashboard: the four coordinate cards, status strip and lower panel do not overlap");
+        bool header_clear = true;
+        for (const ui::Rect& r : body) for (const ui::Rect& h : header) if (hit(r, h)) header_clear = false;
+        check(header_clear, "MENU, LINK and the other header controls never overlap a coordinate card or panel");
+        check(hit(dl::kStatusStrip, dl::kReferenceButton) && dl::kReferenceButton.x + dl::kReferenceButton.w <= dl::kStatusStrip.x + dl::kStatusStrip.w,
+              "the MACHINE / WORK switch sits inside the status strip");
+        std::vector<ui::Rect> cells;
+        for (uint8_t i = 0; i < 6; ++i) { cells.push_back(dl::info_label(i)); cells.push_back(dl::info_value(i)); }
+        cells.push_back(dl::kDiagLine1);
+        cells.push_back(dl::kDiagLine2);
+        bool cells_ok = true;
+        for (size_t i = 0; i < cells.size(); ++i) {
+            if (cells[i].x < dl::kLowerPanel.x || cells[i].x + cells[i].w > dl::kLowerPanel.x + dl::kLowerPanel.w
+                || cells[i].y < dl::kLowerPanel.y || cells[i].y + cells[i].h > dl::kLowerPanel.y + dl::kLowerPanel.h) cells_ok = false;
+            for (size_t j = i + 1; j < cells.size(); ++j) if (hit(cells[i], cells[j])) cells_ok = false;
+            if (hit(cells[i], dl::kFooter)) cells_ok = false;
+        }
+        check(cells_ok, "status cells and diagnostics lie inside the lower panel and overlap neither each other nor the footer");
+        check(dl::kFooter.y + dl::kFooter.h <= 480, "the footer is on screen");
+        check(text_width(FontId::Dro18, "-9999.999") + 4 + text_width(FontId::Button20, "mm") <= 167 - 4, "a four-digit coordinate fits its card in the smallest DRO font");
+        char d[160];
+        snprintf(d, sizeof(d), "Endpoint: %.28s:%u   Age: %s", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", 65535u, "4294967295 ms");
+        check(text_width(FontId::Body16, d) <= dl::kDiagLine1.w - 4, "the endpoint / status-age line fits at its longest");
+        check(text_width(FontId::Body16, "Jog rehearsal: MENU > JOGGING.  PREVIEW ONLY - MOTION DISABLED.") <= dl::kDiagLine2.w - 4 &&
+              text_width(FontId::Body16, "Restricted X/Y jog: MENU > JOGGING.  LIVE JOG TEST BUILD.") <= dl::kDiagLine2.w - 4, "the dashboard mode line fits");
+        check(dl::kMenuButton.w >= 72 && dl::kLinkButton.w >= 72 && dl::kMenuButton.h >= 40 && dl::kModeChip.h >= 36, "MENU, LINK and the mode chip are large enough to touch");
+    }
+
+    // Jog page geometry: no two interactive regions overlap; every region lies on the 800x480 screen below the header.
+    {
+        std::vector<ui::Rect> btn;
+        for (uint8_t i = 0; i < 4; ++i) btn.push_back(jl::axis_rect(i));
+        for (uint8_t i = 0; i < kJcStepPresets; ++i) btn.push_back(jl::step_rect(i));
+        for (uint8_t i = 0; i < kJcFeedPresets; ++i) btn.push_back(jl::feed_rect(i));
+        for (const ui::Rect& r : { jl::kIncremental, jl::kArm, jl::kJogNeg, jl::kJogStop, jl::kJogPos, jl::kDro }) btn.push_back(r);
+        auto hit = [](const ui::Rect& a, const ui::Rect& b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; };
+        bool overlap = false, onscreen = true;
+        for (size_t i = 0; i < btn.size(); ++i) {
+            if (btn[i].x < 0 || btn[i].y < 64 || btn[i].x + btn[i].w > 800 || btn[i].y + btn[i].h > 480) onscreen = false;
+            for (size_t j = i + 1; j < btn.size(); ++j) if (hit(btn[i], btn[j])) overlap = true;
+        }
+        check(!overlap, "no two jog-page controls overlap");
+        check(onscreen, "every jog-page control is on screen below the header");
+        // Panel content stays inside the panel and the rows do not touch each other or the bottom region.
+        const ui::Rect rows[] = { jl::kPreviewSlot, jl::kResultSlot, jl::kMotionSlot, jl::kCapsSlot, jl::kWarnRect };
+        bool rows_ok = true;
+        for (size_t i = 0; i < 5; ++i) {
+            if (rows[i].y < jl::kPanelRect.y || rows[i].y + rows[i].h > jl::kPanelRect.y + jl::kPanelRect.h) rows_ok = false;
+            for (size_t j = i + 1; j < 5; ++j) if (hit(rows[i], rows[j])) rows_ok = false;
+        }
+        check(rows_ok, "panel rows are inside the panel and do not overlap");
+        check(!hit(jl::kAck, jl::kCapsSlot) && !hit(jl::kAck, jl::kMotionSlot), "the ACKNOWLEDGE button does not overlap panel rows");
+        bool above = true;
+        for (const ui::Rect& r : btn) if (hit(r, jl::kPanelRect)) above = false;
+        check(above, "no control reaches into the status panel");
+        // Worst-case labels fit their buttons with the same 20 px margin the button code uses.
+        const struct { const char* s; ui::Rect r; } labels[] = {
+            { "READ SETTINGS", jl::kArm }, { "READING 55/55", jl::kArm }, { "RETRY READ", jl::kArm }, { "ARM PREVIEW", jl::kArm },
+            { "ARMED 120s", jl::kArm }, { "NOT AVAILABLE", jl::kArm }, { "INCREMENTAL", jl::kIncremental },
+            { "Z  ON HOLD", jl::kJogNeg }, { "CANCEL JOG", jl::kJogStop }, { "100 /min", jl::feed_rect(0) }, { "1000 /min", jl::feed_rect(2) } };
+        bool fit = true;
+        for (const auto& l : labels) {
+            if (text_width(FontId::Button20, l.s) > l.r.w - 20 && text_width(FontId::Body16, l.s) > l.r.w - 20) { fit = false; printf("             label too wide: %s\n", l.s); }
+        }
+        check(fit, "every jog-page button label fits its button");
+        // The longest capability status line fits its row (single line).
+        char t1[160];
+        JcCapsFlow cf;
+        cf.phase = JcCapsPhase::Failed;
+        cf.can_read = true;
+        jc_caps_status_text(cf, 55, 55, JcLoadFailure::TimedOut, 0, t1, sizeof(t1));
+        char t2[200];
+        snprintf(t2, sizeof(t2), "REAL controller: %s", t1);
+        check(text_width(FontId::Body16, t2) <= jl::kCapsSlot.w - 4, "the capability status line fits its row");
+        cf.phase = JcCapsPhase::Expired;
+        jc_caps_status_text(cf, 0, 55, JcLoadFailure::None, 999 * 60000u, t1, sizeof(t1));
+        snprintf(t2, sizeof(t2), "REAL controller: %s", t1);
+        check(text_width(FontId::Body16, t2) <= jl::kCapsSlot.w - 4, "the capability expiry line fits its row");
+    }
+
     // The line under the jog panel must be ONE line (a second line overflows the panel).
     check(text_width(FontId::Body16, kJcLiveJogWarning) <= 744 - 4, "the live-jog warning under the panel fits one line");
     // The capabilities note must fit its two lines (768 px wide, 22 px apart, ending above y 480).
@@ -414,10 +534,9 @@ static void scenarios() {
     JcMenuScreen menu(r.sv);
     JcSettingsScreen settings_page(r.sv);
 
-    const ui::Rect axis[4] = { { 16, 76, 92, 50 }, { 116, 76, 92, 50 }, { 216, 76, 92, 50 }, { 316, 76, 92, 50 } };
-    const ui::Rect arm_btn { 640, 194, 144, 46 }, jog_neg { 16, 254, 250, 84 }, jog_stop { 275, 254, 250, 84 },
-        jog_pos { 534, 254, 250, 84 }, ack_btn { 28, 432, 744, 36 };
-    const ui::Rect step10 { 84 + 2 * 92, 138, 86, 46 };
+    const ui::Rect axis[4] = { jl::axis_rect(0), jl::axis_rect(1), jl::axis_rect(2), jl::axis_rect(3) };
+    const ui::Rect arm_btn = jl::kArm, jog_neg = jl::kJogNeg, jog_stop = jl::kJogStop, jog_pos = jl::kJogPos, ack_btn = jl::kAck;
+    const ui::Rect step10 = jl::step_rect(2);
 
     printf("[menu / settings]\n");
     menu.enter();
@@ -433,10 +552,44 @@ static void scenarios() {
     jog.enter();
     check_frame(r.gfx, "jog_x_unread", false);
 #if JC_JOG_UI
-    // Arming is refused: the read is missing.
+    // Entering the page in LIVE, Idle, fresh: ONE automatic read was requested. Tapping the shared button
+    // asks for a read instead of arming (nothing is armed without valid results).
+    check(r.host.reads_started == 1, "entering the jog page starts one automatic machine-settings read");
     touch_center(jog, arm_btn);
-    check_frame(r.gfx, "jog_arm_refused_unread", true);
-    touch_center(jog, ui::kDialogOk);
+    check(r.host.reads_started == 2 && !r.dispatcher.armed(), "READ SETTINGS requests a read and arms nothing");
+    check_frame(r.gfx, "jog_read_settings_offered", false);
+    {
+        Rig m;   // moving machine: no automatic read
+        JcJogScreen mj(m.sv);
+        m.status("Jog", 1, 2, 3, 0);
+        m.advance(1000);
+        mj.enter();
+        check(m.host.reads_started == 0, "no automatic read while the machine is not Idle");
+        touch_center(mj, arm_btn);
+        check_frame(m.gfx, "jog_read_blocked_dialog", true);
+        touch_center(mj, ui::kDialogOk);
+        Rig d;   // stale status: no automatic read
+        JcJogScreen dj(d.sv);
+        d.status("Idle", 1, 2, 3, 0, false);
+        d.advance(1000);
+        dj.enter();
+        check(d.host.reads_started == 0, "no automatic read without fresh status");
+        // A read in progress and a failed read.
+        Rig p;
+        JcJogScreen pj(p.sv);
+        p.status("Idle", 0, 0, 0, 0);
+        p.advance(1000);
+        p.loader.start(g_stub_millis, nullptr);
+        pj.enter();
+        check_frame(p.gfx, "jog_caps_reading", false);
+        touch_center(pj, arm_btn);
+        check_frame(p.gfx, "jog_caps_reading_tap", true);
+        touch_center(pj, ui::kDialogOk);
+        p.loader.cancel(g_stub_millis);
+        pj.enter();
+        check_frame(p.gfx, "jog_caps_failed", false);
+        check(!p.dispatcher.armed(), "a failed read leaves arming off");
+    }
 #endif
 
     printf("[capabilities / limits with the real controller read]\n");
@@ -446,6 +599,20 @@ static void scenarios() {
     check_frame(r.gfx, "limits_real", false);
     caps.enter();
     check_frame(r.gfx, "capabilities_real", false);
+#if JC_JOG_UI
+    {
+        // The read is only valid for kJcCapsMaxAgeMs: an old read is shown as EXPIRED and arming is off.
+        const uint32_t saved = g_stub_millis;
+        g_stub_millis += kJcCapsMaxAgeMs + 5000;
+        r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);
+        jog.enter();
+        check_frame(r.gfx, "jog_caps_expired", false);
+        touch_center(jog, arm_btn);
+        check(!r.dispatcher.armed(), "an expired read does not allow arming");
+        g_stub_millis = saved;
+        r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);
+    }
+#endif
 
 #if JC_JOG_UI
     printf("[jog page: gate, arming dialog]\n");

@@ -92,6 +92,7 @@ private:
     JcRef _display_reference = JcRef::Work;
     uint32_t _last_live_info_ms = 0;
     ui::Slot _info[6];
+    ui::Slot _diag[2];
     bool _keyboard_visible = true;
     bool _show_scan_results = false;
     const char* _wifi_notice = nullptr;
@@ -138,6 +139,7 @@ private:
     void draw();
     void draw_home();
     void draw_live_info(bool force);
+    void draw_diagnostics(bool force);
     bool use_uart() const;
     const JcLiveMachineStatus& live_status() const;
     bool live_fresh() const;

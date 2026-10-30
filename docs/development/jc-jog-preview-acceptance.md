@@ -44,3 +44,12 @@ Arm and acknowledge X, then:
 25. The capability data is discarded after the loss (Capabilities page asks for a new read).
 
 Send photographs and the pass/fail list. A serial capture of the session is recorded separately.
+
+## F. Instruction 008 additions (ordinary, motion-disabled firmware)
+27. DASHBOARD (LIVE): header row shows title, LIVE chip, link chip, blue PREVIEW banner, MENU, LINK without overlap; X Y Z A cards fully visible. No "NO JOG HERE" / "NO CANCEL HERE" buttons. Lower panel shows the six status cells, "Endpoint: host:port   Age: n ms" and the PREVIEW line. (P)
+28. MACHINE / WORK button still switches the reference; all four axes show values.
+29. MENU > JOGGING in LIVE with the machine Idle: the page starts one automatic read (button shows READING n/55, then ARM PREVIEW; the line under the panel says "REAL controller: Machine settings read n s ago"). (P)
+30. Disconnect the controller (or Wi-Fi), reconnect: the page shows "NOT read" with READ SETTINGS; after reconnect one automatic read runs; arming is not restored.
+31. Tap READ SETTINGS while the machine is not Idle (not possible to test without motion; skip) or in DEMO: a message explains why.
+32. LINK page: the Wi-Fi card shows the saved endpoint and "TAP TO EDIT HOST / IP"; tapping opens the Wi-Fi page with the host field. SETTINGS > CONNECTIONS shows "saved endpoint host:port" and EDIT HOST / IP.
+33. JOGGING page photo: axis row, STEP, FEED, ARM button, JOG - / CANCEL JOG / JOG +, the four status rows and the bottom warning are all readable and none overlaps. (P)
