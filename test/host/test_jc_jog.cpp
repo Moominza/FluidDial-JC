@@ -1602,7 +1602,87 @@ static void test_reconnect_clears_authorization() {
     CHECK(d.unprotected_ack_mask() == 0);
 }
 
+// ---- Instruction 006B: arming scope and the Limits summary --------------------------------
+
+static void test_arming_scope() {
+    JcDispatcher d;
+    // Nothing armed: nothing to drop.
+    CHECK(d.enforce_arming_scope(1000, true, true) == JcDisarmReason::None);
+
+    // Inside the window, LIVE, on the jog page: kept, with its acknowledgement.
+    d.arm_for(1000, 5000, 0x03);
+    CHECK(d.enforce_arming_scope(2000, true, true) == JcDisarmReason::None);
+    CHECK(d.armed() && d.unprotected_ack_mask() == 0x03);
+
+    // Leaving the jog page drops both.
+    CHECK(d.enforce_arming_scope(2100, true, false) == JcDisarmReason::LeftPage);
+    CHECK(!d.armed() && d.unprotected_ack_mask() == 0);
+
+    // Expiry drops both (exactly at the end of the window).
+    d.arm_for(1000, 5000, 0x01);
+    CHECK(d.enforce_arming_scope(5999, true, true) == JcDisarmReason::None);
+    CHECK(d.enforce_arming_scope(6000, true, true) == JcDisarmReason::Lapsed);
+    CHECK(!d.armed() && d.unprotected_ack_mask() == 0);
+
+    // DEMO mode drops both, even on the jog page and inside the window (the link may stay fresh).
+    d.arm_for(1000, 5000, 0x03);
+    CHECK(d.enforce_arming_scope(1500, false, true) == JcDisarmReason::DemoMode);
+    CHECK(!d.armed() && d.unprotected_ack_mask() == 0);
+
+    // After any drop, going back (LIVE, jog page) does NOT restore the arming or the acknowledgement.
+    CHECK(d.enforce_arming_scope(1600, true, true) == JcDisarmReason::None);
+    CHECK(!d.armed() && d.unprotected_ack_mask() == 0 && !d.armed_at(1600));
+
+    // Operator disarm and link loss clear the acknowledgement too.
+    d.arm_for(1000, 5000, 0x03);
+    d.disarm();
+    CHECK(d.unprotected_ack_mask() == 0);
+    d.arm_for(1000, 5000, 0x03);
+    d.on_link_lost();
+    CHECK(!d.armed() && d.unprotected_ack_mask() == 0);
+
+    // Precedence when several apply at once: DEMO first, then page, then lapse.
+    d.arm_for(1000, 100, 0x03);
+    CHECK(d.enforce_arming_scope(9000, false, false) == JcDisarmReason::DemoMode);
+    d.arm_for(1000, 100, 0x03);
+    CHECK(d.enforce_arming_scope(9000, true, false) == JcDisarmReason::LeftPage);
+    for (int r = 0; r <= static_cast<int>(JcDisarmReason::Lapsed); ++r) {
+        CHECK(strcmp(jc_disarm_reason_text(static_cast<JcDisarmReason>(r)), "?") != 0);
+    }
+}
+
+static void test_limits_summary() {
+    char lines[2][96];
+    // The accepted real baseline: X Y Z have a limit input but hard-limit protection is OFF; A has none.
+    JcMachineCaps c = real_baseline(0);
+    CHECK(jc_limits_summary(c, lines, 2) == 2);
+    CHECK_STR(lines[0], "X Y Z: LIMIT INPUT CONFIGURED, HARD LIMIT PROTECTION OFF");
+    CHECK_STR(lines[1], "A: NO LIMIT INPUT ASSIGNED, HARD LIMIT PROTECTION OFF");
+    // Never reads as protected while hard limits are OFF.
+    for (int i = 0; i < 2; ++i) CHECK(strstr(lines[i], "PROTECTION ON") == nullptr);
+
+    // Nothing read: everything is UNKNOWN, in one group, never OFF.
+    JcMachineCaps empty;
+    CHECK(jc_limits_summary(empty, lines, 2) == 1);
+    CHECK_STR(lines[0], "X Y Z A: LIMIT INPUT UNKNOWN, HARD LIMIT PROTECTION UNKNOWN");
+
+    // One axis with hard limits ON: it is a different group.
+    JcMachineCaps on = real_baseline(0);
+    set_value(on.axes[1], JcQueryField::HardLimits, 1.0f);
+    CHECK(jc_limits_summary(on, lines, 3 > 2 ? 2 : 2) >= 2);
+    char three[3][96];
+    CHECK(jc_limits_summary(on, three, 3) == 3);
+    CHECK_STR(three[0], "X Z: LIMIT INPUT CONFIGURED, HARD LIMIT PROTECTION OFF");
+    CHECK_STR(three[1], "Y: LIMIT INPUT CONFIGURED, HARD LIMIT PROTECTION ON");
+    CHECK_STR(three[2], "A: NO LIMIT INPUT ASSIGNED, HARD LIMIT PROTECTION OFF");
+    // Too many groups for the space: the last line says to look at the table instead of hiding any.
+    CHECK(jc_limits_summary(on, lines, 2) == 2);
+    CHECK_STR(lines[1], "(other axes differ: see the table)");
+}
+
 int main() {
+    test_arming_scope();
+    test_limits_summary();
     test_jog_gate_modes();
     test_position_trust_and_wording();
     test_gate_authorization();

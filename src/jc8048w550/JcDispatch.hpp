@@ -37,6 +37,19 @@ struct JcDispatchRecord {
     uint32_t       ms;
 };
 
+// Why an arming (and the per-axis acknowledgement that belongs to it) was dropped.
+enum class JcDisarmReason : uint8_t { None, DemoMode, LeftPage, Lapsed };
+
+inline const char* jc_disarm_reason_text(JcDisarmReason r) {
+    switch (r) {
+        case JcDisarmReason::None: return "none";
+        case JcDisarmReason::DemoMode: return "DEMO mode";
+        case JcDisarmReason::LeftPage: return "left the jog page";
+        case JcDisarmReason::Lapsed: return "arming expired";
+    }
+    return "?";
+}
+
 class JcDispatcher {
 public:
     static constexpr uint8_t kHistory = 8;
@@ -168,6 +181,23 @@ public:
         _unprotected_ack_mask = 0;  // an acknowledgement never outlives its arming
     }
     uint8_t unprotected_ack_mask() const { return _unprotected_ack_mask; }
+
+    // Called every main-loop pass. An arming only exists while the operator is on the jog
+    // page (or a dialog opened from it), in LIVE mode, and inside its time window. Anything
+    // else disarms and clears the acknowledgement. Link loss is handled by on_link_lost().
+    JcDisarmReason enforce_arming_scope(uint32_t now_ms, bool live_mode, bool on_jog_page) {
+        if (!_armed) {
+            return JcDisarmReason::None;
+        }
+        JcDisarmReason reason = JcDisarmReason::None;
+        if (!live_mode) reason = JcDisarmReason::DemoMode;
+        else if (!on_jog_page) reason = JcDisarmReason::LeftPage;
+        else if (!armed_at(now_ms)) reason = JcDisarmReason::Lapsed;
+        if (reason != JcDisarmReason::None) {
+            disarm();
+        }
+        return reason;
+    }
     bool armed() const { return _armed; }
     bool armed_at(uint32_t now_ms) const {
         return _armed && (_arm_expires_ms == 0 || static_cast<int32_t>(now_ms - _arm_expires_ms) < 0);

@@ -59,6 +59,32 @@ void header(Arduino_GFX& d, const char* title, const char* mode_label, bool mode
     button(d, kBackButton, "BACK");
 }
 
+bool live_jog_banner(const char* title, Rect& box, const char*& text) {
+    static const char* const kWordings[3] = { "LIVE JOG TEST BUILD", "JOG TEST BUILD", "JOG TEST" };
+    const int16_t left = static_cast<int16_t>(18 + text_width(FontId::Heading24, title) + 14);
+    const int16_t right = static_cast<int16_t>(kHeaderChipLeft - 8);
+    for (const char* w : kWordings) {
+        const int16_t width = static_cast<int16_t>(text_width(FontId::Body16, w) + 16);
+        if (left + width <= right) {
+            box = { left, 13, width, 38 };
+            text = w;
+            return true;
+        }
+    }
+    return false;
+}
+
+void draw_live_jog_banner(Arduino_GFX& d, const char* title) {
+    Rect box {};
+    const char* text = nullptr;
+    if (!live_jog_banner(title, box, text)) {
+        return;
+    }
+    d.fillRect(box.x, box.y, box.w, box.h, RED);
+    d.drawRect(box.x, box.y, box.w, box.h, WHITE);
+    text_center(d, box, text, FontId::Body16, WHITE, RED);
+}
+
 int16_t wrap(Arduino_GFX& d, Rect r, const char* s, FontId font, uint16_t fg, uint16_t bg) {
     char line[96];
     int16_t y = r.y;

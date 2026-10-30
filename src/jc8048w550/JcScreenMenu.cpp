@@ -15,7 +15,7 @@ struct Tile {
 
 constexpr Tile kTiles[9] = {
     { "DASHBOARD", "Live X Y Z A", JcPage::Count },
-    { "JOGGING", "Preview only", JcPage::Jog },
+    { "JOGGING", JC_LIVE_JOG_TEST ? "TEST: X/Y 1 mm only" : "Preview only", JcPage::Jog },
     { "HOMING", "Preview only", JcPage::Homing },
     { "PROBING", "Preview only", JcPage::Probing },
     { "WORK OFFSETS", "G54-G59, zero/set", JcPage::Offsets },

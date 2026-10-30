@@ -120,7 +120,7 @@ void JcJogScreen::draw_bottom() {
         return;
     }
     ui::wrap(sv.display, { 28, 436, 744, 34 },
-             "LIVE JOG TEST. Software cancel is NOT an emergency stop. Keep a hand on the machine's physical E-stop.",
+             "Software cancel is NOT an emergency stop and cannot work without communication. Keep the E-stop in reach.",
              FontId::Body16, RED, ui::kPanel);
 #else
     ui::wrap(sv.display, { 28, 436, 744, 34 },
@@ -192,7 +192,11 @@ void JcJogScreen::draw_live() {
     char result[96];
     uint16_t color = ui::kMuted;
     const JcJogResult r = sv.jogs.result();
-    if (sv.jogs.phase() == JcJogPhase::AwaitingAck) {
+    if (sv.jogs.unresolved() && !sv.live_fresh()) {
+        // Without communication the software cancel cannot be relied on: say so, loudly.
+        snprintf(result, sizeof(result), "NO COMMUNICATION: software cancel unreliable. USE E-STOP");
+        color = RED;
+    } else if (sv.jogs.phase() == JcJogPhase::AwaitingAck) {
         snprintf(result, sizeof(result), "sent, waiting for the controller's ok");
         color = ui::kInfo;
     } else if (sv.jogs.phase() == JcJogPhase::Accepted || sv.jogs.phase() == JcJogPhase::Moving) {

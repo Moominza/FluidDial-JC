@@ -240,6 +240,44 @@ inline void jc_limit_wording(const JcAxisCaps& a, char* input, size_t input_size
              hard == JcTri::Yes ? "ON" : (hard == JcTri::No ? "OFF" : "UNKNOWN"));
 }
 
+// Axes grouped by (limit input, hard-limit protection), one line per group, e.g.
+//   "X Y Z: LIMIT INPUT CONFIGURED, HARD LIMIT PROTECTION OFF"
+//   "A: NO LIMIT INPUT ASSIGNED, HARD LIMIT PROTECTION OFF"
+// At most `max_lines` lines are written; if there are more groups the last line says so.
+// Returns the number of lines. Used by the Limits page so the two facts are never merged.
+inline uint8_t jc_limits_summary(const JcMachineCaps& caps, char lines[][96], uint8_t max_lines) {
+    char keys[4][2][72] = {};
+    char names[4][8] = {};
+    uint8_t groups = 0;
+    for (uint8_t axis = 0; axis < 4; ++axis) {
+        char input[72], protection[48];
+        jc_limit_wording(caps.axes[axis], input, sizeof(input), protection, sizeof(protection));
+        // Drop the pin detail: the grouping is about the fact, not the pin name.
+        char* paren = strchr(input, '(');
+        if (paren != nullptr) {
+            *(paren > input && paren[-1] == ' ' ? paren - 1 : paren) = '\0';
+        }
+        uint8_t g = 0;
+        while (g < groups && !(strcmp(keys[g][0], input) == 0 && strcmp(keys[g][1], protection) == 0)) ++g;
+        if (g == groups) {
+            snprintf(keys[g][0], sizeof(keys[g][0]), "%s", input);
+            snprintf(keys[g][1], sizeof(keys[g][1]), "%s", protection);
+            ++groups;
+        }
+        const size_t used = strlen(names[g]);
+        snprintf(names[g] + used, sizeof(names[g]) - used, "%s%c", used ? " " : "", "XYZA"[axis]);
+    }
+    uint8_t written = 0;
+    for (uint8_t g = 0; g < groups && written < max_lines; ++g) {
+        if (written + 1 == max_lines && g + 1 < groups) {
+            snprintf(lines[written++], 96, "(other axes differ: see the table)");
+            break;
+        }
+        snprintf(lines[written++], 96, "%s: %s, %s", names[g], keys[g][0], keys[g][1]);
+    }
+    return written;
+}
+
 // ---- strict jog line ---------------------------------------------------------
 
 struct JcJogRequest {

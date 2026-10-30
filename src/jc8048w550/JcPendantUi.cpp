@@ -192,7 +192,11 @@ void PendantUi::begin() {
     if (_calibration_loaded) {
         _page = Page::Home;
         draw();
+#if JC_LIVE_JOG_TEST
+        Serial.println("ui: landscape demo started; saved calibration active; LIVE JOG TEST BUILD: restricted X/Y jog available from MENU > JOGGING.");
+#else
         Serial.println("ui: landscape demo started; saved calibration active; recovery hold available for 10s; manual read-only status available; motion disabled.");
+#endif
     } else {
         Serial.println("ui: no saved calibration; opening guided calibration before dashboard.");
         begin_calibration();
@@ -475,10 +479,19 @@ void PendantUi::draw_jog_button(Feedback feedback) {
                 draw_button(feedback == Feedback::JogNegative
                                 ? Rect { 30, 376, 260, 74 }
                                 : Rect { 510, 376, 260, 74 },
+#if JC_LIVE_JOG_TEST
+                            "NO JOG HERE: USE MENU", false, true);
+#else
                             "MOTION DISABLED", false, true);
+#endif
                 break;
             case Feedback::Stop:
+#if JC_LIVE_JOG_TEST
+                // This button sends nothing. It must not look like a working cancel.
+                draw_button({ 300, 376, 200, 74 }, "NO CANCEL HERE", false, true);
+#else
                 draw_button({ 300, 376, 200, 74 }, "READ ONLY", false, true);
+#endif
                 break;
             case Feedback::None:
                 break;
@@ -582,6 +595,17 @@ void PendantUi::draw_header(const char* title) {
     _display.drawRect(368, 13, 208, 38, connected ? kSuccess : kBorder);
     draw_text_centered(_display, { 368, 13, 208, 38 }, link_label,
                        FontId::Button20, connected ? WHITE : kMuted, link_fill);
+#if JC_LIVE_JOG_TEST
+    // Prominent banner on every dashboard-style page of the experimental build (x 584..796).
+    {
+        const char* banner = "LIVE JOG TEST BUILD";
+        const int16_t bw = static_cast<int16_t>(text_width(FontId::Body16, banner) + 16);
+        const Rect box { 584, 13, bw, 38 };
+        _display.fillRect(box.x, box.y, box.width, box.height, RED);
+        _display.drawRect(box.x, box.y, box.width, box.height, WHITE);
+        draw_text_centered(_display, box, banner, FontId::Body16, WHITE, RED);
+    }
+#endif
 }
 
 void PendantUi::draw_machine_status() {
@@ -665,6 +689,15 @@ void PendantUi::draw_home() {
 
     _display.fillRect(16, 243, 768, 225, kPanel);
     _display.drawRect(16, 243, 768, 225, kBorder);
+#if JC_LIVE_JOG_TEST
+    draw_text_top(_display, 30, 248,
+                  _live_mode ? "LIVE STATUS" : "DEMO JOG CONTROLS",
+                  FontId::Button20, WHITE, kPanel);
+    draw_text_top(_display, 320, 253,
+                  _live_mode ? "This page sends nothing. Restricted jog: MENU > JOGGING"
+                             : "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
+                  FontId::Body16, RED, kPanel);
+#else
     draw_text_top(_display, 30, 248,
                   _live_mode ? "READ-ONLY LIVE STATUS" : "DEMO JOG CONTROLS",
                   FontId::Button20, WHITE, kPanel);
@@ -672,6 +705,7 @@ void PendantUi::draw_home() {
                   _live_mode ? "MOTION DISABLED - NO COMMANDS SENT"
                              : "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
                   FontId::Body16, kMuted, kPanel);
+#endif
 
     if (_live_mode) {
         draw_live_info(true);
@@ -1168,6 +1202,17 @@ void PendantUi::draw_connections() {
 
     _display.fillRect(16, 290, 768, 152, kAccentDark);
     _display.drawRect(16, 290, 768, 152, RED);
+#if JC_LIVE_JOG_TEST
+    draw_text_centered(_display, { 34, 300, 732, 34 },
+                       "STATUS CONNECTION - LIVE JOG TEST BUILD",
+                       FontId::Button20, WHITE, kAccentDark);
+    draw_text_centered(_display, { 34, 340, 732, 26 },
+                       "Wi-Fi opens network and FluidNC settings.",
+                       FontId::Body16, kMuted, kAccentDark);
+    draw_text_centered(_display, { 34, 368, 732, 26 },
+                       "Only a restricted X/Y jog and jog cancel can be sent (MENU > JOGGING).",
+                       FontId::Body16, WHITE, kAccentDark);
+#else
     draw_text_centered(_display, { 34, 300, 732, 34 },
                        "READ-ONLY STATUS CONNECTION",
                        FontId::Button20, WHITE, kAccentDark);
@@ -1177,6 +1222,7 @@ void PendantUi::draw_connections() {
     draw_text_centered(_display, { 34, 368, 732, 26 },
                        "No G-code or motion commands are sent.",
                        FontId::Body16, kMuted, kAccentDark);
+#endif
     draw_text_centered(_display, { 34, 394, 732, 26 },
                        "UART and Bluetooth are not implemented.",
                        FontId::Body16, kMuted, kAccentDark);
@@ -1550,9 +1596,15 @@ void PendantUi::set_live_mode(bool live) {
     _last_displayed_status_sequence = 0;
     strlcpy(_last_displayed_machine_state, "", sizeof(_last_displayed_machine_state));
     _last_displayed_reference = JcCoordinateReference::Unknown;
+#if JC_LIVE_JOG_TEST
+    _last_action = live ? "LIVE - jog test build (jog only from MENU)"
+                        : "DEMO mode - simulated coordinates";
+    Serial.printf("ui: mode=%s\n", live ? "LIVE (LIVE JOG TEST BUILD)" : "DEMO");
+#else
     _last_action = live ? "LIVE read-only - machine motion disabled"
                         : "DEMO mode - simulated coordinates";
     Serial.printf("ui: mode=%s\n", live ? "LIVE read-only" : "DEMO");
+#endif
     if (_page == Page::Home) {
         redraw();
     } else if (_page == Page::WifiSettings) {

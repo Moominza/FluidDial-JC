@@ -291,7 +291,7 @@ protected:
 private:
     void draw_values(bool full);
     ui::Slot _cells[4][5];
-    ui::Slot _lines[4];
+    ui::Slot _lines[6];
     uint32_t _last_tick = 0;
     uint32_t _drawn_key = 0;
 };

@@ -38,6 +38,8 @@ constexpr uint16_t kInfo = 0x051F;
 constexpr uint16_t kWarn = 0xFD20;
 
 constexpr Rect kBackButton { 690, 10, 94, 44 };
+// The page header's mode chip (LIVE / DEMO) occupies x 520..670 (see header()).
+constexpr int16_t kHeaderChipLeft = 520;
 constexpr int16_t kContentTop = 72;
 
 inline bool hit(const Rect& r, uint16_t x, uint16_t y) {
@@ -53,6 +55,13 @@ void button(Arduino_GFX& d, Rect r, const char* label, Btn style = Btn::Normal);
 void panel(Arduino_GFX& d, Rect r, uint16_t fill = kPanel);
 // Title bar with BACK button and a mode chip (LIVE / DEMO ...).
 void header(Arduino_GFX& d, const char* title, const char* mode_label, bool mode_ok);
+// "LIVE JOG TEST BUILD" banner for the page header of the experimental build only. It goes
+// between the (variable-width) page title and the mode chip. Picks the longest of three
+// wordings that fits; returns false only if none does (a test asserts that never happens
+// for any page title). The banner never overlaps the title, the chip or the BACK button.
+bool live_jog_banner(const char* title, Rect& box, const char*& text);
+void draw_live_jog_banner(Arduino_GFX& d, const char* title);
+
 // Word-wrapped text inside `r`; returns the y below the last line drawn.
 int16_t wrap(Arduino_GFX& d, Rect r, const char* s, FontId font, uint16_t fg, uint16_t bg);
 

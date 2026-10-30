@@ -275,14 +275,12 @@ void JcApp::service() {
         _jogs.on_link_lost(now, false);  // DEMO mode has no controller
     }
 #if JC_LIVE_JOG_TEST
-    // Arming is only meaningful on the jog page (or an input dialog opened from it).
-    if (_dispatcher.armed() && _nav.current() != JcPage::Jog && _nav.current() != JcPage::Input) {
-        _dispatcher.disarm();
-        Serial.println("jogtest: disarmed (left the jog page)");
-    }
-    if (_dispatcher.armed() && !_dispatcher.armed_at(now)) {
-        _dispatcher.disarm();
-        Serial.println("jogtest: arming lapsed");
+    // Arming (and its acknowledgement) only exists on the jog page (or an input dialog opened
+    // from it), in LIVE mode and inside its time window; anything else drops both.
+    const JcDisarmReason dropped = _dispatcher.enforce_arming_scope(
+        now, _sv.live_mode, _nav.current() == JcPage::Jog || _nav.current() == JcPage::Input);
+    if (dropped != JcDisarmReason::None) {
+        Serial.printf("jogtest: disarmed (%s); acknowledgement cleared\n", jc_disarm_reason_text(dropped));
     }
 #endif
     if (_loader.running() && !_sv.live_mode) {

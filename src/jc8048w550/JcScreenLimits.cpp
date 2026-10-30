@@ -167,12 +167,17 @@ void JcLimitsScreen::draw_values(bool full) {
     char line[100];
     snprintf(line, sizeof(line), "Start must_home: %s   (the controller refuses motion until homed when YES)",
              tri_name(caps.must_home_tri()));
-    _lines[0].draw(sv.display, { 22, 240, 760, 24 }, line, FontId::Body16,
+    _lines[0].draw(sv.display, { 22, 238, 760, 22 }, line, FontId::Body16,
                    caps.must_home_state == JcFieldState::Unqueried ? ui::kMuted : WHITE, ui::kBg);
-    _lines[1].draw(sv.display, { 22, 264, 760, 24 }, "Soft limits only mean something if the machine position is valid (homed).",
-                   FontId::Body16, ui::kMuted, ui::kBg);
-    _lines[2].draw(sv.display, { 22, 288, 760, 24 },
-                   "A limit INPUT is not protection unless HARD is ON. Travel is not a safe path.",
+    // The two facts are never merged: is a limit INPUT configured, and is HARD LIMIT PROTECTION on.
+    char groups[2][96];
+    const uint8_t n = jc_limits_summary(caps, groups, 2);
+    for (uint8_t g = 0; g < 2; ++g) {
+        _lines[1 + g].draw(sv.display, { 22, static_cast<int16_t>(260 + g * 22), 760, 22 }, g < n ? groups[g] : "",
+                           FontId::Body16, WHITE, ui::kBg);
+    }
+    _lines[3].draw(sv.display, { 22, 304, 760, 22 },
+                   "A limit INPUT is not protection unless HARD is ON. Soft limits need a valid position.",
                    FontId::Body16, ui::kWarn, ui::kBg);
 
     uint16_t status_color = ui::kMuted;
@@ -196,7 +201,7 @@ void JcLimitsScreen::draw_values(bool full) {
             status_color = ui::kWarn;
             break;
     }
-    _lines[3].draw(sv.display, { 22, 322, 760, 24 }, line, FontId::Body16, status_color, ui::kBg);
+    _lines[4].draw(sv.display, { 22, 330, 760, 22 }, line, FontId::Body16, status_color, ui::kBg);
 }
 
 void JcLimitsScreen::on_draw() {

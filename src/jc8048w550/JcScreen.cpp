@@ -39,6 +39,9 @@ void JcScreen::draw() {
     const bool fresh = sv.live_fresh();
     const char* mode = sv.live_mode ? (fresh ? "LIVE" : "LIVE STALE") : "DEMO MODE";
     ui::header(sv.display, jc_page_title(page()), mode, fresh);
+#if JC_LIVE_JOG_TEST
+    ui::draw_live_jog_banner(sv.display, jc_page_title(page()));  // on every page of the experimental build
+#endif
     on_draw();
     if (dialog.is_open()) {
         dialog.draw(sv.display);
