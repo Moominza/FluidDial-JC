@@ -111,6 +111,7 @@ void PendantUi::update_model() {
     }
     _app.note_link_fresh(live_fresh());
     _app.service();
+    service_auto_live();
 }
 
 void PendantUi::app_leave_thunk(void* user, JcLeaveTarget target) {
@@ -183,9 +184,41 @@ bool PendantUi::contains(Rect bounds, uint16_t x, uint16_t y) const {
         && x < bounds.x + bounds.width && y < bounds.y + bounds.height;
 }
 
+// Power-up: restore the connection the operator last chose, once the display, touch and settings
+// are running. Only the saved Wi-Fi configuration of the SELECTED Wi-Fi transport is ever started;
+// a wired UART or BLE selection is never auto-started and transports are never switched.
+void PendantUi::start_auto_connect() {
+    const bool wifi_selected = !use_uart() && _app.settings().transport == 0;
+    const JcBootDecision decision = jc_boot_connect_decision(_fluidnc.auto_pref(), _fluidnc.config().valid, wifi_selected);
+    if (!decision.connect) {
+        Serial.printf("net: auto-connect not started: %s\n", decision.reason);
+        return;
+    }
+    Serial.printf("net: auto-connect started from saved settings (%s)\n", decision.reason);
+    _fluidnc.connect();
+    _auto_live_pending = true;   // LIVE is shown only after valid, fresh status arrives
+}
+
+// Every pass: enter LIVE for an automatic connection once valid, fresh status has arrived.
+void PendantUi::service_auto_live() {
+    if (!_auto_live_pending) {
+        return;
+    }
+    if (!_fluidnc.connect_requested() || _live_mode) {
+        _auto_live_pending = false;   // disconnected or LIVE already chosen: nothing to do
+        return;
+    }
+    if (jc_auto_live_allowed(true, live_fresh(), _fluidnc.auto_pref())) {
+        _auto_live_pending = false;
+        Serial.println("ui: LIVE entered: valid, fresh status received after the automatic connection");
+        set_live_mode(true);
+    }
+}
+
 void PendantUi::begin() {
     _fluidnc.begin();
     _app.begin(&PendantUi::app_leave_thunk, this);
+    start_auto_connect();
     _edit_wifi_config = _fluidnc.config();
     _calibration_loaded = load_calibration();
     _recovery_window_until = millis() + kRecoveryWindowMs;
@@ -585,16 +618,18 @@ void PendantUi::draw_header(const char* title) {
                        FontId::Button20, WHITE, mode_fill);
 
     const bool connected = link_state == JcFluidState::Connected;
-    const char* link_label = connected ? "FLUIDNC LINK"
-        : (_live_mode && (link_state == JcFluidState::Stale
-                          || link_state == JcFluidState::Lost
-                          || link_state == JcFluidState::InvalidData)
-            ? "DISCONNECTED" : "CNC OFFLINE");
+    // Wi-Fi: the six honest states (WIFI CONNECTING / FLUIDNC CONNECTING / CONNECTED / RECONNECTING /
+    // DISCONNECTED / STALE). CONNECTED only ever means valid, fresh status. The wired UART keeps its own text.
+    const char* link_label = use_uart()
+        ? (connected ? "FLUIDNC LINK"
+           : (_live_mode && (link_state == JcFluidState::Stale || link_state == JcFluidState::Lost
+                             || link_state == JcFluidState::InvalidData) ? "DISCONNECTED" : "CNC OFFLINE"))
+        : jc_conn_label_text(_fluidnc.conn_label());
     const uint16_t link_fill = connected ? 0x0320 : kBackground;
     _display.fillRect(368, 13, 208, 38, link_fill);
     _display.drawRect(368, 13, 208, 38, connected ? kSuccess : kBorder);
     draw_text_centered(_display, { 368, 13, 208, 38 }, link_label,
-                       FontId::Button20, connected ? WHITE : kMuted, link_fill);
+                       strlen(link_label) > 14 ? FontId::Body16 : FontId::Button20, connected ? WHITE : kMuted, link_fill);
 #if JC_LIVE_JOG_TEST
     // Prominent banner on every dashboard-style page of the experimental build (x 584..796).
     {
@@ -1315,25 +1350,29 @@ void PendantUi::draw_wifi_field(uint8_t index) {
 void PendantUi::draw_wifi_diagnostics() {
     _display.fillRect(186, 200, 594, 54, kBackground);
     char status_line[96];
-    snprintf(status_line, sizeof(status_line), "Wi-Fi: %s  |  FluidNC: %s",
-             _fluidnc.wifi_connected() ? "CONNECTED" : "DISCONNECTED",
-             JcReadOnlyFluidNc::state_name(_fluidnc.state()));
+    snprintf(status_line, sizeof(status_line), "Wi-Fi: %s  |  %s  |  auto: %s",
+             _fluidnc.wifi_connected() ? "UP" : "DOWN", jc_conn_label_text(_fluidnc.conn_label()),
+             _fluidnc.auto_pref() == JcAutoPref::Off ? "OFF" : "ON");
     draw_text_top(_display, 190, 202, status_line, FontId::Body16, kInfo, kBackground);
 
-    const uint32_t age = _fluidnc.last_status_age_ms();
+    // Diagnostics: last success, attempts, time to the next retry. Not a live status age: the
+    // status itself is on the dashboard.
     char diagnostic_line[112];
-    if (age == UINT32_MAX) {
-        snprintf(diagnostic_line, sizeof(diagnostic_line),
-                 "Status: none  |  attempts: %lu  |  errors: %lu",
-                 static_cast<unsigned long>(_fluidnc.reconnect_attempts()),
-                 static_cast<unsigned long>(_fluidnc.parse_errors()));
+    char last_ok[24];
+    if (_fluidnc.ever_connected()) {
+        snprintf(last_ok, sizeof(last_ok), "%lu s ago",
+                 static_cast<unsigned long>((millis() - _fluidnc.last_connected_ms()) / 1000u));
     } else {
-        snprintf(diagnostic_line, sizeof(diagnostic_line),
-                 "Age: %lu ms  |  interval: %lu ms  |  attempts: %lu  |  errors: %lu",
-                 static_cast<unsigned long>(age),
-                 static_cast<unsigned long>(_fluidnc.status().update_interval_ms),
-                 static_cast<unsigned long>(_fluidnc.reconnect_attempts()),
-                 static_cast<unsigned long>(_fluidnc.parse_errors()));
+        snprintf(last_ok, sizeof(last_ok), "never");
+    }
+    const uint32_t retry_ms = _fluidnc.next_retry_in_ms();
+    if (retry_ms > 0) {
+        snprintf(diagnostic_line, sizeof(diagnostic_line), "Last OK: %s | tries: %lu | retry in %lu s | errors: %lu",
+                 last_ok, static_cast<unsigned long>(_fluidnc.reconnect_attempts()),
+                 static_cast<unsigned long>((retry_ms + 999u) / 1000u), static_cast<unsigned long>(_fluidnc.parse_errors()));
+    } else {
+        snprintf(diagnostic_line, sizeof(diagnostic_line), "Last OK: %s | tries: %lu | errors: %lu", last_ok,
+                 static_cast<unsigned long>(_fluidnc.reconnect_attempts()), static_cast<unsigned long>(_fluidnc.parse_errors()));
     }
     draw_text_top(_display, 190, 222, diagnostic_line, FontId::Body16,
                   kMuted, kBackground);
@@ -1579,7 +1618,35 @@ void PendantUi::set_live_mode(bool live) {
     if (live == _live_mode) {
         return;
     }
+    if (!live && !use_uart()) {
+        // DEMO is a decision too: stop the live connection and never silently reconnect to the
+        // controller. LIVE (or CONNECT) is needed to bring it back.
+        _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::SwitchToDemo));
+        _auto_live_pending = false;
+        if (_fluidnc.connect_requested()) {
+            _fluidnc.disconnect();
+            Serial.println("net: DEMO selected; live connection closed and not restored automatically");
+        }
+    }
     if (live && !live_fresh()) {
+        // LIVE requested without a live link: start the saved connection and enter LIVE only when
+        // valid status arrives (never before).
+        if (!use_uart() && _app.settings().transport == 0 && _fluidnc.config().valid) {
+            if (!_fluidnc.connect_requested()) {
+                _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::SwitchToLive));
+                _fluidnc.connect();
+            }
+            _auto_live_pending = true;
+            Serial.println("live: connecting; LIVE starts when valid status arrives");
+            _last_action = "Connecting - LIVE starts when valid status arrives";
+            _wifi_notice = "Connecting - LIVE starts when valid 4-axis status arrives.";
+            if (_page == Page::Home) {
+                draw_home_footer();
+            } else if (_page == Page::WifiSettings) {
+                draw_wifi_diagnostics();
+            }
+            return;
+        }
         Serial.println("live: activation denied; no fresh valid FluidNC status");
         _last_action = "LIVE unavailable - connect and receive valid 4-axis status";
         _wifi_notice = "LIVE unavailable - connect and receive valid 4-axis status.";
@@ -1589,6 +1656,9 @@ void PendantUi::set_live_mode(bool live) {
             draw_wifi_diagnostics();
         }
         return;
+    }
+    if (live && !use_uart()) {
+        _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::SwitchToLive));
     }
     _live_mode = live;
     _wifi_notice = nullptr;
@@ -1673,9 +1743,14 @@ void PendantUi::handle_wifi_touch(uint16_t x, uint16_t y) {
     }
     if (contains({ 200, 449, 200, 27 }, x, y)) {
         if (_fluidnc.connect_requested()) {
+            // A manual disconnect is a decision: nothing reconnects until the operator connects again.
+            _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::ManualDisconnect));
+            _auto_live_pending = false;
             _fluidnc.disconnect();
+            Serial.println("net: manual disconnect; automatic reconnection is suppressed until CONNECT");
         } else if (_fluidnc.save_config(_edit_wifi_config)) {
             _edit_wifi_config = _fluidnc.config();
+            _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::ManualConnect));
             _fluidnc.connect();
         } else {
             _wifi_notice = "Could not save Wi-Fi settings; connection not started.";

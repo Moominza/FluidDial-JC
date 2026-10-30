@@ -23,6 +23,9 @@ diagnostics. Transports: Wi-Fi (read-only status), wired UART (read-only status,
 unverified wiring), Bluetooth LE (unavailable: no FluidNC BLE service). See the
 [architecture](docs/development/jc-architecture.md) for the module map.
 
+After a restart the JC reconnects to the saved FluidNC controller by itself (Wi-Fi only; see
+[auto-connect](docs/development/jc-auto-connect.md)); a manual disconnect or DEMO turns that off.
+
 Build: `pio run -e jc8048w550` (also `m5dial`, `cyddial`). Host unit tests:
 `python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`).
 

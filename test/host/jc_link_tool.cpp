@@ -26,6 +26,11 @@
 // blocks every one of them. The tool never touches a socket: bytes the session wants
 // to transmit are collected and printed by JTX, and the Python harness forwards them
 // to the simulator.
+// Connection commands (Instruction 006C.1):
+//   REQUEST           a connection is wanted (boot auto-connect or operator); nothing is up yet
+//   UP                the transport connected (link up, no valid status yet)
+//   DISCONNECT        the operator's manual disconnect
+//   RETRYMS           print the milliseconds until the next retry is due (0 = none)
 //   JARM              operator arms the jog test and acknowledges "no controller travel
 //                     protection" for X and Y (lapses by itself)
 //   JARMX             armed WITHOUT that acknowledgement
@@ -174,6 +179,14 @@ int main() {
                    session.cancels_sent(), session.timeouts(), session.losses(),
                    session.refused_policy() + session.refused_busy() + session.refused_class(), session.unsolicited(),
                    session.unexpected_motion(), session.foreign_motion(), session.cancel_unconfirmed() ? 1 : 0);
+        } else if (strncmp(line, "REQUEST", 7) == 0) {
+            tracker.request_connect(now);   // a connection is wanted; nothing is up yet
+        } else if (strncmp(line, "RETRYMS", 7) == 0) {
+            printf("%u\n", static_cast<unsigned>(tracker.ms_until_retry(now)));
+        } else if (strncmp(line, "UP", 2) == 0 && line[2] != 'D') {
+            tracker.on_connected();
+        } else if (strncmp(line, "DISCONNECT", 10) == 0) {
+            tracker.request_disconnect();   // the operator's manual disconnect
         } else if (strncmp(line, "CONNECT", 7) == 0) {
             tracker.request_connect(now);
             tracker.on_connected();

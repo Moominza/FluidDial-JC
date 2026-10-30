@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sources = [os.path.join(root, "test", "host", n) for n in ("test_jc_core.cpp", "test_jc_app.cpp", "test_jc_control.cpp")]
+sources = [os.path.join(root, "test", "host", n) for n in ("test_jc_core.cpp", "test_jc_app.cpp", "test_jc_control.cpp", "test_jc_conn.cpp")]
 
 
 def find_cxx():

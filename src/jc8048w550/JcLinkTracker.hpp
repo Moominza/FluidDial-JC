@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include "JcConnPolicy.hpp"
 #include "JcLinkTypes.hpp"
 
 namespace jc8048w550 {
@@ -17,10 +18,13 @@ namespace jc8048w550 {
 class JcLinkTracker {
 public:
     static constexpr uint32_t kStaleMs = 3000;
-    static constexpr uint32_t kRetryDelayMs = 2000;
+    // Retries use bounded exponential backoff (JcConnPolicy.hpp): 2, 4, 8, 16, 30, 30 ... seconds,
+    // restarting from 2 s after a valid frame.
 
     void request_connect(uint32_t now) {
         _requested = true;
+        _retries_since_ok = 0;   // a new request starts the backoff over
+        _initial_attempt = true; // the first attempt is immediate and is not a retry
         _next_retry_ms = now;
     }
 
@@ -43,7 +47,7 @@ public:
         }
         _up = false;
         _lost = true;
-        _next_retry_ms = now + kRetryDelayMs;
+        _next_retry_ms = now + jc_backoff_ms(_retries_since_ok + 1, kJcTcpBackoffBaseMs, kJcBackoffCapMs);
     }
 
     void on_frame(uint32_t now) {
@@ -53,6 +57,7 @@ public:
         _last_valid_ms = now;
         _has_data = true;
         _invalid = false;
+        _retries_since_ok = 0;   // a valid frame proves the link: the backoff starts over
         ++_frames;
     }
 
@@ -67,8 +72,13 @@ public:
         if (!_requested || _up || static_cast<int32_t>(now - _next_retry_ms) < 0) {
             return false;
         }
-        _next_retry_ms = now + kRetryDelayMs;
         ++_retries;
+        if (_initial_attempt) {
+            _initial_attempt = false;
+        } else {
+            ++_retries_since_ok;
+        }
+        _next_retry_ms = now + jc_backoff_ms(_retries_since_ok + 1, kJcTcpBackoffBaseMs, kJcBackoffCapMs);
         return true;
     }
 
@@ -86,6 +96,10 @@ public:
     uint32_t invalid_count() const { return _invalid_count; }
     uint32_t lost_count() const { return _lost_count; }
     uint32_t retries() const { return _retries; }
+    uint32_t ms_until_retry(uint32_t now) const {
+        const int32_t left = static_cast<int32_t>(_next_retry_ms - now);
+        return (_requested && !_up && left > 0) ? static_cast<uint32_t>(left) : 0;
+    }
     uint32_t interval_ms() const { return _interval_ms; }
     uint32_t last_valid_ms() const { return _last_valid_ms; }
     bool has_data() const { return _has_data; }
@@ -104,6 +118,8 @@ private:
     uint32_t _invalid_count = 0;
     uint32_t _lost_count = 0;
     uint32_t _retries = 0;
+    uint32_t _retries_since_ok = 0;
+    bool     _initial_attempt = false;
 };
 
 }  // namespace jc8048w550

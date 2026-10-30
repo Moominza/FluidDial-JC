@@ -18,6 +18,9 @@ Controller: MKS DLC32 MAX V1.2, FluidNC v4.1.1, `192.168.0.134:23`.
 | A | **DISABLED** |
 | Experimental build | built and tested, **NOT flashed**. Owner review is required before it is flashed. |
 | First real motion | **NOT AUTHORIZED** |
+| Independent emergency-stop system | **REQUIRED PHYSICAL PREREQUISITE. NOT installed, NOT tested, NOT designed by this software.** Nothing in this repository represents it as present. |
+| Interface verification (006B / 006C) | Host renderings of the real page code checked for clipping and overlap; 6 defects found and fixed (section 6b). **Operator photographs of the experimental build are still outstanding.** |
+| Automatic reconnection (006C.1) | Implemented in the ordinary firmware; two hardware resets reconnected by themselves. Wi-Fi-loss recovery on hardware pending. See [jc-auto-connect.md](jc-auto-connect.md). |
 
 The device on COM3 runs the **ordinary** firmware (`env:jc8048w550`,
 `JC_MACHINE_CONTROL_ENABLED=0`). The live-jog build exists only as a compiled image
@@ -306,9 +309,11 @@ FluidNC.
 | Core (policy 0 / rules compiled in) | 111 / 125 pass |
 | App | 169 / 166 pass |
 | Control (replies, exec, loader, dispatcher, dry run) | 832 / 888 pass |
-| **Jog** (policy 0 / rules in / live-jog policy) | **1172 / 1179 / 1243 pass** (was 587 / 595 / 641 before 006A) |
+| **Jog** (policy 0 / rules in / live-jog policy) | **1267 / 1274 / 1354 pass** (587 / 595 / 641 before 006A) |
+| Connection policy (`test_jc_conn.cpp`, both policies) | 228 / 228 pass |
+| Host UI renderer (`tools/run_ui_preview.py`, ordinary + live-jog builds) | PASS: 35 frames, 0 layout problems |
 | Static guard (`tools/check_no_sink.py`) | PASS |
-| Simulator integration (`tools/run_sim_integration.py`) | PASS, 229 checks (was 225) |
+| Simulator integration (`tools/run_sim_integration.py`) | PASS, 260 checks (225 at 006A) |
 
 Instruction 006A coverage, all in `test/host/test_jc_jog.cpp` against a fixture that mirrors the
 real controller baseline: soft OFF + hard OFF + current read gives UNPROTECTED MICRO-JOG for X and
@@ -349,12 +354,55 @@ The simulator's audit is an independent Python re-implementation of the jog rule
 `jog-*` scenarios it accepts only strictly formatted in-limit jogs and `0x85`, and flags
 everything else, including a jog line sent while a previous jog is unresolved.
 
+## 6b. Interface verification (Instructions 006B / 006C)
+
+`tools/run_ui_preview.py` compiles the **real page code and fonts** against a host stub of the display,
+drives the pages with simulated touches and the accepted real-controller baseline (replayed through the
+real capability loader), writes PNG screenshots ([ui-preview/](ui-preview/)) and checks every frame for
+text outside the screen, text drawn over other text, text wiped out without being redrawn, and, for
+dialogs, text leaving the box or touching a button. Its detector is self-tested (it must flag overlap,
+off-screen text and a fill over text) and is part of `tools/run_host_tests.py`.
+
+**What this proves:** layout, wording and control state of the pages. **What it cannot:** the colours and
+brightness of the real panel, touch response, or anything about the controller. These are *renderings of
+the code*; the operator's photographs of the experimental build remain the real visual check and are
+still outstanding.
+
+Checked in both builds, 35 frames: menu, settings, jog page (unread, ready, armed, accepted, moving,
+completed, Z hold, A disabled, 10 mm preset refused), arming dialog, per-jog confirmation, "jog sent",
+failure latched, cancel unconfirmed, no communication, "cancel not sent", Limits and Capabilities pages.
+
+The arming dialog (seven lines) has no clipping and nothing touches its buttons. The dialog's true
+capacity is seven lines (an eighth would touch the buttons); `kMaxLines` is now 7. The distinctions
+requested are all on screen: **UNPROTECTED MICRO-JOG** (the gate line and the arming dialog),
+**LIMIT INPUT CONFIGURED** and **HARD LIMIT PROTECTION OFF** (per-jog dialog and the Limits page),
+**Z ON HOLD** (jog buttons, arming refusal, dialog) and **A DISABLED**. The banner **LIVE JOG TEST
+BUILD** is in every page header (shortened to "JOG TEST BUILD" beside the longest titles) and on the
+dashboard header; the menu, dashboard, connection page and serial log no longer claim motion is
+disabled, and the dashboard STOP / jog buttons say they send nothing.
+
+**Defects the renderings exposed and this round fixed:**
+
+| Defect | Why it mattered |
+| --- | --- |
+| An unconfirmed cancel showed "waiting for Idle" instead of "CANCEL NOT CONFIRMED - USE THE E-STOP" | the operator would not be told the machine may still be moving |
+| The jog status line was cut off at "UNPROTECTED MIC" (64-byte buffer) | the gate state was truncated |
+| "CANCEL NOT SENT" began with the word "allowed" | read as success in a failure dialog |
+| The warning under the jog panel wrapped onto the panel border | text crossing the border and the screen edge |
+| The capabilities note ran off the bottom of the screen | my own earlier addition |
+| A result from X looked like a result for the selected Z | results now name their axis |
+
+Each is guarded now (six re-introduced defects are caught by the layout checks or the unit tests).
+Arming also was **not** dropped on switching to DEMO (the link can stay fresh); it is now, through one
+pure, tested function (`JcDispatcher::enforce_arming_scope`) that also covers leaving the page and
+expiry, and no arming or acknowledgement is ever restored afterwards.
+
 ## 7. Build results
 
 | Target | Result | Flash | RAM |
 | --- | --- | --- | --- |
-| `jc8048w550` (ordinary) | SUCCESS | 1,034,401 B (30.9%) | not re-measured after 006A (was 94,904 B) |
-| `jc8048w550_livejog_test` (experimental, **not flashed**) | SUCCESS | 1,044,505 B (31.3%) | not re-measured after 006A (was 94,912 B) |
+| `jc8048w550` (ordinary) | SUCCESS | 1,039,325 B (31.1%) | not re-measured |
+| `jc8048w550_livejog_test` (experimental, **not flashed**) | SUCCESS | 1,049,853 B (31.4%) | not re-measured |
 | `m5dial` | SUCCESS | 1,262,241 B (unchanged) | |
 | `cyddial` | SUCCESS | 1,185,829 B (unchanged) | |
 
@@ -385,9 +433,33 @@ None of these has been exercised on FluidNC, because no jog or cancel was sent:
 8. The A axis is rotary, in degrees. FluidNC cannot report this; it stays operator-declared
    and A jogging is disabled.
 
+## 8a. Loss of communication: the software cancel cannot be relied on
+
+The jog-cancel byte `0x85` travels over the same Wi-Fi / TCP link as the jog itself. **If that link is
+down, stalled or dropped, no software cancel can reach the controller.** This is a property of the
+design, not a bug that can be fixed in software:
+
+* with the connection lost, `CANCEL JOG` cannot transmit; the page then says "CANCEL NOT SENT ... USE
+  THE PHYSICAL E-STOP NOW" and, while a jog is unresolved and the link is not fresh, shows the red
+  line "NO COMMUNICATION: software cancel unreliable. USE E-STOP";
+* the software cancels what it can locally on a loss (the session, the arming, the capability read)
+  and never replays; it cannot stop a move the controller is already executing;
+* even with the link up, a cancel that the controller does not confirm is reported as "CANCEL NOT
+  CONFIRMED - USE THE E-STOP" after 3 s;
+* the bound on unattended motion in this test configuration is the move itself: 1 mm at 100 mm/min
+  (about 0.6 s plus acceleration). That is a property of the test limits, not a safety system.
+
+Every statement above is tested on the host (section 6) and visible in the screenshots (section 6b),
+but none of it has been observed on the real controller.
+
 ## 9. Remaining prerequisites before a real jog
 
-1. **Owner review of this corrected gate (Instruction 006A checkpoint), then owner approval to
+0. **An independent emergency-stop system (physical, hardware).** It is a **required prerequisite**
+   for any live motion. **It is not installed, not tested, and not designed or specified by this
+   software project; this repository must not be read as saying otherwise.** Until the owner has
+   installed it and tested it independently of this pendant, no live motion test may be run. The
+   software cancel is explicitly not a substitute (section 8a).
+1. **Owner review of this experimental implementation (006A / 006B / 006C), then owner approval to
    flash the experimental build and to send the first X jog.** Not given. This checkpoint
    stops before flashing.
 2. ~~Real configuration read.~~ **Done and accepted** (sections 2.2 and 2.4).
@@ -471,3 +543,32 @@ distance.**
 11. Afterwards, reflash `env:jc8048w550` and confirm "motion commands disabled" in the boot log.
 
 **Stop point:** real motion is not enabled and this report does not request it.
+
+## 11. Remaining-test checklist (nothing below has been done)
+
+Software and host verification is complete for this checkpoint. What is left needs the owner, the
+operator or the machine:
+
+**Before any flashing of the experimental build**
+- [ ] Independent physical emergency stop installed and tested by the owner (section 9, item 0).
+- [ ] Owner review of the experimental implementation and written approval to flash it (section 9, item 1).
+- [ ] Operator photographs of the experimental build: arming dialog, jog page (X ready, armed, Z hold,
+      A disabled), per-jog dialog, Limits page, dashboard banner. Compare with `ui-preview/`.
+- [ ] Z homing direction / GPIO39 side verified physically (section 9, item 5), if Z is ever to be tested.
+- [ ] Optional, before homing is ever authorized: `$limits` switch check (section 9, item 6).
+
+**On the machine, only after the above, ordinary firmware first**
+- [ ] LIVE connected, Idle, controller read current; X soft OFF / hard OFF confirmed on the page.
+- [ ] Physical conditions of section 9 item 4 established.
+
+**First live motion (experimental build, owner-approved)**
+- [ ] X +/- 1.0 mm at 100 mm/min: acknowledged, movement seen, Idle after the acknowledgement, position
+      change matches. Then Y. (Section 10.)
+- [ ] Separate cancel test at the same restricted rate: `0x85` reaches the controller, motion stops, no
+      queued jog starts, final state correct, failure latched, no replay.
+- [ ] Confirm or correct the assumptions in section 8 (the `$J` form, what `ok` means, `0x85` over Telnet).
+- [ ] Observe what the real controller and link do when the connection drops during a jog (section 8a).
+
+**Automatic connection (ordinary firmware)**
+- [ ] A temporary Wi-Fi or controller loss and the recovery, on hardware (see `jc-auto-connect.md`).
+- [ ] A true power-cycle (supply removed and restored), not only a reset.

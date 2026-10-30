@@ -21,7 +21,7 @@ ui::Rect value_rect(uint8_t row) {
 }
 const char* const kLabels[16] = {
     "Firmware", "Build", "Uptime", "Heap free", "Heap min", "PSRAM free", "Wi-Fi", "Link",
-    "Status age", "Interval", "Parse errors", "Blocked TX", "Reconnects", "Transport", "Cmd gate", "Last error",
+    "Status age", "Last connected", "Parse errors", "Blocked TX", "Reconnects", "Transport", "Cmd gate", "Last error",
 };
 }  // namespace
 
@@ -46,7 +46,10 @@ void JcDiagnosticsScreen::row_text(uint8_t row, char* label, size_t label_size, 
                 snprintf(value, value_size, "not connected");
             }
             break;
-        case 7: snprintf(value, value_size, "%s", JcReadOnlyFluidNc::state_name(link.state())); break;
+        case 7:
+            snprintf(value, value_size, "%s (auto %s)", jc_conn_label_text(link.conn_label()),
+                     link.auto_pref() == JcAutoPref::Off ? "off" : "on");
+            break;
         case 8:
             if (link.status().has_data) {
                 snprintf(value, value_size, "%lu ms", static_cast<unsigned long>(link.last_status_age_ms()));
@@ -54,10 +57,23 @@ void JcDiagnosticsScreen::row_text(uint8_t row, char* label, size_t label_size, 
                 snprintf(value, value_size, "no data");
             }
             break;
-        case 9: snprintf(value, value_size, "%lu ms", static_cast<unsigned long>(link.status().update_interval_ms)); break;
+        case 9:
+            if (link.ever_connected()) {
+                snprintf(value, value_size, "%lu s ago", static_cast<unsigned long>((millis() - link.last_connected_ms()) / 1000u));
+            } else {
+                snprintf(value, value_size, "never");
+            }
+            break;
         case 10: snprintf(value, value_size, "%lu", static_cast<unsigned long>(link.parse_errors())); break;
         case 11: snprintf(value, value_size, "%lu", static_cast<unsigned long>(link.blocked_transmissions())); break;
-        case 12: snprintf(value, value_size, "%lu", static_cast<unsigned long>(link.reconnect_attempts())); break;
+        case 12:
+            if (link.next_retry_in_ms() > 0) {
+                snprintf(value, value_size, "%lu, retry in %lu s", static_cast<unsigned long>(link.reconnect_attempts()),
+                         static_cast<unsigned long>((link.next_retry_in_ms() + 999u) / 1000u));
+            } else {
+                snprintf(value, value_size, "%lu", static_cast<unsigned long>(link.reconnect_attempts()));
+            }
+            break;
         case 13:
             snprintf(value, value_size, "%s%s", transport_name(static_cast<TransportKind>(sv.settings.transport)),
                      _uart.running() ? " (UART up)" : "");

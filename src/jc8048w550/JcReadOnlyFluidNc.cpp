@@ -28,7 +28,6 @@ namespace {
 constexpr uint16_t kFluidNcTelnetPort = 23;
 constexpr uint32_t kStatusPollIntervalMs = 1000;
 constexpr uint32_t kStatusStaleMs = 3000;
-constexpr uint32_t kTcpRetryDelayMs = 2000;
 constexpr uint32_t kTcpConnectTimeoutMs = 4000;
 constexpr uint32_t kStatusResponseTimeoutMs = 5000;
 constexpr size_t kTcpReadBudget = 512;
@@ -113,6 +112,13 @@ void JcReadOnlyFluidNc::begin() {
             _config.bssid_pinned = true;
         }
     }
+    // Persisted connection preferences (Instruction 006C.1).
+    _config.port = preferences.isKey("port") ? preferences.getUShort("port", kJcDefaultFluidNcPort) : kJcDefaultFluidNcPort;
+    if (_config.port == 0) {
+        _config.port = kJcDefaultFluidNcPort;
+    }
+    _auto_pref = !preferences.isKey("auto") ? JcAutoPref::Unset
+               : (preferences.getUChar("auto", 1) != 0 ? JcAutoPref::On : JcAutoPref::Off);
     preferences.end();
 
     if (ssid.length() <= 32 && password.length() <= 63 && host.length() <= 63) {
@@ -122,8 +128,46 @@ void JcReadOnlyFluidNc::begin() {
         _config.valid = ssid.length() > 0 && valid_host(_config.host);
     }
     start_dns_worker();
-    Serial.printf("net: local configuration %s; auto-connect disabled\n",
-                  _config.valid ? "loaded" : "not configured");
+    Serial.printf("net: local configuration %s; port %u; auto-connect preference: %s\n",
+                  _config.valid ? "loaded" : "not configured", static_cast<unsigned>(_config.port),
+                  _auto_pref == JcAutoPref::On ? "on" : (_auto_pref == JcAutoPref::Off ? "off" : "not yet chosen"));
+}
+
+void JcReadOnlyFluidNc::set_auto_pref(JcAutoPref pref) {
+    if (pref == JcAutoPref::Unset || pref == _auto_pref) {
+        return;
+    }
+    _auto_pref = pref;
+    Preferences preferences;
+    if (preferences.begin("jcnetwork", false)) {
+        preferences.putUChar("auto", pref == JcAutoPref::On ? 1 : 0);
+        preferences.end();
+    }
+    Serial.printf("net: auto-connect preference saved: %s\n", pref == JcAutoPref::On ? "ON" : "OFF");
+}
+
+uint32_t JcReadOnlyFluidNc::next_retry_in_ms() const {
+    if (!_connect_requested || _next_retry_ms == 0) {
+        return 0;
+    }
+    const int32_t left = static_cast<int32_t>(_next_retry_ms - millis());
+    return left > 0 ? static_cast<uint32_t>(left) : 0;
+}
+
+void JcReadOnlyFluidNc::schedule_tcp_retry(const char* why) {
+    ++_failures;
+    const uint32_t delay = jc_backoff_ms(_failures, kJcTcpBackoffBaseMs, kJcBackoffCapMs);
+    _next_retry_ms = millis() + delay;
+    Serial.printf("net: %s; retry %lu in %lu ms (backoff)\n", why, static_cast<unsigned long>(_failures),
+                  static_cast<unsigned long>(delay));
+}
+
+void JcReadOnlyFluidNc::schedule_wifi_retry(const char* why) {
+    ++_failures;
+    const uint32_t delay = jc_backoff_ms(_failures, kJcWifiBackoffBaseMs, kJcBackoffCapMs);
+    _next_retry_ms = millis() + delay;
+    Serial.printf("net: %s; Wi-Fi retry %lu in %lu ms (backoff)\n", why, static_cast<unsigned long>(_failures),
+                  static_cast<unsigned long>(delay));
 }
 
 bool JcReadOnlyFluidNc::save_config(const JcWifiConfig& config) {
@@ -164,6 +208,16 @@ bool JcReadOnlyFluidNc::save_config(const JcWifiConfig& config) {
 
     _config = config;
     _config.valid = true;
+    if (_config.port == 0) {
+        _config.port = kJcDefaultFluidNcPort;
+    }
+    {
+        Preferences port_prefs;
+        if (port_prefs.begin("jcnetwork", false)) {
+            port_prefs.putUShort("port", _config.port);
+            port_prefs.end();
+        }
+    }
     _last_error[0] = '\0';
     Serial.println("net: local Wi-Fi settings saved; credentials were not logged");
     return true;
@@ -212,6 +266,7 @@ void JcReadOnlyFluidNc::connect() {
     close_tcp(false);
     _connect_requested = true;
     _wifi_was_connected = false;
+    _failures = 0;   // a fresh connect request starts the backoff from the beginning
     _assembler.reset();
     _frame_invalid = false;
     _resolved_address[0] = '\0';
@@ -403,6 +458,18 @@ void JcReadOnlyFluidNc::end_status_report() {
     ++_status.sequence;
     _frame_invalid = false;
     _last_error[0] = '\0';
+    _failures = 0;   // a valid status resets the backoff
+    if (!_connection_has_status) {
+        _connection_has_status = true;
+        _ever_connected = true;
+        _last_connected_ms = now;
+        Serial.printf("net: CONNECTED: first valid status of this connection (attempts so far %lu)\n",
+                      static_cast<unsigned long>(_reconnect_attempts));
+        // The operator configured a controller and it works: keep reconnecting by default.
+        if (_auto_pref == JcAutoPref::Unset) {
+            set_auto_pref(jc_autopref_after(_auto_pref, JcConnEvent::FirstValidStatus));
+        }
+    }
 }
 
 void JcReadOnlyFluidNc::record_invalid_frame(const char* reason) {
@@ -513,7 +580,7 @@ void JcReadOnlyFluidNc::resolve_controller() {
     _state = JcFluidState::Resolving;
     if (xQueueSend(_dns_request_queue, &request, 0) != pdTRUE) {
         set_error("DNS resolver busy");
-        _next_retry_ms = millis() + 5000;
+        schedule_tcp_retry("DNS resolver busy");
     } else {
         Serial.println("net: resolving FluidNC host asynchronously");
     }
@@ -532,24 +599,24 @@ void JcReadOnlyFluidNc::begin_tcp_connect(const char* address) {
     ++_reconnect_attempts;
     Serial.printf("net: read-only FluidNC TCP attempt %lu to %s:%u\n",
                   static_cast<unsigned long>(_reconnect_attempts), address,
-                  kFluidNcTelnetPort);
+                  static_cast<unsigned>(_config.port != 0 ? _config.port : kFluidNcTelnetPort));
     const int fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) {
         set_error("TCP socket creation failed");
-        _next_retry_ms = millis() + kTcpRetryDelayMs;
+        schedule_tcp_retry("TCP socket creation failed");
         return;
     }
     const int flags = ::fcntl(fd, F_GETFL, 0);
     if (flags == -1 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
         ::close(fd);
         set_error("TCP nonblocking setup failed");
-        _next_retry_ms = millis() + kTcpRetryDelayMs;
+        schedule_tcp_retry("TCP nonblocking setup failed");
         return;
     }
 
     sockaddr_in destination {};
     destination.sin_family = AF_INET;
-    destination.sin_port = htons(kFluidNcTelnetPort);
+    destination.sin_port = htons(_config.port != 0 ? _config.port : kFluidNcTelnetPort);
     destination.sin_addr.s_addr = static_cast<uint32_t>(ip);
     const int result = ::connect(fd, reinterpret_cast<sockaddr*>(&destination),
                                  sizeof(destination));
@@ -572,7 +639,7 @@ void JcReadOnlyFluidNc::begin_tcp_connect(const char* address) {
 
     ::close(fd);
     set_error("FluidNC TCP connection failed");
-    _next_retry_ms = millis() + kTcpRetryDelayMs;
+    schedule_tcp_retry("FluidNC TCP connection failed");
 }
 
 void JcReadOnlyFluidNc::poll_tcp_connect() {
@@ -603,14 +670,14 @@ void JcReadOnlyFluidNc::poll_tcp_connect() {
         ::close(_connecting_socket);
         _connecting_socket = -1;
         set_error("FluidNC TCP connection failed");
-        _next_retry_ms = millis() + kTcpRetryDelayMs;
+        schedule_tcp_retry("FluidNC TCP connection failed");
         return;
     }
     if (static_cast<int32_t>(millis() - _connect_deadline_ms) >= 0) {
         ::close(_connecting_socket);
         _connecting_socket = -1;
         set_error("FluidNC TCP connection timed out");
-        _next_retry_ms = millis() + kTcpRetryDelayMs;
+        schedule_tcp_retry("FluidNC TCP connection timed out");
     }
 }
 
@@ -667,8 +734,9 @@ void JcReadOnlyFluidNc::close_tcp(bool schedule_retry) {
     }
     _assembler.reset();
     _last_status_attempt_ms = 0;
+    _connection_has_status = false;   // the next connection must prove itself with valid status again
     if (schedule_retry && _connect_requested && wifi_connected()) {
-        _next_retry_ms = millis() + kTcpRetryDelayMs;
+        schedule_tcp_retry("FluidNC connection closed");
         _state = JcFluidState::Lost;
     }
 }
@@ -691,13 +759,14 @@ void JcReadOnlyFluidNc::service_wifi() {
         ++_dns_generation;
         close_tcp(false);
         _state = JcFluidState::Lost;
-        _next_retry_ms = millis() + 2000;
+        _connection_has_status = false;
+        schedule_wifi_retry("Wi-Fi connection lost");
         set_error("Wi-Fi connection lost");
         Serial.println("net: Wi-Fi disconnected; live data is stale");
     }
     if (!connected && _connect_requested && _next_retry_ms != 0
         && static_cast<int32_t>(millis() - _next_retry_ms) >= 0) {
-        _next_retry_ms = millis() + 15000;
+        schedule_wifi_retry("Wi-Fi not associated");
         ++_reconnect_attempts;
         Serial.printf("net: Wi-Fi retry attempt %lu\n",
                       static_cast<unsigned long>(_reconnect_attempts));
@@ -801,8 +870,7 @@ void JcReadOnlyFluidNc::handle_dns_result() {
     }
     if (!result.success) {
         set_error("FluidNC host lookup failed");
-        _next_retry_ms = millis() + 5000;
-        Serial.println("net: FluidNC hostname lookup failed; retry scheduled");
+        schedule_tcp_retry("FluidNC hostname lookup failed");
         return;
     }
     IPAddress address(result.address);

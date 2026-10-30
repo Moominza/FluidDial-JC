@@ -263,6 +263,10 @@ def main():
         import sim_caps_tests
         sim_caps_tests.run_all(exe, check, Sim, Tool, PORT)
 
+        # Automatic reconnection (Instruction 006C.1): backoff, manual disconnect, stale status.
+        import sim_conn_tests
+        sim_conn_tests.run_all(exe, check, Sim, Tool, PORT)
+
         # First-live-jog scenarios (Instruction 006): real C++ session + gate against the simulator.
         import sim_jog_tests
         sim_jog_tests.run_all(exe_jog, check, Sim, Tool, PORT)

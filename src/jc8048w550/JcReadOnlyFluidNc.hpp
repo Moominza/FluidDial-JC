@@ -9,6 +9,7 @@
 #include <freertos/task.h>
 
 #include "JcCommandAuth.hpp"
+#include "JcConnPolicy.hpp"
 #include "JcFrameAssembler.hpp"
 #include "JcQuery.hpp"
 #include "JcStreamSplitter.hpp"
@@ -21,11 +22,14 @@ struct JcWifiConfig {
     char ssid[33];
     char password[64];
     char host[64];
+    uint16_t port;          // FluidNC Telnet port; 0 = default (23)
     uint8_t bssid[6];
     uint8_t channel;
     bool bssid_pinned;
     bool valid;
 };
+
+constexpr uint16_t kJcDefaultFluidNcPort = 23;
 
 struct JcWifiNetwork {
     char ssid[33];
@@ -77,6 +81,17 @@ public:
     void connect();
     void disconnect();
 
+    // ---- automatic connection (Instruction 006C.1; policy in JcConnPolicy.hpp) ----------------
+    // The persisted "what the operator last chose": Connect / LIVE = On, Disconnect / DEMO = Off.
+    JcAutoPref auto_pref() const { return _auto_pref; }
+    void set_auto_pref(JcAutoPref pref);   // persists to NVS; Unset is never written back
+    // The six operator-facing states. CONNECTED only ever means valid, fresh status.
+    JcConnLabel conn_label() const { return jc_conn_label(state(), _connect_requested, _ever_connected); }
+    bool ever_connected() const { return _ever_connected; }          // valid status received since boot
+    uint32_t last_connected_ms() const { return _last_connected_ms; }  // millis() of the last first-valid-status
+    uint32_t consecutive_failures() const { return _failures; }        // since the last valid status
+    uint32_t next_retry_in_ms() const;                                 // 0 = none scheduled
+
     bool wifi_connected() const;
     bool connect_requested() const;
     JcFluidState state() const;
@@ -116,8 +131,16 @@ private:
     void consume_tcp_byte(uint8_t byte);
     void handle_dns_result();
     void set_error(const char* message, bool parse_error = false);
+    // Bounded exponential backoff (JcConnPolicy.hpp): every failed attempt lengthens the wait.
+    void schedule_tcp_retry(const char* why);
+    void schedule_wifi_retry(const char* why);
 
     JcWifiConfig _config {};
+    JcAutoPref _auto_pref = JcAutoPref::Unset;
+    uint32_t _failures = 0;             // consecutive failed attempts since the last valid status
+    uint32_t _last_connected_ms = 0;
+    bool _ever_connected = false;
+    bool _connection_has_status = false;   // this connection has produced a valid status frame
     JcWifiNetwork _scanned_networks[kJcMaxScannedNetworks] {};
     uint8_t _scanned_network_count = 0;
     JcLiveMachineStatus _status {};

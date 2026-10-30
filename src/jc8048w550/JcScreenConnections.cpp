@@ -16,6 +16,7 @@ namespace {
 constexpr ui::Rect kWifiPanel { 16, 76, 768, 92 };
 constexpr ui::Rect kUartPanel { 16, 176, 768, 156 };
 constexpr ui::Rect kBlePanel { 16, 340, 768, 84 };
+constexpr ui::Rect kWifiAuto { 388, 86, 124, 44 };   // persisted AUTO-CONNECT on / off
 constexpr ui::Rect kWifiSelect { 520, 86, 118, 44 };
 constexpr ui::Rect kWifiSetup { 648, 86, 126, 44 };
 constexpr ui::Rect kUartRx { 28, 276, 112, 44 };
@@ -35,7 +36,7 @@ void JcConnectionsScreen::draw_status() {
     const JcUserSettings& s = sv.settings;
     char line[96];
     const JcReadOnlyFluidNc& link = sv.link;
-    snprintf(line, sizeof(line), "%s  |  host: %s", JcReadOnlyFluidNc::state_name(link.state()),
+    snprintf(line, sizeof(line), "%s  |  host: %s", jc_conn_label_text(link.conn_label()),
              link.config().host[0] ? link.config().host : "not set");
     _wifi.draw(sv.display, { 28, 124, 480, 34 }, line, FontId::Body16,
                link.status_is_fresh() ? ui::kGood : ui::kMuted, ui::kPanel);
@@ -54,6 +55,8 @@ void JcConnectionsScreen::on_draw() {
     const uint8_t t = sv.settings.transport;
     ui::panel(sv.display, kWifiPanel, t == 0 ? ui::kPanelLight : ui::kPanel);
     ui::text(sv.display, 28, 84, "Wi-Fi  (Telnet TCP, port 23)", FontId::Button20, WHITE, t == 0 ? ui::kPanelLight : ui::kPanel);
+    ui::button(sv.display, kWifiAuto, sv.link.auto_pref() == JcAutoPref::Off ? "AUTO: OFF" : "AUTO: ON",
+               sv.link.auto_pref() == JcAutoPref::Off ? ui::Btn::Normal : ui::Btn::Good);
     ui::button(sv.display, kWifiSelect, t == 0 ? "SELECTED" : "SELECT", t == 0 ? ui::Btn::Selected : ui::Btn::Normal);
     ui::button(sv.display, kWifiSetup, "WI-FI SETUP");
 
@@ -79,8 +82,8 @@ void JcConnectionsScreen::on_draw() {
     ui::button(sv.display, kBleSelect, "SELECT", ui::Btn::Disabled);
 
     ui::wrap(sv.display, { 16, 430, 768, 46 },
-             "Switching transport ends the active session and never reconnects automatically. It is refused "
-             "while the machine reports motion.",
+             "Switching transport ends the session and never reconnects by itself. Wi-Fi reconnects "
+             "automatically only while AUTO is on. Refused while the machine reports motion.",
              FontId::Body16, ui::kMuted, ui::kBg);
     _wifi.invalidate();
     _uart_state.invalidate();
@@ -122,7 +125,26 @@ void JcConnectionsScreen::edit_done(bool ok, const char* text) {
 }
 
 void JcConnectionsScreen::on_touch(uint16_t x, uint16_t y) {
-    if (ui::hit(kWifiSelect, x, y)) {
+    if (ui::hit(kWifiAuto, x, y)) {
+        // The persisted choice: ON = connect now and after every restart or loss; OFF = disconnect and
+        // stay disconnected until the operator chooses ON, CONNECT or LIVE again.
+        if (sv.link.auto_pref() != JcAutoPref::Off) {
+            sv.link.set_auto_pref(JcAutoPref::Off);
+            sv.link.disconnect();
+            sv.dispatcher.on_link_lost();
+            Serial.println("net: AUTO-CONNECT turned off by the operator; link closed");
+        } else if (sv.settings.transport == 0 && sv.link.config().valid) {
+            sv.link.set_auto_pref(JcAutoPref::On);
+            sv.link.connect();
+            Serial.println("net: AUTO-CONNECT turned on by the operator; connecting");
+        } else {
+            show_message("CANNOT TURN AUTO-CONNECT ON",
+                         sv.settings.transport != 0 ? "Wi-Fi is not the selected transport." : "No saved Wi-Fi / FluidNC configuration.",
+                         "Transports are never switched automatically.");
+            return;
+        }
+        draw();
+    } else if (ui::hit(kWifiSelect, x, y)) {
         select_transport(0);
     } else if (ui::hit(kWifiSetup, x, y)) {
         sv.host.leave(JcLeaveTarget::WifiSettings);

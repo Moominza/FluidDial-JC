@@ -176,6 +176,9 @@ private:
     void append_keyboard_character(char character);
     void erase_keyboard_character();
     void set_live_mode(bool live);
+    void start_auto_connect();   // power-up: restore the connection the operator last chose
+    void service_auto_live();    // enter LIVE only after valid, fresh status
+    bool _auto_live_pending = false;
     void begin_calibration();
     void begin_calibration_touch(uint8_t count, const TP_Point& point);
     void collect_calibration_sample(uint8_t count, const TP_Point& point);

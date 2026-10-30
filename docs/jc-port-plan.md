@@ -848,6 +848,12 @@ The ordinary firmware keeps `JC_MACHINE_CONTROL_ENABLED=0`; only that firmware w
 COM3. Nothing was sent to the controller except `?` and read-only queries. Full report:
 `docs/development/jc-live-jog-readiness.md`.
 
+Instruction 006C.1 (automatic connection): the JC now restores its connection to the saved FluidNC
+controller after a restart (Wi-Fi only, preference persisted, bounded backoff, manual disconnect and DEMO
+suppress it). Two hardware resets of the ordinary firmware reconnected and entered LIVE with no touch
+input. See `docs/development/jc-auto-connect.md`. Instructions 006B/006C: host UI renderer, six UI
+defects fixed, the independent emergency stop recorded as an outstanding physical requirement.
+
 Real read (2026-10-30, ordinary firmware, LIVE): 50 of 53 queries answered, 3 refused (A homing
 items). Soft limits OFF and hard limits OFF on X, Y, Z and A; `must_home` false. No motion test is
 authorized; see section 2.3 of the readiness report for the findings the owner must review.
