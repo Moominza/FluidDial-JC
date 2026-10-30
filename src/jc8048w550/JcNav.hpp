@@ -30,6 +30,7 @@ enum class JcPage : uint8_t {
     DryRun,        // diagnostic dry run: command, authorization, expected reply
     LimitsHoming,  // soft / hard limit and homing settings as the controller reports them
     JogPreview,    // non-motion jog test mode: simulated-controller scenario and counters
+    Workflow,      // guided positioning and probing routines (macros)
     Input,  // modal text / numeric entry; returns to its caller
     Count,
 };
@@ -54,6 +55,7 @@ inline const char* jc_page_title(JcPage p) {
         case JcPage::DryRun: return "DRY RUN";
         case JcPage::LimitsHoming: return "LIMITS AND HOMING";
         case JcPage::JogPreview: return "JOG PREVIEW TEST";
+        case JcPage::Workflow: return "POSITIONING / PROBING";
         case JcPage::Input: return "ENTER VALUE";
         case JcPage::Count: break;
     }
@@ -70,6 +72,8 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
             return to == JcPage::Jog || to == JcPage::Homing || to == JcPage::Probing
                 || to == JcPage::Offsets || to == JcPage::Files || to == JcPage::Macros
                 || to == JcPage::Tools || to == JcPage::Settings;
+        case JcPage::Macros:
+            return to == JcPage::Workflow;
         case JcPage::Settings:
             return to == JcPage::SetConnections || to == JcPage::SetDisplay || to == JcPage::SetJogging
                 || to == JcPage::SetMachine || to == JcPage::Diagnostics || to == JcPage::JogPreview;
@@ -80,7 +84,7 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
         case JcPage::Tools:
             return to == JcPage::Probing;  // tool measurement configuration
         case JcPage::Files:
-        case JcPage::Macros:
+        case JcPage::Workflow:
         case JcPage::Jog:
         case JcPage::Homing:
         case JcPage::Probing:

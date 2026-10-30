@@ -31,6 +31,7 @@
 
 #include "JcCommandBuilder.hpp"
 #include "JcCommandExec.hpp"
+#include "JcCommandPolicy.hpp"
 #include "JcMachineCaps.hpp"
 #include "JcResponse.hpp"
 
@@ -344,6 +345,17 @@ inline bool jc_jog_line_allowed(const char* text, const JcJogTestLimits& l) {
     const float mag = fabsf(r.distance);
     if (mag <= 0.0f || mag > l.max_step[r.axis] + 0.0005f) return false;
     return r.feed >= 1.0f && r.feed <= l.max_feed[r.axis] + 0.5f;
+}
+
+// The one rule the session and the transports apply to a jog line. In the controller-authoritative builds
+// (full control, preview) it is the shared command policy (all four axes, typo-guard bounds only); in the
+// restricted live-jog build it is the owner's test limits (X/Y 1 mm @ 100 mm/min).
+inline bool jc_session_jog_allowed(const char* text) {
+#if JC_AUTHORITY
+    return jc_policy_jog_line(text);
+#else
+    return jc_jog_line_allowed(text, jc_test_jog_limits());
+#endif
 }
 
 // ---- session -------------------------------------------------------------------
@@ -731,7 +743,7 @@ public:
 private:
     bool begin_jog(const char* text) {
         JcJogRequest req;
-        if (!jc_parse_jog_line(text, req) || !jc_jog_line_allowed(text, jc_test_jog_limits())) {
+        if (!jc_parse_jog_line(text, req) || !jc_session_jog_allowed(text)) {
             ++_refused_policy;  // not a jog the test configuration may ever send
             return false;
         }

@@ -985,6 +985,29 @@ bool JcReadOnlyFluidNc::send_jog_bytes(const char* bytes, size_t length) {
 }
 #endif
 
+#if JC_FULL_CONTROL_TEST
+// EXPERIMENTAL FULL-CONTROL build only. Reached solely through JcCommandSystem after the authorization gate;
+// the bytes are checked once more by the shared policy (not re-implemented here).
+bool JcReadOnlyFluidNc::send_command_bytes(const char* bytes, size_t length) {
+    if (bytes == nullptr || length == 0 || _socket < 0) {
+        return false;
+    }
+    if (!jc_command_bytes_allowed(bytes, length)) {
+        ++_blocked_transmissions;
+        Serial.println("SAFETY: blocked bytes that are not one allowed command line or real-time byte");
+        return false;
+    }
+    const ssize_t sent = ::send(_socket, bytes, length, MSG_DONTWAIT);
+    if (sent == static_cast<ssize_t>(length)) {
+        ++_command_writes;
+        return true;
+    }
+    set_error("Command send failed");
+    close_tcp(true);
+    return false;
+}
+#endif
+
 void JcReadOnlyFluidNc::set_error(const char* message, bool parse_error) {
     if (message != nullptr) {
         strlcpy(_last_error, message, sizeof(_last_error));

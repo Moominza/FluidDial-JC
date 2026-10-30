@@ -19,16 +19,24 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _uart(uart),
       _settings(jc_settings_defaults()),
       _profile(jc_profile_from_settings(_settings)),
+#if JC_JOG_PREVIEW
+      _cmd(&JcPreviewController::tx, &_preview.controller()),
+#elif JC_FULL_CONTROL_TEST
+      _cmd(&JcApp::cmd_tx_thunk, this),
+#endif
 #if JC_LIVE_JOG_TEST
       _jogs(&JcApp::jog_tx_thunk, this),
-#elif JC_JOG_PREVIEW
-      _jogs(&JcPreviewController::tx, &_preview.controller()),
+#elif JC_AUTHORITY
+      _jogs(&JcCommandSystem::session_tx, &_cmd),
 #else
       _jogs(nullptr, nullptr),
 #endif
       _sv { display, link, _model, _settings, _profile, _dispatcher, _loader, _jogs, live_mode, *this
 #if JC_JOG_PREVIEW
              , _preview
+#endif
+#if JC_AUTHORITY
+             , _cmd, _wf
 #endif
       },
       _menu(_sv),
@@ -43,6 +51,9 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _connections(_sv, uart),
       _display_settings(_sv),
       _jog_settings(_sv),
+#if JC_AUTHORITY
+      _workflow_screen(_sv),
+#endif
       _machine(_sv),
       _caps_screen(_sv),
       _limits_screen(_sv),
@@ -80,9 +91,17 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
     // NON-MOTION TEST MODE: the sink is the jog session, whose only transport is the in-RAM simulated
     // controller. The gate is in preview mode, so an accepted command is counted as previewed, never sent.
     _dispatcher.set_preview(true);
-    _dispatcher.set_sink_ex(&JcJogSession::sink, &_jogs);
+    _cmd.attach_jogs(&_jogs);
+    _preview.set_line_sink(&JcApp::cmd_line_thunk, this);
+    _dispatcher.set_sink_ex(&JcCommandSystem::sink, &_cmd);
     Serial.println("*** PREVIEW ONLY - MOTION DISABLED: the jog interface runs against a SIMULATED controller ***");
     Serial.println("app: motion commands disabled");
+#elif JC_FULL_CONTROL_TEST
+    // EXPERIMENTAL FULL-CONTROL build: the unified command system is the only sink.
+    _cmd.attach_jogs(&_jogs);
+    _dispatcher.set_sink_ex(&JcCommandSystem::sink, &_cmd);
+    Serial.println("*** FULL CONTROL TEST BUILD: the complete FluidNC operator interface can send commands ***");
+    Serial.println("*** FluidNC is the authority on motion; the pendant checks command integrity only ***");
 #elif JC_LIVE_JOG_TEST
     // EXPERIMENTAL live-jog test build: the ONLY place a command sink is installed.
     _dispatcher.set_sink_ex(&JcJogSession::sink, &_jogs);
@@ -133,6 +152,11 @@ JcScreen* JcApp::screen_for(JcPage page) {
         case JcPage::SetConnections: return &_connections;
         case JcPage::SetDisplay: return &_display_settings;
         case JcPage::SetJogging: return &_jog_settings;
+#if JC_AUTHORITY
+        case JcPage::Workflow: return &_workflow_screen;
+#else
+        case JcPage::Workflow: return &_menu;
+#endif
         case JcPage::SetMachine: return &_machine;
         case JcPage::Capabilities: return &_caps_screen;
         case JcPage::LimitsHoming: return &_limits_screen;
@@ -226,6 +250,12 @@ void JcApp::note_link_fresh(bool fresh) {
 #if JC_JOG_PREVIEW
         _preview.controller().reset();               // a rehearsal never survives a loss of the link
         _preview.controller().reset_displacement();
+        _preview.disengage();
+#endif
+#if JC_AUTHORITY
+        _cmd.on_link_lost();                         // the operation ends; nothing is replayed
+        _wf.on_link_lost();
+        _wf_cmd_inflight = false;
 #endif
         // Controller values may be stale after a loss (it may have restarted or
         // been reconfigured): abandon any read and fall back to placeholders.
@@ -254,7 +284,7 @@ void JcApp::refresh_profile() {
     if (_loader.state() == JcLoadState::Complete) {
         jc_profile_apply_caps(_profile, _loader.caps());
     }
-#if JC_JOG_UI
+#if JC_LIVE_JOG_TEST
     // Last, so the controller's travel can only ever lower the test limits, never widen them.
     jc_profile_apply_test_limits(_profile);
 #endif
@@ -287,6 +317,10 @@ void JcApp::on_controller_line(const char* line) {
 #if !JC_JOG_PREVIEW
     _jogs.on_line(line, now);   // in the preview the session only hears the simulated controller
 #endif
+#if JC_FULL_CONTROL_TEST
+    _cmd.on_line(line);
+    _wf.on_line(line);
+#endif
 }
 
 #if JC_LIVE_JOG_TEST
@@ -305,6 +339,9 @@ void JcApp::service() {
     _real.fresh = _last_fresh && _sv.live_mode;
     _preview.pump(_jogs, _real, now);
 #endif
+#if JC_AUTHORITY
+    service_workflow(now);
+#endif
     _jogs.tick(now);
     if (!_sv.live_mode && _jogs.unresolved()) {
         _jogs.on_link_lost(now, false);  // DEMO mode has no controller
@@ -313,7 +350,8 @@ void JcApp::service() {
     // Arming (and its acknowledgement) only exists on the jog page (or an input dialog opened
     // from it), in LIVE mode and inside its time window; anything else drops both.
     const JcDisarmReason dropped = _dispatcher.enforce_arming_scope(
-        now, _sv.live_mode, _nav.current() == JcPage::Jog || _nav.current() == JcPage::Input);
+        now, _sv.live_mode, _nav.current() == JcPage::Jog || _nav.current() == JcPage::Input
+                                   || (JC_AUTHORITY && _nav.current() == JcPage::Workflow));
     if (dropped != JcDisarmReason::None) {
         Serial.printf(JC_JOG_TAG ": disarmed (%s); acknowledgement cleared\n", jc_disarm_reason_text(dropped));
     }
@@ -376,5 +414,129 @@ void JcApp::on_caps_finished() {
                   c.must_home_state == JcFieldState::Valid ? (c.must_home ? "true" : "false")
                   : c.must_home_state == JcFieldState::CtrlError ? "error" : "unknown");
 }
+
+#if JC_AUTHORITY
+
+void JcApp::cmd_line_thunk(void* user, const char* line, uint32_t now) {
+    JcApp* app = static_cast<JcApp*>(user);
+    app->_jogs.on_line(line, now);
+    app->_cmd.on_line(line);
+    app->_wf.on_line(line);
+}
+
+#if JC_FULL_CONTROL_TEST
+bool JcApp::send_command(const char* bytes, size_t length) {
+    return uart_active() ? _uart.send_command_bytes(bytes, length) : _link.send_command_bytes(bytes, length);
+}
+#endif
+
+bool JcApp::WfHost::submit(const JcCommand& c, const char** why) {
+    JcApp& a = _app;
+    const JcDispatchContext ctx = a._sv.dispatch_context(true, true);   // the plan was confirmed once by the operator
+#if JC_JOG_PREVIEW
+    const uint32_t before = a._dispatcher.previewed();
+#else
+    const uint32_t before = a._dispatcher.sent();
+#endif
+    const JcAuthDecision d = a._dispatcher.submit(c, ctx);
+    if (d != JcAuthDecision::Allowed) {
+        *why = jc_auth_name(d);
+        return false;
+    }
+#if JC_JOG_PREVIEW
+    const bool accepted = a._dispatcher.previewed() != before;
+#else
+    const bool accepted = a._dispatcher.sent() != before;
+#endif
+    if (!accepted) {
+        *why = "not transmitted (another operation is in progress, or the transport refused it)";
+        return false;
+    }
+    a._wf_cmd_inflight = true;
+    return true;
+}
+
+bool JcApp::WfHost::query(const char* line) {
+    JcApp& a = _app;
+#if JC_JOG_PREVIEW
+    return a._preview.controller().query(line);   // the routine rehearses against the shared simulated FluidNC
+#else
+    return a.send_query(line);
+#endif
+}
+
+void JcApp::WfHost::stop() {
+    JcApp& a = _app;
+    a._dispatcher.submit(jc_feed_hold(), a._sv.dispatch_context(false, true));   // software feed hold: always allowed when LIVE
+}
+
+JcWfStatus JcApp::wf_status(uint32_t now) {
+    JcWfStatus s;
+    const JcLiveMachineStatus& st = _model.status();
+    s.fresh = _last_fresh && _sv.live_mode;
+    s.state = _model.state();
+    s.spindle = st.has_data ? st.spindle : 0.0f;
+    s.pins = st.pins;
+    s.sequence = st.sequence;
+    bool all = true;
+    for (uint8_t a = 0; a < 3; ++a) {
+        float v = 0.0f;
+        if (_model.position(a, JcRef::Work, v)) s.wpos[a] = v; else all = false;
+    }
+    s.wpos_valid = all;
+    const JcMachineCaps& caps = _loader.caps();
+    if (_loader.state() == JcLoadState::Complete && caps.complete) {
+        s.probe_configured = (caps.probe_pin[0] != '\0' && strcmp(caps.probe_pin, "NO_PIN") != 0) ? JcTri::Yes : JcTri::No;
+    }
+#if JC_JOG_PREVIEW
+    if (_preview.wf_engaged()) {   // the rehearsed routine moves the SIMULATED machine
+        const JcSimNc& nc = _preview.controller().nc();
+        for (uint8_t a = 0; a < 3; ++a) s.wpos[a] = nc.work(a);
+        s.wpos_valid = true;
+        s.state = nc.state;
+        if (now - _wf_last_frame >= 100) { _wf_last_frame = now; ++_wf_seq; }
+        s.sequence = 0x80000000u + _wf_seq;
+    }
+#else
+    (void)now;
+#endif
+    return s;
+}
+
+bool JcApp::workflow_prepare(JcWfKind kind, const JcWfParams& params) {
+    const uint32_t now = millis();
+#if JC_JOG_PREVIEW
+    const JcWfStatus real = wf_status(now);
+    if (!_preview.wf_engaged() && real.wpos_valid) {
+        _preview.engage(real.wpos);
+        JcSimNc& nc = _preview.controller().nc();
+        const JcSimFeature f = kind == JcWfKind::FindRotary ? JcSimFeature::Cylinder
+                             : (params.feature == JcFeatureKind::Outside ? JcSimFeature::Boss : JcSimFeature::Bore);
+        nc.centre_feature_here(f, 10.0f, params.cylinder_diameter > 0.0f ? params.cylinder_diameter : 20.0f);
+    }
+#endif
+    return _wf.prepare(kind, params, wf_status(now), now);
+}
+
+void JcApp::service_workflow(uint32_t now) {
+    _cmd.set_clock(now);
+    _cmd.tick();
+    JcCommandResult r;
+    if (_cmd.take_result(r)) {
+        char line[96];
+        jc_result_line(r, line, sizeof(line));
+        Serial.printf(JC_JOG_TAG ": %s\n", line);
+        if (_wf_cmd_inflight) {
+            _wf_cmd_inflight = false;
+            _wf.on_result(r);
+        } else {
+            screen_for(_nav.current())->notify_result(line);
+        }
+    }
+    _wf.on_status(wf_status(now));
+    _wf.service(now);
+}
+
+#endif  // JC_AUTHORITY
 
 }  // namespace jc8048w550

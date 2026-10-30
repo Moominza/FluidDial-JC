@@ -91,11 +91,14 @@ protected:
     void on_draw() override;
     void on_touch(uint16_t x, uint16_t y) override;
     void on_tick(uint32_t now) override;
+    void on_custom_confirm() override;
 
 private:
     void draw_status();
     uint32_t _last_tick = 0;
-    ui::Slot _state, _pre1, _pre2, _pre3;
+    bool _z_verified = false;   // the owner confirmed the Z homing direction (this session only)
+    ui::Slot _state, _note;
+    ui::Slot _cell[16];
 };
 
 class JcProbingScreen : public JcScreen {
@@ -178,6 +181,45 @@ private:
     uint8_t _edit_stage = 0;  // 0 name, 1 path, 2 description
     JcMacroSlot _editing {};
 };
+
+#if JC_AUTHORITY
+// Guided positioning and probing routines (macros): choose, set parameters, preview, confirm, follow the
+// progress, read the result. FluidNC executes everything; this page only orchestrates (JcWorkflow.hpp).
+class JcWorkflowScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::Workflow; }
+    void param_done(uint8_t index, bool ok, const char* text);
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+    void on_custom_confirm() override;
+
+private:
+    enum class Mode : uint8_t { List, Setup, Active };
+    void draw_list();
+    void draw_setup();
+    void draw_active();
+    void draw_live_lines();
+    uint8_t param_count() const;
+    void param_label(uint8_t i, char* label, char* value, size_t size) const;
+    void edit_param(uint8_t i);
+    void prepare();
+    void request_action(bool set_origin);
+    Mode _mode = Mode::List;
+    JcWfKind _kind = JcWfKind::GoToXY;
+    JcWfParams _p;
+    uint8_t _edit = 0;
+    uint8_t _action_pending = 0;   // 1 = move to centre, 2 = set work origin (waiting for the confirmation)
+    uint32_t _last_tick = 0;
+    uint8_t _drawn_state = 0xFF;
+    uint8_t _drawn_step = 0xFF;
+    ui::Slot _lines[6];
+};
+#endif
 
 class JcToolsScreen : public JcScreen {
 public:

@@ -39,12 +39,28 @@
 #error "JC_JOG_PREVIEW (non-motion test mode) cannot be combined with live jog or enabled machine control"
 #endif
 
+// Experimental FULL-CONTROL test configuration (PlatformIO env jc8048w550_fullcontrol_test, never flashed
+// without the owner's explicit authorization): the complete FluidNC operator interface with FluidNC as
+// the authority on motion (JcGatePolicy::Authority). Requires JC_MACHINE_CONTROL_ENABLED=1 and excludes
+// the restricted live-jog build and the preview.
+#ifndef JC_FULL_CONTROL_TEST
+#define JC_FULL_CONTROL_TEST 0
+#endif
+#if JC_FULL_CONTROL_TEST && (!JC_MACHINE_CONTROL_ENABLED || JC_LIVE_JOG_TEST || JC_JOG_PREVIEW)
+#error "JC_FULL_CONTROL_TEST needs JC_MACHINE_CONTROL_ENABLED=1 and excludes JC_LIVE_JOG_TEST / JC_JOG_PREVIEW"
+#endif
+// The pendant runs the controller-authoritative gate policy (no capability / homing / envelope prerequisite):
+// in the full-control build (real transport) and in the non-motion preview (simulated transport).
+#define JC_AUTHORITY (JC_JOG_PREVIEW || JC_FULL_CONTROL_TEST)
+
 // The jog page, arming, confirmation and result UI is compiled for the experimental live-jog build AND for
 // the ordinary firmware's non-motion preview. Transport code (the only thing that can reach a socket) is
 // compiled for JC_LIVE_JOG_TEST alone.
-#define JC_JOG_UI (JC_LIVE_JOG_TEST || JC_JOG_PREVIEW)
+#define JC_JOG_UI (JC_LIVE_JOG_TEST || JC_JOG_PREVIEW || JC_FULL_CONTROL_TEST)
 #if JC_JOG_PREVIEW
 #define JC_JOG_TAG "jogpreview"
+#elif JC_FULL_CONTROL_TEST
+#define JC_JOG_TAG "fullctl"
 #else
 #define JC_JOG_TAG "jogtest"
 #endif
@@ -165,15 +181,21 @@ inline bool jc_is_stop_or_recovery(JcCommandClass c) {
         || c == JcCommandClass::Reset || c == JcCommandClass::Unlock;
 }
 
+// How the pendant gates commands once the build allows them.
+//   Plain:             every rule (test builds of the rule set).
+//   LiveJogRestricted: only jog and jog cancel; limits / envelope / unprotected acknowledgement and a
+//                      per-jog confirmation (the owner's first-motion test policy).
+//   Authority:         FluidNC is the authority on motion. The pendant checks command INTEGRITY only:
+//                      armed, LIVE, fresh status, fresh command, no alarm, one operation at a time,
+//                      machine state for the class, and the operator's confirmation for consequential
+//                      classes. No capability, homing, travel-envelope or acknowledgement prerequisite.
+enum class JcGatePolicy : uint8_t { Plain, LiveJogRestricted, Authority };
+
 namespace detail {
 
-// The authorization rules after the build policy. `jog_only_rules` is the experimental jog test
-// policy: only Jog and JogCancel are ever authorized, every jog needs the operator's confirmation,
-// and a jog without trusted travel protection needs the per-axis acknowledgement. It is a RUNTIME
-// parameter so the non-motion preview mode (jc_authorize_preview) runs exactly the rules of the
-// live-jog build instead of a second copy that could drift.
-inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& ctx, bool jog_only_rules) {
-    if (jog_only_rules && !jc_live_jog_class_allowed(cls)) {
+inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& ctx, JcGatePolicy policy) {
+    const bool restricted = policy == JcGatePolicy::LiveJogRestricted;
+    if (restricted && !jc_live_jog_class_allowed(cls)) {
         // Continuous jog is not authorizable here either: the transport only accepts the
         // strict incremental line (JcJogTest.hpp), and the builder never generates it.
         return JcAuthDecision::BlockedBuildPolicy;
@@ -202,13 +224,15 @@ inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& c
     if (ctx.operation_pending) {
         return JcAuthDecision::BlockedOperationPending;
     }
-    if (ctx.limits_required && !ctx.limits_confirmed) {
-        return JcAuthDecision::BlockedLimitsUnconfirmed;
+    if (policy != JcGatePolicy::Authority) {
+        if (ctx.limits_required && !ctx.limits_confirmed) {
+            return JcAuthDecision::BlockedLimitsUnconfirmed;
+        }
+        if (ctx.envelope_required && !ctx.envelope_confirmed) {
+            return JcAuthDecision::BlockedEnvelopeUnread;
+        }
     }
-    if (ctx.envelope_required && !ctx.envelope_confirmed) {
-        return JcAuthDecision::BlockedEnvelopeUnread;
-    }
-    if (jog_only_rules && ctx.unprotected_required && !ctx.unprotected_acked) {
+    if (restricted && ctx.unprotected_required && !ctx.unprotected_acked) {
         return JcAuthDecision::BlockedUnprotectedNotAcknowledged;
     }
     const bool motion_idle_only = cls == JcCommandClass::Home || cls == JcCommandClass::Probe
@@ -221,7 +245,7 @@ inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& c
         && strcmp(ctx.machine_state, "Idle") != 0 && strcmp(ctx.machine_state, "Jog") != 0) {
         return JcAuthDecision::BlockedBadState;
     }
-    const bool needs_confirmation = jc_needs_confirmation(cls) || (jog_only_rules && cls == JcCommandClass::Jog);
+    const bool needs_confirmation = jc_needs_confirmation(cls) || (restricted && cls == JcCommandClass::Jog);
     if (needs_confirmation && !ctx.operator_confirmed) {
         return JcAuthDecision::BlockedUnconfirmed;
     }
@@ -236,7 +260,8 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     (void)ctx;
     return JcAuthDecision::BlockedBuildPolicy;
 #else
-    return detail::authorize_rules(cls, ctx, JC_LIVE_JOG_TEST != 0);
+    return detail::authorize_rules(cls, ctx, JC_FULL_CONTROL_TEST ? JcGatePolicy::Authority
+                                       : (JC_LIVE_JOG_TEST ? JcGatePolicy::LiveJogRestricted : JcGatePolicy::Plain));
 #endif
 }
 
@@ -246,7 +271,7 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
 // that has no connection to any socket or UART. Allowed here means "the preview controller may
 // accept this", never "a machine-changing command may be transmitted".
 inline JcAuthDecision jc_authorize_preview(JcCommandClass cls, const JcAuthContext& ctx) {
-    return detail::authorize_rules(cls, ctx, true);
+    return detail::authorize_rules(cls, ctx, JcGatePolicy::Authority);
 }
 
 // Sink that actually transmits an authorized command. The JC firmware does

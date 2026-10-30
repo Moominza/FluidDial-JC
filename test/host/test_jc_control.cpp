@@ -172,6 +172,7 @@ static void test_query_allowlist() {
     CHECK(jc_query_allowed("$/probe/pin"));
     CHECK(jc_query_allowed("$/probe/toolsetter_pin"));
     CHECK(jc_query_allowed("$/start/must_home"));
+    CHECK(jc_query_allowed("$#"));   // read-only offset table (work-offset readback)
     int axis_lines = 0;
     for (uint8_t a = 0; a < 4; ++a) {
         for (uint8_t f = 0; f < kJcQueryFieldCount; ++f) {
@@ -190,7 +191,7 @@ static void test_query_allowlist() {
         "$/axes/x/steps_per_mm=1", "$/axes/x/max_travel_mm=99999", "$/axes/x/steps_per_mm ",
         "$/axes/x/steps_per_mm\n$H", "$/axes/x/steps_per_mm$H", "$/axes/b/steps_per_mm",
         "$/axes/xx/steps_per_mm", "$/axes/x/homing/cycle=0", "$/axes/x", "$/axes", "$/axes/x/",
-        "$Config/Dump", "$Limits", "$#", "$$", "$RST=*", "$/probe/pin=gpio.1", "$/start_message=x",
+        "$Config/Dump", "$Limits", "$# ", "$#1", "$$", "$RST=*", "$/probe/pin=gpio.1", "$/start_message=x",
         "$/axes/x/steps_per_mm;$H", " $I", "$I ", "$i", "$g",
     };
     for (const char* b : blocked) {

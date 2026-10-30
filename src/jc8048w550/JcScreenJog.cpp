@@ -38,8 +38,12 @@ constexpr ui::Rect kContinuous = jl::kArm;  // ARM / READ SETTINGS in the jog-UI
 const char* tri_text(JcTri t) { return t == JcTri::Yes ? "ON" : (t == JcTri::No ? "OFF" : "UNKNOWN"); }
 
 // Z is on hold and A is disabled in the first-motion policy; only X and Y can jog.
-bool live_axis_allowed(uint8_t axis) { return axis < 2; }
+bool live_axis_allowed(uint8_t axis) { return JC_AUTHORITY ? axis < 4 : axis < 2; }
 const char* live_jog_label(uint8_t axis, bool negative) {
+#if JC_AUTHORITY
+    if (axis == 3) return negative ? "A -  (CW)" : "A +  (CCW)";
+    return negative ? (axis == 2 ? "Z -" : "JOG  -") : (axis == 2 ? "Z +" : "JOG  +");
+#endif
     if (axis == 2) return "Z  ON HOLD";
     if (axis == 3) return "A  DISABLED";
     return negative ? "JOG  -" : "JOG  +";
@@ -120,6 +124,9 @@ void JcJogScreen::draw_mode() {
         snprintf(label, sizeof(label), "ARMED %us", static_cast<unsigned>(sv.dispatcher.arm_remaining_ms(now) / 1000u));
         ui::button(sv.display, kContinuous, label, ui::Btn::Good);
     } else {
+#if JC_AUTHORITY
+        ui::button(sv.display, kContinuous, JC_ARM_LABEL, ui::Btn::Danger);   // FluidNC is the authority: no prerequisite read
+#else
         const JcCapsFlow flow = caps_flow(now);
         char label[24];
         switch (flow.phase) {
@@ -138,6 +145,7 @@ void JcJogScreen::draw_mode() {
                 ui::button(sv.display, kContinuous, jc_caps_action_label(flow), flow.can_read ? ui::Btn::Selected : ui::Btn::Disabled);
                 break;
         }
+#endif
     }
 #else
     ui::button(sv.display, kContinuous, "CONTINUOUS",
@@ -249,7 +257,12 @@ void JcJogScreen::draw_live() {
     {
         const JcJogGate g = jc_jog_gate(sv.loader.caps(), sv.loader.state() == JcLoadState::Complete, millis(), _axis,
                                         jc_position_trust(sv.loader.caps()));
+#if JC_AUTHORITY
+        (void)g;
+        jc_jog_motion_line(text, sizeof(text), motion, sv.model.state(), sv.jogs.phase(), "FluidNC decides");
+#else
         jc_jog_motion_line(text, sizeof(text), motion, sv.model.state(), sv.jogs.phase(), jc_jog_gate_mode_name(g.mode));
+#endif
     }
 #else
     snprintf(text, sizeof(text), "%s  [%s]", motion, sv.model.state());
@@ -287,6 +300,13 @@ void JcJogScreen::draw_live() {
 // Why the selected axis cannot be armed now (nullptr = it may). Uses the same gate the
 // authorization context uses, so the page and the gate cannot disagree.
 const char* JcJogScreen::arm_blocker() const {
+#if JC_AUTHORITY
+    if (!sv.live_mode) return "DEMO mode: connect LIVE first";
+    if (!sv.model.fresh()) return "no fresh controller status";
+    if (strcmp(sv.model.state(), "Idle") != 0) return "the machine must be Idle";
+    if (sv.jogs.unresolved()) return "a previous operation is unresolved";
+    return nullptr;
+#endif
     if (!live_axis_allowed(_axis)) {
         return _axis == 2 ? "Z is ON HOLD: homing direction / limit side need owner verification"
                           : "A is disabled pending rotary calibration";
@@ -302,6 +322,31 @@ const char* JcJogScreen::arm_blocker() const {
 }
 
 void JcJogScreen::request_arm() {
+#if JC_AUTHORITY
+    {
+        const uint32_t now = millis();
+        if (sv.dispatcher.armed_at(now)) {
+            sv.dispatcher.disarm();   // tapping an armed button disarms
+            Serial.println(JC_JOG_TAG ": disarmed by the operator");
+            draw();
+            return;
+        }
+        if (const char* blocker = arm_blocker()) {
+            Serial.printf(JC_JOG_TAG ": arm refused: %s\n", blocker);
+            show_message("CANNOT ARM", blocker, "Nothing was sent.");
+            return;
+        }
+        open_custom_confirm("ARM JOGGING?", "ARM");
+        dialog.add_line("Jog commands go straight to FluidNC, which plans and runs them.", ui::kWarn);
+        dialog.add_line("The pendant does not check position or travel limits.");
+        dialog.add_line("Check clear travel before every jog.");
+        dialog.add_line("Arming lapses after 120 s, on leaving this page and on any", ui::kMuted);
+        dialog.add_line("loss of the connection. It is never restored.", ui::kMuted);
+        dialog.add_line("Keep the E-stop in reach. Software cancel is NOT an E-stop.", RED);
+        draw();
+        return;
+    }
+#endif
     const uint32_t now = millis();
     if (sv.dispatcher.armed_at(now) && ((sv.dispatcher.unprotected_ack_mask() >> _axis) & 1u) != 0) {
         sv.dispatcher.disarm();  // tapping an armed button disarms everything
@@ -334,6 +379,11 @@ void JcJogScreen::request_arm() {
 }
 
 void JcJogScreen::on_custom_confirm() {
+#if JC_AUTHORITY
+    sv.dispatcher.arm_for(millis(), kJcJogArmTtlMs, 0x0F);
+    Serial.println(JC_JOG_TAG ": ARMED for 120 s");
+    return;
+#endif
     // The acknowledgement covers this axis in this arming only. Axes acknowledged earlier in
     // the same, still-valid arming are kept; a lapsed or disarmed arming starts from nothing.
     const uint32_t now = millis();
@@ -345,6 +395,50 @@ void JcJogScreen::on_custom_confirm() {
 }
 
 void JcJogScreen::jog_live(int direction) {
+#if JC_AUTHORITY
+    {
+        const uint32_t now = millis();
+        const JcCommand command = jc_jog_incremental(sv.profile, _axis, direction * step_value(), feed_value());
+        if (!command.ok) {
+            _preview.draw(sv.display, jl::kPreviewSlot, "(no command)", FontId::Body16, ui::kMuted, ui::kPanel);
+            char reason[64];
+            snprintf(reason, sizeof(reason), "Refused: %s", jc_cmd_error_name(command.error));
+            show_message("JOG REFUSED", reason, "Check the step and the feed.", "Nothing was sent.");
+            return;
+        }
+        _preview.draw(sv.display, jl::kPreviewSlot, command.text, FontId::Body16, CYAN, ui::kPanel);
+        if (!sv.dispatcher.armed_at(now)) {
+            show_message("NOT ARMED", "Tap " JC_ARM_LABEL " first.", "Arming lapses after 120 s, on leaving this page,", "and on any loss of the connection.");
+            return;
+        }
+        const JcJogReject why = sv.jogs.can_begin(now);
+        if (why != JcJogReject::None) {
+            show_message("JOG REFUSED", jc_jog_reject_name(why), "Nothing was sent.");
+            return;
+        }
+#if JC_JOG_PREVIEW
+        const uint32_t before = sv.dispatcher.previewed();
+#else
+        const uint32_t before = sv.dispatcher.sent();
+#endif
+        const JcAuthDecision d = sv.dispatcher.submit(command, sv.dispatch_context(true));   // arming is the confirmation
+        if (d != JcAuthDecision::Allowed) {
+            show_message("JOG BLOCKED", jc_auth_name(d), "Nothing was sent.");
+            return;
+        }
+#if JC_JOG_PREVIEW
+        const bool accepted = sv.dispatcher.previewed() != before;
+#else
+        const bool accepted = sv.dispatcher.sent() != before;
+#endif
+        if (!accepted) {
+            show_message("JOG NOT SENT", "Another operation is in progress, or the transport refused it.", "Nothing was sent.");
+            return;
+        }
+        Serial.printf(JC_JOG_TAG ": jog [%s]\n", command.text);
+        return;
+    }
+#endif
     const uint32_t now = millis();
     const JcCommand command = jc_jog_incremental(sv.profile, _axis, direction * step_value(), feed_value());
     if (!command.ok) {
@@ -510,7 +604,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             const uint32_t now = millis();
             const bool armed_here = sv.dispatcher.armed_at(now) && ((sv.dispatcher.unprotected_ack_mask() >> _axis) & 1u) != 0;
             const JcCapsFlow flow = caps_flow(now);
-            if (!armed_here && live_axis_allowed(_axis) && flow.phase != JcCapsPhase::Current) {
+            if (!JC_AUTHORITY && !armed_here && live_axis_allowed(_axis) && flow.phase != JcCapsPhase::Current) {
                 if (flow.phase == JcCapsPhase::Reading) {
                     show_message("READING MACHINE SETTINGS", "Wait for the read to finish.",
                                  "ARM stays unavailable until valid, current results are held.");

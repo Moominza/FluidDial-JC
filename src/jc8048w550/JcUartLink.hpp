@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 
+#include "JcCommandPolicy.hpp"
 #include "JcFrameAssembler.hpp"
 #include "JcLinkTracker.hpp"
 #include "JcLinkTypes.hpp"
@@ -40,6 +41,11 @@ public:
     }
     // Sends ONE allowlisted read-only query; anything else is refused and counted.
     bool send_query_line(const char* line);
+#if JC_FULL_CONTROL_TEST
+    // EXPERIMENTAL FULL-CONTROL build only: raw framing for the unified command system (the policy is applied
+    // once, by jc_command_bytes_allowed(), in front of every transport).
+    bool send_command_bytes(const char* bytes, size_t length);
+#endif
     uint32_t rejected_query_lines() const { return _rejected_queries; }
     uint32_t queries_sent() const { return _queries_sent; }
     // Returns false (and stays stopped) when pins are not configured.

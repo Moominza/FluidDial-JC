@@ -33,6 +33,11 @@ public:
     JcUserSettings& settings() { return _settings; }
     const JcUserSettings& settings() const { return _settings; }
     JcDispatcher& dispatcher() { return _dispatcher; }
+#if JC_AUTHORITY
+    // Prepares a routine: reads $G / $# (read-only), then the preview is shown. In the preview build the
+    // routine runs against the shared simulated FluidNC, started from the real work position.
+    bool workflow_prepare(JcWfKind kind, const JcWfParams& params) override;
+#endif
 
     // JcAppHost
     void go(JcPage page) override;
@@ -52,6 +57,26 @@ private:
     void on_controller_line(const char* line);
     static void line_thunk(void* user, const char* line) { static_cast<JcApp*>(user)->on_controller_line(line); }
     bool uart_active() const;
+#if JC_AUTHORITY
+    class WfHost : public JcWfHost {
+    public:
+        explicit WfHost(JcApp& app) : _app(app) {}
+        bool submit(const JcCommand& c, const char** why) override;
+        bool query(const char* line) override;
+        void stop() override;
+    private:
+        JcApp& _app;
+    };
+    JcWfStatus wf_status(uint32_t now);
+    void service_workflow(uint32_t now);
+    static void cmd_line_thunk(void* user, const char* line, uint32_t now);
+#if JC_FULL_CONTROL_TEST
+    static bool cmd_tx_thunk(void* user, const char* bytes, size_t length) {
+        return static_cast<JcApp*>(user)->send_command(bytes, length);
+    }
+    bool send_command(const char* bytes, size_t length);
+#endif
+#endif
 #if JC_LIVE_JOG_TEST
     // EXPERIMENTAL live-jog build only: the transmit function handed to JcJogSession.
     static bool jog_tx_thunk(void* user, const char* bytes, size_t length) {
@@ -71,7 +96,16 @@ private:
     JcPreviewBridge _preview;   // SIMULATED controller: the only jog transport in the ordinary firmware
     JcJogStatus _real;          // latest REAL read-only status, as the session would see it
 #endif
+#if JC_AUTHORITY
+    JcCommandSystem _cmd;       // ONE command interface for every transport; the policy lives in front of them
+#endif
     JcJogSession _jogs;         // transport: none (ordinary), the simulation (preview), the socket (live-jog test build)
+#if JC_AUTHORITY
+    WfHost _wfhost { *this };
+    JcWorkflow _wf { &_wfhost };
+    bool _wf_cmd_inflight = false;       // the command awaiting its reply belongs to the routine
+    uint32_t _wf_seq = 0, _wf_last_frame = 0;
+#endif
     JcNav _nav;
     JcAppServices _sv;
     JcMenuScreen _menu;
@@ -86,6 +120,9 @@ private:
     JcConnectionsScreen _connections;
     JcDisplaySettingsScreen _display_settings;
     JcJogSettingsScreen _jog_settings;
+#if JC_AUTHORITY
+    JcWorkflowScreen _workflow_screen;
+#endif
     JcMachineScreen _machine;
     JcCapsScreen _caps_screen;
     JcLimitsScreen _limits_screen;

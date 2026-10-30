@@ -47,11 +47,19 @@ with tempfile.TemporaryDirectory() as tmp:
                      f"-DJC_LIVE_JOG_TEST={live}", jog, "-o", exe]
         subprocess.run(cmd, check=True)
         rc |= subprocess.run([exe]).returncode
+    # Unified command interface and guided routines (Instructions 009 / 009A): the controller-authoritative policy.
+    for name in ("test_jc_commands.cpp", "test_jc_workflow.cpp"):
+        exe = os.path.join(tmp, "t" + name + ".exe")
+        subprocess.run(cxx + ["-std=c++17", "-Wall", "-Wextra", "-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_FULL_CONTROL_TEST=1",
+                              os.path.join(root, "test", "host", name), "-o", exe], check=True)
+        rc |= subprocess.run([exe]).returncode
     # Non-motion jog test mode (Instruction 007): the real gate against the simulated controller.
     prev = os.path.join(root, "test", "host", "test_jc_preview.cpp")
-    for enabled in (0, 1):
-        exe = os.path.join(tmp, f"tpreview{enabled}.exe")
-        subprocess.run(cxx + ["-std=c++17", "-Wall", "-Wextra", f"-DJC_MACHINE_CONTROL_ENABLED={enabled}", prev, "-o", exe], check=True)
+    # The preview build (JC_JOG_PREVIEW=1, machine control disabled) and the full-control build run the same rules.
+    for tag, flags in (("preview", ["-DJC_MACHINE_CONTROL_ENABLED=0", "-DJC_JOG_PREVIEW=1"]),
+                       ("full", ["-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_FULL_CONTROL_TEST=1"])):
+        exe = os.path.join(tmp, f"tpreview_{tag}.exe")
+        subprocess.run(cxx + ["-std=c++17", "-Wall", "-Wextra"] + flags + [prev, "-o", exe], check=True)
         rc |= subprocess.run([exe]).returncode
 rc |= subprocess.run([sys.executable, os.path.join(root, "tools", "check_no_sink.py")]).returncode
 # Renders the real page code on the host (ordinary and live-jog builds) and checks the layout.

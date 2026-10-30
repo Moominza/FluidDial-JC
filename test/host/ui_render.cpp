@@ -23,6 +23,7 @@
 #include "../../src/jc8048w550/JcDashLayout.hpp"
 #include "../../src/jc8048w550/JcJogLayout.hpp"
 #include "../../src/jc8048w550/JcScreens.hpp"
+#include "../../src/jc8048w550/JcSimNc.hpp"
 
 // ---- stub globals ----------------------------------------------------------------------
 uint32_t g_stub_millis = 100000;
@@ -53,6 +54,11 @@ public:
     void apply_brightness() override {}
     void leave(JcLeaveTarget) override {}
     const char* start_caps_read() override { ++reads_started; return nullptr; }
+#if JC_AUTHORITY
+    bool (*prepare_fn)(void*, JcWfKind, const JcWfParams&) = nullptr;
+    void* prepare_user = nullptr;
+    bool workflow_prepare(JcWfKind k, const JcWfParams& p) override { return prepare_fn != nullptr && prepare_fn(prepare_user, k, p); }
+#endif
     int reads_started = 0;
     void cancel_caps_read() override {}
 };
@@ -72,6 +78,17 @@ struct Rig {
     JcPreviewBridge bridge;   // the SIMULATED controller: the only place a jog can go
     JcJogStatus real;         // the latest REAL read-only status
 #endif
+#if JC_AUTHORITY
+    JcCommandSystem cmd { &Rig::tx, nullptr };
+    JcSimNc nc;               // the shared simulated FluidNC for the positioning / probing routines
+    struct WfH : JcWfHost {
+        Rig* r = nullptr;
+        bool submit(const JcCommand& c, const char** why) override;
+        bool query(const char* line) override;
+        void stop() override;
+    } wfh;
+    JcWorkflow wf { &wfh };
+#endif
     JcAppServices sv;
     std::string wire;   // every byte the session would have transmitted
     bool tx_ok = true;
@@ -81,24 +98,78 @@ struct Rig {
 #if JC_JOG_PREVIEW
                                        , bridge
 #endif
+#if JC_AUTHORITY
+                                       , cmd, wf
+#endif
                                      } {
+#if JC_AUTHORITY
+        wfh.r = this;
+        host.prepare_fn = &Rig::prepare_thunk;
+        host.prepare_user = this;
+        cmd.attach_jogs(&jogs);
+        cmd.set_transport(&Rig::tx, this);
+#endif
         refresh_profile();
 #if JC_JOG_PREVIEW
         dispatcher.set_preview(true);   // the ordinary firmware's non-motion test mode
 #endif
+#if JC_AUTHORITY
+        dispatcher.set_sink_ex(&JcCommandSystem::sink, &cmd);
+#else
         dispatcher.set_sink_ex(&JcJogSession::sink, &jogs);   // the experimental/preview wiring; blocked by policy otherwise
+#endif
     }
     // Test transport (can be made to fail). In the preview build the bytes go ONLY to the simulation.
     static bool tx(void* user, const char* bytes, size_t n) {
         Rig* r = static_cast<Rig*>(user);
         if (!r->tx_ok) return false;
         r->wire.append(bytes, n);
-#if JC_JOG_PREVIEW
+#if JC_AUTHORITY
+        // Jogs and the jog cancel go to the jog-scenario simulation, everything else to the shared simulated FluidNC.
+        const bool jog_family = (n == 1 && static_cast<uint8_t>(bytes[0]) == 0x85) || (n > 3 && strncmp(bytes, "$J=", 3) == 0);
+        if (jog_family) return r->bridge.controller().on_tx(bytes, n);
+        return r->nc.send(bytes, n);
+#elif JC_JOG_PREVIEW
         return r->bridge.controller().on_tx(bytes, n);
 #else
         return true;
 #endif
     }
+#if JC_AUTHORITY
+    static bool prepare_thunk(void* user, JcWfKind kind, const JcWfParams& p) {
+        Rig* r = static_cast<Rig*>(user);
+        r->nc.centre_feature_here(kind == JcWfKind::FindRotary ? JcSimFeature::Cylinder : (p.feature == JcFeatureKind::Outside ? JcSimFeature::Boss : JcSimFeature::Bore), 10.0f, 20.0f);
+        return r->wf.prepare(kind, p, r->wf_status(), g_stub_millis);
+    }
+    JcWfStatus wf_status() {
+        JcWfStatus s;
+        s.fresh = true;
+        s.state = nc.state;
+        s.wpos_valid = true;
+        for (int a = 0; a < 3; ++a) s.wpos[a] = nc.work(a);
+        s.pins = nc.pins;
+        s.sequence = static_cast<uint32_t>(g_stub_millis / 100);
+        s.probe_configured = JcTri::Yes;
+        return s;
+    }
+    void wf_run(uint32_t ms) {
+        for (uint32_t done = 0; done < ms; done += 10) {
+            advance(10);
+            nc.update(g_stub_millis);
+            cmd.set_clock(g_stub_millis);
+            char line[96];
+            while (nc.pop_line(line, sizeof(line))) { cmd.on_line(line); wf.on_line(line); }
+            cmd.tick();
+            JcCommandResult res;
+            if (cmd.take_result(res)) wf.on_result(res);
+            wf.on_status(wf_status());
+            wf.service(g_stub_millis);
+        }
+    }
+#endif
+#if JC_AUTHORITY
+    // (workflow helpers are defined above)
+#endif
     void set_fresh(bool fresh) {
         model.set_fresh(fresh);
 #if JC_JOG_PREVIEW
@@ -108,7 +179,7 @@ struct Rig {
     void refresh_profile() {
         profile = jc_profile_from_settings(settings);
         if (loader.state() == JcLoadState::Complete) jc_profile_apply_caps(profile, loader.caps());
-#if JC_JOG_UI
+#if JC_LIVE_JOG_TEST
         jc_profile_apply_test_limits(profile);
 #endif
     }
@@ -201,6 +272,22 @@ struct Rig {
         refresh_profile();
     }
 };
+
+#if JC_AUTHORITY
+bool Rig::WfH::submit(const JcCommand& c, const char** why) {
+    JcDispatchContext x = r->sv.dispatch_context(true, true);
+    const size_t before = r->wire.size();
+    const JcAuthDecision d = r->dispatcher.submit(c, x);
+    if (d != JcAuthDecision::Allowed) { *why = jc_auth_name(d); return false; }
+    if (r->wire.size() == before) { *why = "not transmitted"; return false; }
+    return true;
+}
+bool Rig::WfH::query(const char* line) {
+    std::string l = std::string(line) + "\n";
+    return r->nc.send(l.data(), l.size());
+}
+void Rig::WfH::stop() { const char b = '!'; r->nc.send(&b, 1); }
+#endif
 
 // ---- frame output and checks ---------------------------------------------------------------------
 
@@ -555,6 +642,7 @@ static void scenarios() {
     // Entering the page in LIVE, Idle, fresh: ONE automatic read was requested. Tapping the shared button
     // asks for a read instead of arming (nothing is armed without valid results).
     check(r.host.reads_started == 1, "entering the jog page starts one automatic machine-settings read");
+#if JC_LIVE_JOG_TEST
     touch_center(jog, arm_btn);
     check(r.host.reads_started == 2 && !r.dispatcher.armed(), "READ SETTINGS requests a read and arms nothing");
     check_frame(r.gfx, "jog_read_settings_offered", false);
@@ -591,6 +679,7 @@ static void scenarios() {
         check(!p.dispatcher.armed(), "a failed read leaves arming off");
     }
 #endif
+#endif
 
     printf("[capabilities / limits with the real controller read]\n");
     r.read_controller();
@@ -599,7 +688,7 @@ static void scenarios() {
     check_frame(r.gfx, "limits_real", false);
     caps.enter();
     check_frame(r.gfx, "capabilities_real", false);
-#if JC_JOG_UI
+#if JC_LIVE_JOG_TEST
     {
         // The read is only valid for kJcCapsMaxAgeMs: an old read is shown as EXPIRED and arming is off.
         const uint32_t saved = g_stub_millis;
@@ -616,6 +705,7 @@ static void scenarios() {
 
 #if JC_JOG_UI
     printf("[jog page: gate, arming dialog]\n");
+#if JC_LIVE_JOG_TEST
     r.advance(500);
     r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);
     jog.enter();
@@ -689,6 +779,55 @@ static void scenarios() {
     check_frame(r.gfx, "jog_x_10mm_refused", true);
     touch_center(jog, ui::kDialogOk);
 
+#else
+    // Controller-authoritative interface: arm once, jog straight away on all four axes, FluidNC decides.
+    r.advance(500);
+    r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);
+    jog.enter();
+    check_frame(r.gfx, "jog_x_ready", false);
+    touch_center(jog, arm_btn);
+    check_frame(r.gfx, "jog_arm_dialog", true);
+    touch_center(jog, ui::kDialogCancel);
+    check(!r.dispatcher.armed(), "cancelling the arming dialog arms nothing");
+    touch_center(jog, jog_pos);                                  // not armed: explained, nothing sent
+    check_frame(r.gfx, "jog_not_armed_dialog", true);
+    touch_center(jog, ui::kDialogOk);
+    check(r.wire.empty(), "nothing is sent while not armed");
+    touch_center(jog, arm_btn);
+    touch_center(jog, ui::kDialogConfirm);
+    check(r.dispatcher.armed_at(g_stub_millis), "the confirmation arms jogging (no capability read, homing or per-axis acknowledgement)");
+    check_frame(r.gfx, "jog_x_armed", false);
+    touch_center(jog, jog_pos);                                  // sent at once: arming is the confirmation
+    check(r.wire == "$J=G91G21F100X1.000\n" && r.dispatcher.sent() == 0, "the jog line reached the transport (the simulation) at once");
+    check_frame(r.gfx, "jog_x_sent", false);
+    r.advance(1500);
+    jog.enter();
+    check_frame(r.gfx, "jog_x_completed", false);
+    check(r.jogs.result() == JcJogResult::Completed, "the simulated jog completed");
+    touch_center(jog, axis[2]);
+    check_frame(r.gfx, "jog_z_ready", false);
+    r.advance(1000);
+    touch_center(jog, jog_pos);
+    check(r.wire.find("Z1.000") != std::string::npos, "Z jogs like any other axis");
+    r.advance(2000);
+    touch_center(jog, axis[3]);
+    check_frame(r.gfx, "jog_a_ready", false);
+    r.advance(1000);
+    touch_center(jog, jog_neg);
+    check(r.wire.find("A-") != std::string::npos, "A jogs counter-clockwise / clockwise in degrees");
+    r.advance(2500);
+    touch_center(jog, axis[0]);
+    touch_center(jog, step10);
+    check_frame(r.gfx, "jog_x_10mm_selected", false);
+    r.advance(1000);
+    touch_center(jog, jog_pos);
+    check(r.wire.find("X10.000") != std::string::npos, "a 10 mm step is the controller's to accept or refuse");
+    check_frame(r.gfx, "jog_x_10mm_sent", false);
+    r.advance(4000);
+    touch_center(jog, jog_stop);                                 // cancel is always available
+    check(r.wire.find(std::string(1, static_cast<char>(0x85))) != std::string::npos, "CANCEL JOG sends the cancel byte");
+#endif
+
     printf("[jog page: failure and cancel states]\n");
     {
         // A new rig per state keeps each one self-contained.
@@ -760,6 +899,85 @@ static void scenarios() {
         check_frame(r.gfx, "preview_page_next_scenario", false);
         check(r.bridge.controller().scenario() == JcPreviewScenario::Rejected, "NEXT SCENARIO advances the simulated scenario");
         check(r.dispatcher.sent() == 0, "the gate's SENT counter is still zero after the whole preview run");
+    }
+#endif
+#if JC_AUTHORITY
+    printf("[workflow page: positioning and probing routines]\n");
+    {
+        Rig w;
+        w.status("Idle", 50, 50, -5, 0);
+        w.advance(500);
+        w.nc.m[0] = 50; w.nc.m[1] = 50; w.nc.m[2] = -5;
+        JcWorkflowScreen wfs(w.sv);
+        wfs.enter();
+        check_frame(w.gfx, "workflow_list", false);
+        touch_center(wfs, ui::Rect { 412, 100, 372, 56 });          // FIND X CENTRE
+        check_frame(w.gfx, "workflow_setup_x", false);
+        touch_center(wfs, ui::Rect { 198, 408, 586, 52 });          // PREPARE
+        w.wf_run(600);
+        wfs.tick(g_stub_millis);
+        check_frame(w.gfx, "workflow_preview", false);
+        check(w.wf.state() == JcWfState::Planned && w.wf.wcs() == 0, "PREPARE read the active WCS before the preview");
+        check(w.nc.cmds == 2 && w.wire.find("G21") == std::string::npos, "only the read-only $G and $# were sent: nothing moves on selection");
+        touch_center(wfs, ui::Rect { 258, 408, 250, 52 });          // START -> the single confirmation
+        check_frame(w.gfx, "workflow_start_confirm", true);
+        touch_center(wfs, ui::kDialogConfirm);
+        check(w.dispatcher.armed_at(g_stub_millis), "confirming START arms command sending for this routine");
+        w.wf_run(900);
+        wfs.tick(g_stub_millis);
+        check_frame(w.gfx, "workflow_running", false);
+        for (int i = 0; i < 80 && w.wf.state() == JcWfState::Running; ++i) { w.wf_run(500); wfs.tick(g_stub_millis); }
+        wfs.tick(g_stub_millis + 300);
+        check(w.wf.state() == JcWfState::Done && w.wf.result().x.ok, "the routine measured the X centre against the simulated FluidNC");
+        check_frame(w.gfx, "workflow_done", false);
+        touch_center(wfs, ui::Rect { 404, 340, 380, 52 });          // SET WORK X0 HERE -> confirmation, never automatic
+        check_frame(w.gfx, "workflow_origin_confirm", true);
+        check(w.wire.find("G10") == std::string::npos, "no work offset is written before the confirmation");
+        touch_center(wfs, ui::kDialogConfirm);
+        for (int i = 0; i < 20 && w.wf.state() == JcWfState::Running; ++i) { w.wf_run(300); }
+        wfs.tick(g_stub_millis + 300);
+        check(w.wf.result().readback_ok, "the offset was read back from the simulated FluidNC and matches");
+        check_frame(w.gfx, "workflow_origin_set", false);
+        // a failed contact
+        Rig f;
+        f.status("Idle", 50, 50, -5, 0);
+        f.advance(500);
+        f.nc.feat = JcSimFeature::None;
+        JcWorkflowScreen fs(f.sv);
+        fs.enter();
+        touch_center(fs, ui::Rect { 412, 100, 372, 56 });
+        touch_center(fs, ui::Rect { 198, 408, 586, 52 });
+        f.wf_run(600);
+        f.nc.feat = JcSimFeature::None;   // nothing to touch
+        touch_center(fs, ui::Rect { 258, 408, 250, 52 });
+        touch_center(fs, ui::kDialogConfirm);
+        for (int i = 0; i < 40 && f.wf.state() == JcWfState::Running; ++i) { f.wf_run(500); }
+        fs.tick(g_stub_millis + 300);
+        check(f.wf.state() == JcWfState::Failed, "no contact ends the routine");
+        check_frame(f.gfx, "workflow_failed", false);
+        // GO TO needs a clearance: refused in PREPARE with the reason.
+        Rig g;
+        g.status("Idle", 50, 50, -5, 0);
+        g.advance(500);
+        JcWorkflowScreen gs(g.sv);
+        gs.enter();
+        touch_center(gs, ui::Rect { 16, 100, 372, 56 });            // GO TO WORK X0 Y0
+        check_frame(g.gfx, "workflow_setup_goto", false);
+        touch_center(gs, ui::Rect { 198, 408, 586, 52 });
+        check_frame(g.gfx, "workflow_prepare_refused", true);
+        touch_center(gs, ui::kDialogOk);
+        check(g.nc.cmds == 0, "nothing is sent when the clearance is missing");
+    }
+    {
+        // Homing page: separate facts, Z / A not homed silently.
+        Rig h;
+        h.status("Idle", 0, 0, 0, 0);
+        h.advance(500);
+        h.read_controller();
+        h.status("Idle", 0, 0, 0, 0);
+        JcHomingScreen hs(h.sv);
+        hs.enter();
+        check_frame(h.gfx, "homing_state", false);
     }
 #endif
 #else

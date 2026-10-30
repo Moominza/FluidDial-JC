@@ -11,6 +11,7 @@ ui::Rect row_rect(uint8_t i) { return { 16, static_cast<int16_t>(76 + i * 52), 5
 constexpr ui::Rect kRun { 552, 76, 232, 66 };
 constexpr ui::Rect kEdit { 552, 152, 232, 66 };
 constexpr ui::Rect kClear { 552, 228, 232, 66 };
+constexpr ui::Rect kRoutines { 552, 306, 232, 66 };   // POSITIONING / PROBING
 
 void edit_callback(void* user, bool ok, const char* text) {
     static_cast<JcMacrosScreen*>(user)->edit_done(ok, text);
@@ -43,10 +44,17 @@ void JcMacrosScreen::on_draw() {
     ui::button(sv.display, kRun, "RUN (PREVIEW)");
     ui::button(sv.display, kEdit, "EDIT SLOT");
     ui::button(sv.display, kClear, "CLEAR SLOT", ui::Btn::Danger);
+#if JC_AUTHORITY
+    ui::button(sv.display, kRoutines, "POSITIONING / PROBING", ui::Btn::Selected);
+    ui::wrap(sv.display, { 552, 380, 232, 90 },
+             "Built-in routines: go to work X0 Y0, find an X / Y centre, find a rotary A centreline.",
+             FontId::Body16, ui::kMuted, ui::kBg);
+#else
     ui::wrap(sv.display, { 552, 306, 232, 160 },
              "Macros run controller files with $Localfs/Run=<path>. They are defined here by you; the "
              "controller's own macro list is not shown because reading it needs a query command.",
              FontId::Body16, ui::kMuted, ui::kBg);
+#endif
     ui::wrap(sv.display, { 16, 392, 520, 74 },
              "Macros can move the machine, change tools or run the spindle. Each run needs confirmation.",
              FontId::Body16, ui::kWarn, ui::kBg);
@@ -105,6 +113,12 @@ void JcMacrosScreen::on_touch(uint16_t x, uint16_t y) {
             return;
         }
     }
+#if JC_AUTHORITY
+    if (ui::hit(kRoutines, x, y)) {
+        sv.host.go(JcPage::Workflow);
+        return;
+    }
+#endif
     const JcMacroSlot& m = sv.settings.macros[_selected];
     if (ui::hit(kRun, x, y)) {
         if (m.path[0] == '\0') {

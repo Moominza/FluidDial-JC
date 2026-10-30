@@ -29,7 +29,7 @@ SOURCES = [os.path.join(HOST, "ui_render.cpp")] + [
     os.path.join(SRC, n) for n in (
         "JcFontRenderer.cpp", "JcUiKit.cpp", "JcScreen.cpp", "JcScreenUtil.cpp", "JcScreenJog.cpp",
         "JcScreenLimits.cpp", "JcScreenCapabilities.cpp", "JcScreenMenu.cpp", "JcScreenSettings.cpp",
-        "JcScreenDryRun.cpp", "JcScreenJogPreview.cpp")]
+        "JcScreenDryRun.cpp", "JcScreenJogPreview.cpp", "JcScreenWorkflow.cpp", "JcScreenHoming.cpp", "JcScreenMacros.cpp")]
 
 
 def find_cxx():

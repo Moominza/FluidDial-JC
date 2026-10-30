@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "JcJogTest.hpp"
+#include "JcSimNc.hpp"
 
 namespace jc8048w550 {
 
@@ -75,6 +76,16 @@ public:
         _scenario = static_cast<JcPreviewScenario>((static_cast<uint8_t>(_scenario) + 1) % static_cast<uint8_t>(JcPreviewScenario::Count));
     }
 
+    // A read-only query ($G, $#) for the positioning / probing routines, answered by the simulated FluidNC.
+    bool query(const char* line) {
+        char buf[JcSimNc::kLineLen];
+        const int n = snprintf(buf, sizeof(buf), "%s\n", line);
+        if (n <= 1 || n >= static_cast<int>(sizeof(buf))) return false;
+        _nc.silent = _scenario == JcPreviewScenario::NoReply;
+        _nc.error_on_cmd = 0;
+        return _nc.send(buf, static_cast<size_t>(n));
+    }
+
     bool on_tx(const char* bytes, size_t n) {
         if (bytes == nullptr || n == 0) return false;
         if (n == 1 && static_cast<uint8_t>(bytes[0]) == 0x85) {
@@ -89,6 +100,17 @@ public:
             }
             return true;
         }
+        if (n == 1) {
+            const uint8_t b = static_cast<uint8_t>(bytes[0]);
+            if (b == '!' || b == '~' || b == 0x18) {   // real-time bytes: no reply
+                ++_realtime;
+                _nc.send(bytes, 1);
+                if (b == 0x18) reset();
+                return true;
+            }
+            ++_refused;
+            return false;
+        }
         char line[96];
         if (n < 2 || n >= sizeof(line) || bytes[n - 1] != '\n') {
             ++_refused;
@@ -97,9 +119,27 @@ public:
         memcpy(line, bytes, n - 1);
         line[n - 1] = '\0';
         JcJogRequest r;
-        if (!jc_parse_jog_line(line, r) || !jc_jog_line_allowed(line, jc_test_jog_limits())) {
-            ++_refused;   // not a test jog: never accepted, even by the simulation
-            return false;
+        if (!jc_policy_jog_line(line, &r.axis, &r.distance, &r.feed)) {
+            // Not a jog: any other builder-generated command is answered like FluidNC would (the
+            // scenario decides), anything else is refused even by the simulation.
+            bool other = false;
+            for (uint8_t cl = 0; cl <= static_cast<uint8_t>(JcCommandClass::Other) && !other; ++cl) {
+                other = jc_command_line_allowed(static_cast<JcCommandClass>(cl), line);
+            }
+            if (!other) {
+                ++_refused;
+                return false;
+            }
+            ++_other;
+            strncpy(_last_line, line, sizeof(_last_line) - 1);
+            _last_line[sizeof(_last_line) - 1] = '\0';
+            // The shared simulated FluidNC answers like the controller would (probe records, offsets,
+            // acknowledgements); the scenario injects the fault the operator chose.
+            _nc.silent = _scenario == JcPreviewScenario::NoReply;
+            _nc.error_on_cmd = _scenario == JcPreviewScenario::Rejected ? _nc.cmds + 1 : 0;
+            _nc.alarm_on_probe = _scenario == JcPreviewScenario::Alarm ? _nc.probes + 1 : 0;
+            _nc.send(bytes, n);
+            return true;
         }
         ++_lines;
         strncpy(_last_line, line, sizeof(_last_line) - 1);
@@ -118,6 +158,7 @@ public:
     // Advance the simulation (call every pass with the real clock).
     void service(uint32_t now) {
         _now = now;
+        _nc.update(now);
         if (_ack_pending && static_cast<int32_t>(now - _ack_at) >= 0) {
             _ack_pending = false;
             switch (_scenario) {
@@ -172,6 +213,19 @@ public:
         return s;
     }
 
+    // The positioning / probing routines run against this shared simulated FluidNC (JcSimNc.hpp). It starts
+    // from the real work position the first time a routine is prepared and keeps its own offset table.
+    JcSimNc& nc() { return _nc; }
+    const JcSimNc& nc() const { return _nc; }
+    bool wf_engaged() const { return _engaged; }
+    void engage(const float work[3]) {
+        if (_engaged) return;
+        for (int a = 0; a < 3; ++a) _nc.m[a] = work[a];
+        _engaged = true;
+    }
+    void disengage() { _engaged = false; _nc.clear_pending(); _nc.set_state("Idle"); memset(_nc.off, 0, sizeof(_nc.off)); _nc.wcs = 0; }
+    uint32_t other_lines() const { return _other; }   // non-jog commands the simulation answered
+    uint32_t realtime() const { return _realtime; }
     uint32_t lines() const { return _lines; }       // jog lines the simulation accepted (NOT sent anywhere)
     uint32_t cancels() const { return _cancels; }   // cancel bytes it accepted (NOT sent anywhere)
     uint32_t refused() const { return _refused; }   // lines it refused (not a restricted test jog)
@@ -207,7 +261,9 @@ private:
     float    _dist = 0.0f, _feed = 100.0f, _start = 0.0f;
     uint32_t _ack_at = 0, _t0 = 0, _dur_ms = 0, _alarm_until = 0;
     bool     _ack_pending = false, _moving = false, _reply_pending = false;
-    uint32_t _lines = 0, _cancels = 0, _refused = 0;
+    uint32_t _lines = 0, _cancels = 0, _refused = 0, _other = 0, _realtime = 0;
+    JcSimNc  _nc;
+    bool     _engaged = false;
 };
 
 // Drives the session from the SIMULATED controller while a rehearsed jog is in flight, and from the
@@ -218,12 +274,22 @@ public:
 
     JcPreviewController& controller() { return _ctrl; }
     const JcPreviewController& controller() const { return _ctrl; }
+    bool wf_engaged() const { return _ctrl.wf_engaged(); }
+    void engage(const float work[3]) { _ctrl.engage(work); }
+    void disengage() { _ctrl.disengage(); }
 
     // `real` is the real controller's latest status (already freshness-qualified by the link).
     void pump(JcJogSession& session, const JcJogStatus& real, uint32_t now) {
         _ctrl.service(now);
         char reply[16];
-        while (_ctrl.take_reply(reply, sizeof(reply))) session.on_line(reply, now);
+        char nc_line[JcSimNc::kLineLen];
+        while (_ctrl.nc().pop_line(nc_line, sizeof(nc_line))) {
+            if (_line_fn != nullptr) _line_fn(_line_user, nc_line, now);
+        }
+        while (_ctrl.take_reply(reply, sizeof(reply))) {
+            if (_line_fn != nullptr) _line_fn(_line_user, reply, now);   // the application feeds session AND command link
+            else session.on_line(reply, now);
+        }
         if (!_ctrl.active()) {
             if (_was_active) {
                 _was_active = false;
@@ -241,6 +307,8 @@ public:
         }
     }
 
+    using LineFn = void (*)(void* user, const char* line, uint32_t now);
+    void set_line_sink(LineFn fn, void* user) { _line_fn = fn; _line_user = user; }
     uint32_t frames() const { return _frames; }
 
 private:
@@ -249,6 +317,8 @@ private:
     bool     _was_active = false;
     uint32_t _next_frame = 0;
     uint32_t _frames = 0;
+    LineFn   _line_fn = nullptr;
+    void*    _line_user = nullptr;
 };
 
 }  // namespace jc8048w550

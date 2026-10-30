@@ -1,4 +1,4 @@
-# JC first-live-jog readiness report (Instructions 006, 006A, 007 and 008)
+# JC first-live-jog readiness report (Instructions 006 to 009A)
 
 Status: **experimental. Nothing was flashed that can move the machine, and no jog or
 cancel byte was transmitted to any controller during this work.**
@@ -669,3 +669,80 @@ cancel and timeout handling, no replay) is unchanged and its tests still pass.
 **Verification (development PC, 2026-10-30).** All host suites PASS (new: 23 checks for the workflow, 71/69 for the preview, existing 1267/1274/1354 jog checks); simulator integration PASS; static guard PASS; renderer: ordinary 8, preview 34, live 32 frames, 0 problems, plus pure geometry checks for the dashboard header/body and the jog page (no overlaps, labels fit, touch targets). 11 mutants for the new rules (arming on an expired read, auto-retry after failure, automatic read with stale status or a moving machine, repeated automatic read, changed expiry, UI arming without a current read, overlapping dashboard / jog geometry) were all caught. All four PlatformIO environments build. The ordinary binary contains no live-jog strings and no `send_jog_bytes` / `jog_tx_thunk`.
 
 **Limits of this verification.** The dashboard is drawn by `PendantUi`, which the host renderer cannot compile; its geometry is verified from the shared layout header, not by rendering the page. The operator's photographs of the dashboard and the jog page are needed to confirm the result on the panel (see [jc-jog-preview-acceptance.md](jc-jog-preview-acceptance.md), part F).
+
+## 14. Complete machine-control interface (Instructions 009 and 009A)
+
+FluidDial-JC is an HMI and command client; **FluidNC is the authority** on motion, travel, homing, probing and
+acceptance. The pendant checks command integrity only (syntax, units, axis, one operation at a time, fresh
+status, no alarm, confirmation of consequential actions, no replay, clear results).
+
+**Builds.** `env:jc8048w550` (ordinary): machine control stays disabled, no transmit path to the machine; the
+whole interface runs against a **simulated FluidNC** (PREVIEW ONLY - MOTION DISABLED).
+`env:jc8048w550_fullcontrol_test` (**new, never flashed**): the same interface over the real transports.
+`env:jc8048w550_livejog_test` (unchanged): the owner's restricted X/Y 1 mm test build.
+
+**One command interface** (`JcCommandSystem.hpp`, `JcCommandPolicy.hpp`). Gate sink -> jog session (motion
+verification) or the single-operation command link -> `checked_tx` -> transport `SendFn`. The strict grammar of
+every line the builders generate (jog on X/Y/Z/A, home, WCS select, G10 L2/L20, probe, retract, positioning,
+SD run, macro run, M5, real-time bytes) is **one function** (`jc_command_bytes_allowed`) used in front of Wi-Fi,
+UART and the simulator. The links only add framing. BLE UART: no BLE transport exists in this firmware; it would
+supply only a `SendFn`.
+
+**Gate policy `Authority`** (preview and full build): armed, LIVE, fresh status, fresh command, no alarm, one
+operation, state for the class, and the operator's confirmation for Home / Probe / WorkOffset / Spindle / Job /
+Macro. **No** capability-read, homing, limit-pin, travel-envelope or per-axis acknowledgement prerequisite; the
+jog needs only arming (the explicit confirmation). Stop (jog cancel, feed hold) is always available when LIVE.
+Alarm recovery (unlock, reset) stays available. The restricted live-jog build keeps its old, stricter rules.
+
+**Homing facts** (`JcHomingState.hpp`, Homing page): configured, switch fitted, switch active (Pn:), homed in this
+connection, position trusted, accepts jog, must_home - shown separately; unknown is "?" not "NO". Jogging needs
+none of them. An unconfigured or inactive homing input is a configuration fact, not an error. Z homing (and
+therefore HOME ALL, which includes Z) is not initiated until the owner confirms the Z direction for the session;
+A has no homing configuration (`error:3`) and is never homed.
+
+**Four-axis jog:** X/Y/Z linear, A in degrees (CW / CCW labels, positive = CCW per G-code convention: verify at
+commissioning), incremental steps and feeds from the presets, one jog at a time, acknowledgement is not completion
+(Idle + position checked), cancel (0x85), timeouts, link loss, no replay.
+
+**Results** of every non-jog command are reported once (accepted / REJECTED error:N / ALARM:N / NO REPLY /
+CONNECTION LOST, not resent).
+
+**Positioning and probing routines** (Macros > POSITIONING / PROBING; `JcWorkflow.hpp`, `JcProbeCalc.hpp`):
+GO TO WORK X0 Y0 / X0 / Y0 (operator-defined safe Z clearance first, never defaulted; the XY move only after a
+separate CONTINUE; absolute work coordinates in the active WCS; no G53/G92; A and spindle untouched);
+FIND X / Y / XY CENTRE (inside features; outside for X or Y), FIND ROTARY A CENTRELINE (two stations, Y pair + top
+contact each, tilt reported, A calibration untouched). Parameters: search, feed, retract, optional slow second
+touch, tip radius, expected size, contact timeout, clearance. Read-only `$G` and `$#` (new allowlisted query) read
+the active WCS and offsets before the preview. Probe replies `[PRB:x,y,z:1|0]`, ALARM:4/5 are validated; a centre is
+only computed from complete contacts. MOVE TO CENTRE and SET WORK ORIGIN (G10 L2 on the active WCS, read back and
+compared; never G92) are separate, confirmed actions. A failed step, alarm, timeout, cancel (feed hold) or
+connection loss ends the routine; nothing continues or resumes.
+
+### 14.1 Verification (development PC, 2026-10-30)
+
+| Check | Result |
+|---|---|
+| Existing host suites (core, app, control, conn, jog x3 policies, capability workflow, preview x2) | PASS |
+| New `test_jc_commands.cpp` (policy accepts every builder line, rejects free G-code / chained / wrong class; four-axis formatting; authority gate; every class through a simulated FluidNC: ack, rejection, alarm, timeout, link loss, cancel, reconnection, invalid, unsupported, single operation, no duplicate) | 767 checks PASS |
+| New `test_jc_workflow.cpp` (go-to, clearance refusals, spindle, WCS change, cancel, disconnect; X / Y / XY / outside / rotary centres; probe never triggered, already triggered, alarm on the second touch, timeout, wrong radius, parameters, slow touch; set-origin read-back, ignored G10, other WCS, G92) | 180 checks PASS |
+| Simulator integration (Python TCP simulator) | PASS |
+| Static no-motion guard (incl. full-control env rules, shared byte policy in both links, pure-code rules) | PASS |
+| Mutation checks: 21 mutants (free G-code accepted, capability prerequisite, alarm rule, single-operation rule, byte policy skipped, homed state kept across link loss, Z silently homed, routine continues after failure, XY without pause, unchecked pair, WCS change, read-back, probe triggered, spindle, clearance below Z, real transport in preview, env flags, link checks, Serial in pure code) | all 21 caught |
+| Host UI renderer (ordinary / preview / live) | 8 / 35 / 32 frames, 0 problems |
+| PlatformIO: `jc8048w550`, `jc8048w550_fullcontrol_test`, `jc8048w550_livejog_test`, `m5dial`, `cyddial` | all SUCCESS |
+| Ordinary binary: no full-control / live-jog strings, no transmit-bytes messages | verified |
+| Upload of the ordinary image to COM3 and boot | SUCCESS (auto-connect, LIVE, PREVIEW ONLY) |
+
+The renderer output is a rendering of the page code, not a photograph. The motion in the preview is simulated.
+The full-control image was **not** flashed and no machine-changing command was transmitted to any controller.
+
+### 14.2 Not done / limits
+
+- Physical commissioning of every function (see [jc-commissioning-checklist.md](jc-commissioning-checklist.md)).
+- Not implemented in the pendant: SD file **browsing** (needs the `$SD/List` / `$Files` query family, not allowlisted),
+  job progress / pause / resume UI beyond the status fields and the `!` / `~` / reset controls, a tool-change
+  workflow (the Tools page still previews M6 sequences only), probing of the rotary axis, FIND XY CENTRE for
+  outside features (use FIND X then FIND Y), BLE UART. These are unfinished pendant features, not controller
+  limitations. FluidNC itself supports them.
+- Probe offsets / tool length offset handling (TLO from a Z tool probe) is not yet part of the new routines.
+- The independent emergency stop is **not installed or tested**; machine position is not established.

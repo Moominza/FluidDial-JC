@@ -18,6 +18,8 @@
 
 #include "JcCapsLoader.hpp"
 #include "JcCapsWorkflow.hpp"
+#include "JcCommandSystem.hpp"
+#include "JcWorkflow.hpp"
 #include "JcCommandBuilder.hpp"
 #include "JcDryRun.hpp"
 #include "JcDispatch.hpp"
@@ -61,6 +63,10 @@ public:
     // the reason it cannot start. Transmits only allowlisted queries.
     virtual const char* start_caps_read() = 0;
     virtual void cancel_caps_read() = 0;
+#if JC_AUTHORITY
+    // Prepares a positioning / probing routine (reads $G and $# first). See JcApp::workflow_prepare.
+    virtual bool workflow_prepare(JcWfKind kind, const JcWfParams& params) = 0;
+#endif
 };
 
 struct JcAppServices {
@@ -77,10 +83,15 @@ struct JcAppServices {
 #if JC_JOG_PREVIEW
     JcPreviewBridge&   preview;   // the SIMULATED controller: the only jog transport in the ordinary firmware
 #endif
+#if JC_AUTHORITY
+    JcCommandSystem&   cmd;       // the one command interface (all transports)
+    JcWorkflow&        wf;        // guided positioning / probing routines
+#endif
 
     bool live_fresh() const { return live_mode && model.fresh(); }
 
-    JcDispatchContext dispatch_context(bool confirmed) const {
+    JcDispatchContext dispatch_context(bool confirmed, bool from_workflow = false) const {
+        (void)from_workflow;
         JcDispatchContext c;
         c.live = live_mode;
         c.link_fresh = model.fresh();
@@ -97,7 +108,12 @@ struct JcAppServices {
         c.envelope_mask = loader.state() == JcLoadState::Complete ? loader.caps().envelope_axis_mask() : 0;
 #endif
         // A configuration read or an unresolved jog is an operation in flight.
+#if JC_AUTHORITY
+        // One operation at a time: a command awaiting its reply, a read, or another routine in progress.
+        c.operation_pending = jogs.unresolved() || loader.running() || cmd.busy() || (wf.running() && !from_workflow);
+#else
         c.operation_pending = jogs.unresolved() || loader.running();
+#endif
         return c;
     }
 };
@@ -114,6 +130,8 @@ public:
     void draw();
     void touch(uint16_t x, uint16_t y);
     void tick(uint32_t now);
+    // FluidNC's answer to a command that no page is waiting on (shown as a message).
+    void notify_result(const char* line) { show_message("FLUIDNC REPLY", line); }
 
 protected:
     virtual void on_enter() {}

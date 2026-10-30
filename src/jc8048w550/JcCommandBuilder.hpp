@@ -293,6 +293,66 @@ inline JcCommandSequence jc_probe_edge_sequence(const JcMachineProfile& p, uint8
     return s;
 }
 
+// ---- built-in positioning and work-origin commands (Instruction 009A) ------------------------------------
+// FluidNC plans and executes the motion; these are single, absolute work-coordinate G-code lines.
+
+// Absolute work-coordinate Z move (safe-clearance move). Never combined with an XY move in one line.
+inline JcCommand jc_goto_work_z(float z) {
+    using namespace detail;
+    if (!isfinite(z) || fabsf(z) > 100000.0f) return fail(JcCommandClass::Macro, JcCmdError::BadValue);
+    return make(JcCommandClass::Macro, "G21 G90 G0 Z%.3f", tidy(z));
+}
+
+// Absolute work-coordinate X and/or Y move in the ACTIVE WCS (no G53, no G92, no A word, no Z word).
+inline JcCommand jc_goto_work_xy(bool has_x, float x, bool has_y, float y) {
+    using namespace detail;
+    if (!has_x && !has_y) return fail(JcCommandClass::Macro, JcCmdError::BadAxis);
+    if ((has_x && (!isfinite(x) || fabsf(x) > 100000.0f)) || (has_y && (!isfinite(y) || fabsf(y) > 100000.0f)))
+        return fail(JcCommandClass::Macro, JcCmdError::BadValue);
+    if (has_x && has_y) return make(JcCommandClass::Macro, "G21 G90 G0 X%.3f Y%.3f", tidy(x), tidy(y));
+    if (has_x) return make(JcCommandClass::Macro, "G21 G90 G0 X%.3f", tidy(x));
+    return make(JcCommandClass::Macro, "G21 G90 G0 Y%.3f", tidy(y));
+}
+
+// G10 L2: sets the origin of work coordinate system `wcs_index` (0..5 = G54..G59) to the given MACHINE
+// coordinates, for the axes given, without moving. Axes not given are untouched. Never G92.
+inline JcCommand jc_set_wcs_origin(uint8_t wcs_index, bool has_x, float x, bool has_y, float y, bool has_z, float z) {
+    using namespace detail;
+    if (wcs_index > 5) return fail(JcCommandClass::WorkOffset, JcCmdError::BadIndex);
+    if (!has_x && !has_y && !has_z) return fail(JcCommandClass::WorkOffset, JcCmdError::BadAxis);
+    if ((has_x && (!isfinite(x) || fabsf(x) > 100000.0f)) || (has_y && (!isfinite(y) || fabsf(y) > 100000.0f))
+        || (has_z && (!isfinite(z) || fabsf(z) > 100000.0f)))
+        return fail(JcCommandClass::WorkOffset, JcCmdError::BadValue);
+    char words[64] = "";
+    size_t n = 0;
+    if (has_x) n += static_cast<size_t>(snprintf(words + n, sizeof(words) - n, " X%.3f", tidy(x)));
+    if (has_y) n += static_cast<size_t>(snprintf(words + n, sizeof(words) - n, " Y%.3f", tidy(y)));
+    if (has_z) n += static_cast<size_t>(snprintf(words + n, sizeof(words) - n, " Z%.3f", tidy(z)));
+    return make(JcCommandClass::WorkOffset, "G10 L2 P%u%s", static_cast<unsigned>(wcs_index) + 1u, words);
+}
+
+// G10 L20 on an explicit WCS: the current position becomes `value` in that WCS.
+inline JcCommand jc_set_axis_value_wcs(const JcMachineProfile& p, uint8_t wcs_index, uint8_t axis, float value) {
+    using namespace detail;
+    if (wcs_index > 5) return fail(JcCommandClass::WorkOffset, JcCmdError::BadIndex);
+    if (!axis_ok(p, axis)) return fail(JcCommandClass::WorkOffset, JcCmdError::BadAxis);
+    if (!isfinite(value) || fabsf(value) > 100000.0f) return fail(JcCommandClass::WorkOffset, JcCmdError::BadValue);
+    return make(JcCommandClass::WorkOffset, "G10 L20 P%u %c%.3f", static_cast<unsigned>(wcs_index) + 1u, p.axes[axis].letter, tidy(value));
+}
+
+// Incremental retract / station move along one linear axis, followed by the caller's explicit G90.
+inline JcCommand jc_move_relative(uint8_t axis, float signed_distance) {
+    using namespace detail;
+    if (axis > 2) return fail(JcCommandClass::Probe, JcCmdError::BadAxis);
+    if (!isfinite(signed_distance) || signed_distance == 0.0f || fabsf(signed_distance) > 10000.0f)
+        return fail(JcCommandClass::Probe, JcCmdError::BadValue);
+    JcCommand c = make(JcCommandClass::Probe, "G91 G0 %c%.3f", "XYZ"[axis], tidy(signed_distance));
+    c.axis = axis;
+    return c;
+}
+
+inline JcCommand jc_restore_absolute() { return detail::make(JcCommandClass::Probe, "G90"); }
+
 inline JcCommand jc_run_sd_file(const char* path) {
     if (!detail::path_ok(path)) return detail::fail(JcCommandClass::Job, JcCmdError::BadPath);
     return detail::make(JcCommandClass::Job, "$SD/Run=%s", path);

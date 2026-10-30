@@ -66,6 +66,17 @@ bool JcUartLink::send_query_line(const char* line) {
     return true;
 }
 
+#if JC_FULL_CONTROL_TEST
+bool JcUartLink::send_command_bytes(const char* bytes, size_t length) {
+    if (!_running || bytes == nullptr || length == 0 || !jc_command_bytes_allowed(bytes, length)) {
+        ++_blocked;
+        return false;
+    }
+    Serial1.write(reinterpret_cast<const uint8_t*>(bytes), length);
+    return true;
+}
+#endif
+
 void JcUartLink::accept_frame(const char* frame, uint16_t length) {
     JcStatusFrame parsed {};
     const uint32_t now = millis();

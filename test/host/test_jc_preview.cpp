@@ -12,6 +12,7 @@
 
 #include "../../src/jc8048w550/JcCommandAuth.hpp"
 #include "../../src/jc8048w550/JcCommandBuilder.hpp"
+#include "../../src/jc8048w550/JcCommandSystem.hpp"
 #include "../../src/jc8048w550/JcDispatch.hpp"
 #include "../../src/jc8048w550/JcJogPreview.hpp"
 #include "../../src/jc8048w550/JcJogTest.hpp"
@@ -23,6 +24,7 @@ static int g_fail = 0, g_run = 0;
 
 struct Rig {
     JcPreviewBridge bridge;
+    JcCommandSystem sys{ &JcPreviewController::tx, nullptr };
     JcJogSession    session;
     JcDispatcher    disp;
     uint32_t        now = 5000;
@@ -30,12 +32,20 @@ struct Rig {
     JcJogStatus     real;
     char            state[16] = "Idle";
 
-    Rig() : session(&JcPreviewController::tx, &bridge.controller()) {
+
+    Rig() : sys(&JcPreviewController::tx, &bridge.controller()), session(&JcCommandSystem::session_tx, &sys) {
+        sys.attach_jogs(&session);
         disp.set_preview(true);
-        disp.set_sink_ex(&JcJogSession::sink, &session);
+        disp.set_sink_ex(&JcCommandSystem::sink, &sys);
+        bridge.set_line_sink(&Rig::line_thunk, this);
         real.fresh = true;
         real.state = state;
         real.pos_valid = true;
+    }
+    static void line_thunk(void* user, const char* line, uint32_t now) {
+        Rig* r = static_cast<Rig*>(user);
+        r->session.on_line(line, now);
+        r->sys.on_line(line);
     }
     void step(uint32_t ms) {
         const uint32_t end = now + ms;
@@ -43,8 +53,10 @@ struct Rig {
             now += 10;
             if (now % 250 == 0) real.sequence = ++seq;
             session.set_clock(now);
+            sys.set_clock(now);
             bridge.pump(session, real, now);
             session.tick(now);
+            sys.tick();
         }
     }
     JcDispatchContext ctx(bool confirmed) const {
@@ -60,8 +72,7 @@ struct Rig {
         return c;
     }
     JcAuthDecision jog(uint8_t axis, float d, float feed, bool confirmed = true) {
-        JcMachineProfile p = jc_default_profile();
-        jc_profile_apply_test_limits(p);
+        const JcMachineProfile p = jc_default_profile();   // the preview mirrors the controller-authoritative build
         const JcCommand c = jc_jog_incremental(p, axis, d, feed);
         if (!c.ok) return JcAuthDecision::BlockedBadState;
         return disp.submit(c, ctx(confirmed));
@@ -71,17 +82,14 @@ struct Rig {
 static void test_gate_policy() {
     // Without the preview flag the real gate still refuses everything in the ordinary build.
     JcDispatcher plain;
-    JcMachineProfile p = jc_default_profile();
-    jc_profile_apply_test_limits(p);
-    JcDispatchContext x;
-    x.live = true; x.link_fresh = true; x.machine_state = "Idle"; x.operator_confirmed = true;
-    x.limits_mask = 3; x.envelope_mask = 3; x.now_ms = 100;
-    plain.arm_for(100, 60000, 0x01);
-    plain.set_sink_ex(&JcJogSession::sink, nullptr);
-    CHECK(!plain.preview());
-    const JcCommand c = jc_jog_incremental(p, 0, 1.0f, 100.0f);
+    const JcMachineProfile prof = jc_default_profile();
+    const JcCommand c = jc_jog_incremental(prof, 0, 1.0f, 100.0f);
     (void)c;
+    CHECK(!plain.preview());
 #if !JC_MACHINE_CONTROL_ENABLED
+    JcDispatchContext x;
+    x.live = true; x.link_fresh = true; x.machine_state = "Idle"; x.operator_confirmed = true; x.now_ms = 100;
+    plain.arm_for(100, 60000, 0x0F);
     CHECK(plain.submit(c, x) == JcAuthDecision::BlockedBuildPolicy);
     CHECK(plain.sent() == 0 && plain.previewed() == 0);
 #endif
@@ -91,23 +99,32 @@ static void test_gate_policy() {
     r.step(600);
     // not armed
     CHECK(r.jog(0, 1.0f, 100.0f) == JcAuthDecision::BlockedNotArmed);
-    // armed but not acknowledged
+    // armed: no capability read, homing or per-axis acknowledgement is needed; FluidNC decides
     r.disp.arm_for(r.now, 60000, 0);
-    CHECK(r.jog(0, 1.0f, 100.0f) == JcAuthDecision::BlockedUnprotectedNotAcknowledged);
-    r.disp.arm_for(r.now, 60000, 0x01);
-    // unconfirmed
-    CHECK(r.jog(0, 1.0f, 100.0f, false) == JcAuthDecision::BlockedUnconfirmed);
-    // oversized and Z / A never get as far as the gate
-    CHECK(r.jog(0, 10.0f, 100.0f) == JcAuthDecision::BlockedBadState);
-    CHECK(r.jog(2, 0.5f, 50.0f) == JcAuthDecision::BlockedBadState);
-    CHECK(r.jog(3, 1.0f, 100.0f) == JcAuthDecision::BlockedBadState);
-    // wrong axis acknowledged
-    CHECK(r.jog(1, 1.0f, 100.0f) == JcAuthDecision::BlockedUnprotectedNotAcknowledged);
-    CHECK(r.bridge.controller().lines() == 0);
-    // non-jog classes are never authorized in the preview either
-    CHECK(jc_authorize_preview(JcCommandClass::Home, JcAuthContext()) == JcAuthDecision::BlockedBuildPolicy);
-    CHECK(jc_authorize_preview(JcCommandClass::Spindle, JcAuthContext()) == JcAuthDecision::BlockedBuildPolicy);
-    CHECK(jc_authorize_preview(JcCommandClass::Macro, JcAuthContext()) == JcAuthDecision::BlockedBuildPolicy);
+    CHECK(r.jog(0, 1.0f, 100.0f) == JcAuthDecision::Allowed);
+    r.step(2500);
+    // all four axes, both directions
+    for (uint8_t a = 0; a < 4; ++a) {
+        CHECK(r.jog(a, a == 3 ? 5.0f : 1.0f, a == 3 ? 600.0f : 100.0f) == JcAuthDecision::Allowed);
+        r.step(2500);
+        CHECK(r.jog(a, a == 3 ? -5.0f : -1.0f, a == 3 ? 600.0f : 100.0f) == JcAuthDecision::Allowed);
+        r.step(2500);
+    }
+    // invalid input never reaches the gate (the builder refuses it)
+    CHECK(r.jog(0, 0.0f, 100.0f) == JcAuthDecision::BlockedBadState);
+    CHECK(r.jog(0, 1.0f, 0.0f) == JcAuthDecision::BlockedBadState);
+    CHECK(r.jog(5, 1.0f, 100.0f) == JcAuthDecision::BlockedBadState);
+    // the previewed counter moved, the sent counter did not
+    CHECK(r.disp.previewed() == 9);
+    CHECK(r.disp.sent() == 0);
+    CHECK(r.disp.declined() == 0);
+    // consequential classes still need the operator's confirmation
+    JcDispatchContext ctx = r.ctx(false);
+    const JcCommand home = jc_home(jc_default_profile(), 0);
+    CHECK(r.disp.submit(home, ctx) == JcAuthDecision::BlockedUnconfirmed);
+    // arming drops with a link loss
+    r.disp.on_link_lost();
+    CHECK(r.jog(0, 1.0f, 100.0f) == JcAuthDecision::BlockedNotArmed);
     CHECK(r.disp.sent() == 0);
 }
 
@@ -168,13 +185,16 @@ static void test_cancel_while_moving() {
 
 static void test_transport_refuses_foreign_lines() {
     JcPreviewController c;
-    const char* bad[] = { "G0 X10\n", "$H\n", "$J=G91G21F500X10.000\n", "$J=G91G21F100Z0.500\n", "$J=G91G21F100X1.000", "M3 S1000\n", "$X\n" };
+    const char* bad[] = { "G0 X10\n", "$RST=*\n", "G1 X1 F100\n", "$J=G91G21F100X1.000 Y1.000\n", "$J=G91G21F0X1.000\n", "$J=G91G21F100X1.000", "M3 S1000\n", "$Bye\n" };
     for (const char* b : bad) CHECK(!c.on_tx(b, strlen(b)));
-    CHECK(c.lines() == 0);
-    CHECK(c.refused() == 7);
+    CHECK(c.lines() == 0 && c.other_lines() == 0);
+    CHECK(c.refused() == 8);
     const char* good = "$J=G91G21F100X1.000\n";
     CHECK(c.on_tx(good, strlen(good)));
     CHECK(c.lines() == 1);
+    const char* other = "$H\n";   // a builder line of another class is answered by the simulated FluidNC
+    CHECK(c.on_tx(other, strlen(other)));
+    CHECK(c.other_lines() == 1);
 }
 
 static void test_declined_is_not_previewed() {

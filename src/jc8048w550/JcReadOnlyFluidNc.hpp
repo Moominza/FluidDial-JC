@@ -65,6 +65,14 @@ public:
     uint32_t jog_lines_sent() const { return _jog_lines_sent; }
     uint32_t jog_cancels_sent() const { return _jog_cancels_sent; }
 #endif
+#if JC_FULL_CONTROL_TEST
+    // EXPERIMENTAL FULL-CONTROL build only (PlatformIO env jc8048w550_fullcontrol_test). Writes the exact bytes
+    // the unified command system hands over, after jc_command_bytes_allowed() (the one shared command policy).
+    // It adds only the Wi-Fi framing: one complete line, or one real-time byte. A short write drops the
+    // connection; nothing is queued or resent.
+    bool send_command_bytes(const char* bytes, size_t length);
+    uint32_t command_writes() const { return _command_writes; }
+#endif
     bool tcp_connected() const { return _socket >= 0; }
     uint32_t rejected_query_lines() const { return _rejected_queries; }
     uint32_t queries_sent() const { return _queries_sent; }
@@ -152,6 +160,9 @@ private:
     void* _line_user = nullptr;
     uint32_t _rejected_queries = 0;
     uint32_t _queries_sent = 0;
+#if JC_FULL_CONTROL_TEST
+    uint32_t _command_writes = 0;
+#endif
 #if JC_LIVE_JOG_TEST
     uint32_t _jog_lines_sent = 0;
     uint32_t _jog_cancels_sent = 0;
