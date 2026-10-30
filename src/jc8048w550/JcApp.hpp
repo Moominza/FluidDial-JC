@@ -24,7 +24,8 @@ public:
     void resume();                     // redraw the current page after a legacy page
     void touch(uint16_t x, uint16_t y);
     void tick();
-    void feed_status(const JcLiveMachineStatus& status) { _model.on_status(status); }
+    // `fresh`: the status stream the frame came from is fresh right now.
+    void feed_status(const JcLiveMachineStatus& status, bool fresh);
     void note_link_fresh(bool fresh);  // drops arming on every loss of fresh data
     void service();                    // capability-read pump; call every main-loop pass
 
@@ -51,14 +52,22 @@ private:
     void on_controller_line(const char* line);
     static void line_thunk(void* user, const char* line) { static_cast<JcApp*>(user)->on_controller_line(line); }
     bool uart_active() const;
+#if JC_LIVE_JOG_TEST
+    // EXPERIMENTAL live-jog build only: the transmit function handed to JcJogSession.
+    static bool jog_tx_thunk(void* user, const char* bytes, size_t length) {
+        return static_cast<JcApp*>(user)->send_jog(bytes, length);
+    }
+    bool send_jog(const char* bytes, size_t length);
+#endif
 
     JcReadOnlyFluidNc& _link;
     JcUartLink& _uart;
     JcUserSettings _settings;
     JcMachineProfile _profile;
     JcMachineModel _model;
-    JcDispatcher _dispatcher;   // no transmit sink is ever installed in this firmware
+    JcDispatcher _dispatcher;   // a transmit sink is installed ONLY in the live-jog test build
     JcCapsLoader _loader;
+    JcJogSession _jogs;         // inert (no transport) unless JC_LIVE_JOG_TEST
     JcNav _nav;
     JcAppServices _sv;
     JcMenuScreen _menu;
@@ -75,6 +84,7 @@ private:
     JcJogSettingsScreen _jog_settings;
     JcMachineScreen _machine;
     JcCapsScreen _caps_screen;
+    JcLimitsScreen _limits_screen;
     JcDryRunScreen _dry_run;
     JcDiagnosticsScreen _diagnostics;
     JcInputScreen _input;

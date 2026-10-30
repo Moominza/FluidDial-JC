@@ -10,7 +10,10 @@ verification. Instruction 004 checkpoint.
 Machine control is disabled (`JC_MACHINE_CONTROL_ENABLED=0`). This firmware
 sends a controller only the `?` status query and, when the operator taps READ
 FROM CONTROLLER, a closed set of read-only configuration queries (Instruction
-005). It sends no jog, home, probe, offset, job, macro or unlock command.
+005, extended in 006). It sends no jog, home, probe, offset, job, macro or unlock
+command. A separate, explicitly named experimental build
+(`env:jc8048w550_livejog_test`) can send one restricted jog and the jog-cancel byte;
+it has not been flashed to any device.
 
 | Area | Status | Evidence / blocker |
 | --- | --- | --- |
@@ -39,6 +42,8 @@ FROM CONTROLLER, a closed set of read-only configuration queries (Instruction
 | Limits replaced by controller values only when confirmed; unconfirmed jog/probe blocked when control is enabled | Host-tested | Placeholders remain until a read completes; discarded on link loss |
 | Dispatcher: sequences step only after acknowledgement | Host-tested (fake transport) | No sink exists in the firmware |
 | Dry-run page | Uploaded | Evaluates only; records/sends nothing |
+| Soft / hard limit, limit-pin, homing, must_home read-only queries (25 added) and Limits / Homing page | Host-tested + Host-integrated; Uploaded; real values pending | Setting paths are assumptions until a real read; UNKNOWN is never shown as OFF |
+| First-live-jog test configuration (`env:jc8048w550_livejog_test`): test limits, jog session, cancel, arming | Host-tested + Host-integrated; **built, NOT flashed, never run** | See [jc-live-jog-readiness.md](jc-live-jog-readiness.md). No jog or cancel byte has been sent to any controller |
 | Physical CNC command transmission | Disabled by design | Needs a separate safety review and owner approval |
 
 ## Instruction 003B physical acceptance log

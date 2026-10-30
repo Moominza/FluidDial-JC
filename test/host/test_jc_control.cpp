@@ -171,6 +171,7 @@ static void test_query_allowlist() {
     CHECK(jc_query_allowed("$G"));
     CHECK(jc_query_allowed("$/probe/pin"));
     CHECK(jc_query_allowed("$/probe/toolsetter_pin"));
+    CHECK(jc_query_allowed("$/start/must_home"));
     int axis_lines = 0;
     for (uint8_t a = 0; a < 4; ++a) {
         for (uint8_t f = 0; f < kJcQueryFieldCount; ++f) {
@@ -181,7 +182,7 @@ static void test_query_allowlist() {
             ++axis_lines;
         }
     }
-    CHECK(axis_lines == 24);
+    CHECK(axis_lines == 48);   // 4 axes x 12 items
 
     const char* blocked[] = {
         "", "?", "$", "$H", "$HX", "$X", "$J=G91G21F100X1", "$SD/Run=/a.nc", "$Localfs/Run=/m.nc",
@@ -327,11 +328,12 @@ struct FakeController {
     std::vector<std::string> log;
 
     static const char* val(int axis, int field) {
-        static const char* table[4][6] = {
-            { "800.000", "300.000", "5000.000", "200.000", "2", "false" },
-            { "800.000", "250.000", "5000.000", "200.000", "3", "false" },
-            { "800.000", "100.000", "2000.000", "100.000", "1", "true" },
-            { "17.778", "360.000", "3600.000", "50.000", "0", "false" },
+        // steps, travel, rate, accel, cycle, +dir, soft, hard, neg pin, pos pin, all pin, mpos
+        static const char* table[4][12] = {
+            { "800.000", "300.000", "5000.000", "200.000", "2", "false", "true", "false", "NO_PIN", "NO_PIN", "NO_PIN", "0.000" },
+            { "800.000", "250.000", "5000.000", "200.000", "3", "false", "true", "false", "NO_PIN", "NO_PIN", "NO_PIN", "0.000" },
+            { "800.000", "100.000", "2000.000", "100.000", "1", "true", "true", "false", "NO_PIN", "NO_PIN", "NO_PIN", "0.000" },
+            { "17.778", "360.000", "3600.000", "50.000", "0", "false", "false", "false", "NO_PIN", "NO_PIN", "NO_PIN", "0.000" },
         };
         return table[axis][field];
     }
@@ -346,6 +348,7 @@ struct FakeController {
         if (strcmp(line, "$G") == 0) return "[GC:G0 G55 G17 G21 G90 G94 M5 M9 T2 F0 S0]\r\nok\r\n";
         if (strcmp(line, "$/probe/pin") == 0) return "$/probe/pin=gpio.36:low\r\nok\r\n";
         if (strcmp(line, "$/probe/toolsetter_pin") == 0) return "$/probe/toolsetter_pin=NO_PIN\r\nok\r\n";
+        if (strcmp(line, "$/start/must_home") == 0) return "$/start/must_home=true\r\nok\r\n";
         for (int a = 0; a < 4; ++a) {
             for (int f = 0; f < kJcQueryFieldCount; ++f) {
                 char q[72];
@@ -403,11 +406,11 @@ static void test_caps_loader() {
         std::vector<std::string> sent;
         drive(loader, ctl, 1000, 200, &sent);
         CHECK(loader.state() == JcLoadState::Complete);
-        CHECK(sent.size() == JcCapsLoader::kSteps && JcCapsLoader::kSteps == 28);
+        CHECK(sent.size() == JcCapsLoader::kSteps && JcCapsLoader::kSteps == 53);
         for (const std::string& q : sent) CHECK(jc_query_allowed(q.c_str()));  // only allowlisted lines
         CHECK(loader.take_finished() && !loader.take_finished());
         const JcMachineCaps& c = loader.caps();
-        CHECK(c.complete && c.queries_ok == 28 && c.queries_error == 0);
+        CHECK(c.complete && c.queries_ok == 53 && c.queries_error == 0);
         CHECK_STR(c.firmware, "4.1 FluidNC v4.1.1 (esp32s3-wifi)");  // trailing " :" removed
         CHECK_STR(c.wcs, "G55");
         CHECK(c.tool == 2);
@@ -429,7 +432,7 @@ static void test_caps_loader() {
         drive(loader, ctl, 0, 200);
         CHECK(loader.state() == JcLoadState::Complete);
         const JcMachineCaps& c = loader.caps();
-        CHECK(c.queries_error == 6);
+        CHECK(c.queries_error == 12);   // every A-axis item
         CHECK(c.confirmed_axis_mask() == 0x07);
         CHECK(c.axes[3].state[0] == JcFieldState::CtrlError && c.axes[3].error_code[0] == 3);
         CHECK(!c.axes[3].any_valid());
@@ -502,7 +505,7 @@ static void test_caps_loader() {
         loader.start(10000, nullptr);
         drive(loader, ctl2, 10000, 200, &sent);
         CHECK(loader.state() == JcLoadState::Complete);
-        CHECK(sent.size() == 28 && sent[0] == "$I");
+        CHECK(sent.size() == 53 && sent[0] == "$I");
     }
     // A controller alarm during the read fails it.
     {
@@ -706,6 +709,7 @@ static JcDispatchContext good_ctx(uint32_t now, const char* state = "Idle", uint
     c.operator_confirmed = true;
     c.now_ms = now;
     c.limits_mask = mask;
+    c.envelope_mask = mask;   // soft / hard limit settings read for the same axes
     return c;
 }
 

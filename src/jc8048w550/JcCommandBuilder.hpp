@@ -40,6 +40,10 @@ struct JcMachineProfile {
     JcAxisProfile axes[4];
     float         max_probe_travel;
     float         max_probe_feed;
+    // Live-jog TEST mode (JcJogTest.hpp): max_step / max_feed were clamped to the
+    // test limits (0 = jogging disabled for that axis) and continuous jogging is
+    // refused. Set by jc_profile_apply_test_limits(); false in the ordinary firmware.
+    bool          test_mode;
 };
 
 inline JcMachineProfile jc_default_profile() {
@@ -62,6 +66,8 @@ enum class JcCmdError : uint8_t {
     Unsupported,     // e.g. probing the rotary axis, homing an axis not allowed
     BadPath,
     BadIndex,
+    JogDisabled,     // jogging is disabled for this axis (e.g. A pending rotary calibration)
+    TestLimit,       // larger than the live-jog test limit for this axis (step or feed)
 };
 
 constexpr size_t kJcMaxCommandLength = 120;
@@ -149,10 +155,14 @@ inline JcCommand jc_jog_incremental(const JcMachineProfile& p, uint8_t axis,
     using namespace detail;
     if (!axis_ok(p, axis)) return fail(JcCommandClass::Jog, JcCmdError::BadAxis);
     const JcAxisProfile& a = p.axes[axis];
-    if (!isfinite(signed_distance) || signed_distance == 0.0f || fabsf(signed_distance) > a.max_step)
+    if (a.max_step <= 0.0f) return fail(JcCommandClass::Jog, JcCmdError::JogDisabled);
+    if (!isfinite(signed_distance) || signed_distance == 0.0f)
         return fail(JcCommandClass::Jog, JcCmdError::BadValue);
-    if (!isfinite(feed) || feed < 1.0f || feed > a.max_feed)
-        return fail(JcCommandClass::Jog, JcCmdError::BadFeed);
+    if (fabsf(signed_distance) > a.max_step)
+        return fail(JcCommandClass::Jog, p.test_mode ? JcCmdError::TestLimit : JcCmdError::BadValue);
+    if (!isfinite(feed) || feed < 1.0f) return fail(JcCommandClass::Jog, JcCmdError::BadFeed);
+    if (feed > a.max_feed)
+        return fail(JcCommandClass::Jog, p.test_mode ? JcCmdError::TestLimit : JcCmdError::BadFeed);
     JcCommand c = make(JcCommandClass::Jog, "$J=G91G21F%.0f%c%.3f", feed, a.letter, tidy(signed_distance));
     c.axis = axis;
     return c;
@@ -239,6 +249,7 @@ inline JcCommand jc_jog_continuous(const JcMachineProfile& p, uint8_t axis, int 
     if (!axis_ok(p, axis)) return fail(JcCommandClass::Jog, JcCmdError::BadAxis);
     const JcAxisProfile& a = p.axes[axis];
     if (a.rotary) return fail(JcCommandClass::Jog, JcCmdError::Unsupported);
+    if (p.test_mode) return fail(JcCommandClass::Jog, JcCmdError::Unsupported);  // continuous jog stays disabled
     if (direction != 1 && direction != -1) return fail(JcCommandClass::Jog, JcCmdError::BadValue);
     if (!isfinite(feed) || feed < 1.0f || feed > a.max_feed) return fail(JcCommandClass::Jog, JcCmdError::BadFeed);
     // Travel the controller reported when known; otherwise the placeholder rule.

@@ -835,3 +835,15 @@ status and `jc-architecture.md` for the module map.
 | Firmware run against the simulator over Wi-Fi | NOT DONE (needs Wi-Fi credentials entered on the device) |
 | UART link against a wired controller | NOT DONE |
 | Any CNC command transmitted | NONE. The gate blocks every class and no transmit sink exists. |
+
+## Instruction 006 checkpoint: first-live-jog preparation (experimental)
+
+Baseline `3e29251`. Added an explicitly named experimental build
+(`env:jc8048w550_livejog_test`) that can send one restricted incremental jog and the
+jog-cancel byte, a jog session state machine (acknowledgement, motion, completion,
+cancellation, loss and stale handling as distinct states), 25 more read-only
+configuration queries (soft / hard limits, limit pins, homing position, `must_home`) with a
+Limits / Homing page, and the tests, simulator scenarios and static guard for all of it.
+The ordinary firmware keeps `JC_MACHINE_CONTROL_ENABLED=0`; only that firmware was uploaded to
+COM3. Nothing was sent to the controller except `?` and read-only queries. Full report:
+`docs/development/jc-live-jog-readiness.md`.

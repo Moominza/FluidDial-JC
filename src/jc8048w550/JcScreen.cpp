@@ -14,6 +14,8 @@ const char* jc_cmd_error_name(JcCmdError e) {
         case JcCmdError::Unsupported: return "not supported for this axis / configuration";
         case JcCmdError::BadPath: return "invalid file path";
         case JcCmdError::BadIndex: return "invalid index";
+        case JcCmdError::JogDisabled: return "jogging is disabled for this axis";
+        case JcCmdError::TestLimit: return "larger than the live-jog test limit";
     }
     return "invalid";
 }
@@ -21,8 +23,15 @@ const char* jc_cmd_error_name(JcCmdError e) {
 void JcScreen::enter() {
     dialog.close();
     _has_pending = false;
+    _custom_pending = false;
     on_enter();
     draw();
+}
+
+void JcScreen::open_custom_confirm(const char* title, const char* confirm_label) {
+    dialog.open_confirm(title, confirm_label);
+    _custom_pending = true;
+    _has_pending = false;
 }
 
 void JcScreen::draw() {
@@ -40,12 +49,22 @@ void JcScreen::touch(uint16_t x, uint16_t y) {
     if (dialog.is_open()) {
         switch (dialog.touch(x, y)) {
             case ui::Dialog::Action::Confirm:
-                run_pending();
+                if (_custom_pending) {
+                    _custom_pending = false;
+                    dialog.close();
+                    on_custom_confirm();
+                    if (!dialog.is_open()) {
+                        draw();
+                    }
+                } else {
+                    run_pending();
+                }
                 break;
             case ui::Dialog::Action::Cancel:
             case ui::Dialog::Action::Dismiss:
                 dialog.close();
                 _has_pending = false;
+                _custom_pending = false;
                 draw();
                 break;
             case ui::Dialog::Action::None:
@@ -86,8 +105,18 @@ void JcScreen::open_confirm_dialog(const char* title, const char* const* notes, 
         }
         dialog.add_line(line, CYAN);
     }
+#if JC_LIVE_JOG_TEST
+    if (!_pending_is_sequence && _command.cls == JcCommandClass::Jog) {
+        dialog.add_line("LIVE JOG TEST BUILD: confirming SENDS this jog", ui::kWarn);
+        dialog.add_line("to the controller. Check the travel is clear.", ui::kWarn);
+    } else {
+        dialog.add_line("Blocked in the live-jog test build:", ui::kWarn);
+        dialog.add_line("only a restricted jog is ever sent.", ui::kWarn);
+    }
+#else
     dialog.add_line("Machine control is DISABLED in this build:", ui::kWarn);
     dialog.add_line("confirming records a preview only; nothing is sent.", ui::kWarn);
+#endif
     draw();
 }
 
@@ -123,17 +152,32 @@ void JcScreen::run_pending() {
         return;
     }
     const JcDispatchContext ctx = sv.dispatch_context(true);
+    const uint32_t sent_before = sv.dispatcher.sent();
     const JcAuthDecision decision = _pending_is_sequence
         ? sv.dispatcher.submit_sequence(_sequence, ctx)
         : sv.dispatcher.submit(_command, ctx);
     _has_pending = false;
     const bool allowed = decision == JcAuthDecision::Allowed;
+#if JC_LIVE_JOG_TEST
+    const bool sent = sv.dispatcher.sent() != sent_before;
+    dialog.open_result(sent ? "JOG SENT" : (allowed ? "AUTHORIZED - NOT SENT" : "BLOCKED - NOT SENT"), sent);
+    dialog.add_line(jc_auth_name(decision), allowed ? ui::kGood : ui::kWarn);
+    if (sent) {
+        dialog.add_line("Watch the machine. CANCEL JOG sends the cancel byte.", ui::kWarn);
+        dialog.add_line("The software cancel is NOT an emergency stop.", ui::kWarn);
+    } else {
+        dialog.add_line("Nothing was transmitted to the controller.");
+    }
+    Serial.printf("dispatch: %s%s\n", jc_auth_name(decision), sent ? " (SENT)" : "");
+#else
+    (void)sent_before;
     dialog.open_result(allowed ? "AUTHORIZED - NO TRANSMIT PATH" : "BLOCKED - NOT SENT", allowed);
     dialog.add_line(jc_auth_name(decision), allowed ? ui::kGood : ui::kWarn);
     dialog.add_line("Nothing was transmitted to the controller.");
     dialog.add_line("Machine control stays disabled until the owner approves a", ui::kMuted);
     dialog.add_line("separate safety review (see docs/development).", ui::kMuted);
     Serial.printf("dispatch: %s\n", jc_auth_name(decision));
+#endif
     draw();
 }
 

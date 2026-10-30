@@ -18,6 +18,8 @@ All JC code lives in `src/jc8048w550/` and is compiled only by the
 | Controller replies / queries | `JcResponse.hpp`, `JcStreamSplitter.hpp`, `JcQuery.hpp` (allowlist), `JcCommandExec.hpp` (ack/timeout), all pure |
 | Capabilities | `JcMachineCaps.hpp` (validation, profile), `JcCapsLoader.hpp` (query sequence), pages `JcScreenCapabilities.cpp`, `JcScreenDryRun.cpp`, `JcDryRun.hpp` |
 | Sequenced sending (host tests only) | `JcCommandLink.hpp` (sink + reply tracking), `JcDispatch.hpp` (`advance_sequence`) |
+| Limits, envelope, homing (read-only) | `JcQuery.hpp` (53-line allowlist), `JcMachineCaps.hpp` (`JcTri`, pins, `must_home`), page `JcScreenLimits.cpp` |
+| First-live-jog test support (Instruction 006) | `JcJogTest.hpp` (test limits, strict jog-line check, `JcJogSession` phase machine; pure), experimental env `jc8048w550_livejog_test`; the sink and the one jog transmit method (`JcReadOnlyFluidNc::send_jog_bytes`) exist only under `#if JC_LIVE_JOG_TEST` |
 | Persistent settings | `JcSettings.hpp` (pure encode/validate), stored by `JcApp` in NVS namespace `jc_app` |
 
 ## Command flow

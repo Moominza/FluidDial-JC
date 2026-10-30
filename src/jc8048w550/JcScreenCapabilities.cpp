@@ -12,8 +12,9 @@ namespace jc8048w550 {
 
 namespace {
 
-constexpr ui::Rect kRead { 16, 366, 360, 52 };
-constexpr ui::Rect kDry { 400, 366, 384, 52 };
+constexpr ui::Rect kRead { 16, 366, 250, 52 };
+constexpr ui::Rect kLimits { 276, 366, 250, 52 };
+constexpr ui::Rect kDry { 536, 366, 248, 52 };
 constexpr int16_t kColX[6] = { 24, 88, 214, 346, 486, 628 };
 constexpr int16_t kRowY0 = 98;
 constexpr int16_t kRowH = 34;
@@ -157,12 +158,14 @@ void JcCapsScreen::draw_values(bool full) {
 void JcCapsScreen::on_draw() {
     draw_values(true);
     const bool running = sv.loader.running();
-    ui::button(sv.display, kRead, running ? "CANCEL READ" : "READ FROM CONTROLLER",
+    ui::button(sv.display, kRead, running ? "CANCEL READ" : "READ CONTROLLER",
                running ? ui::Btn::Danger : ui::Btn::Normal);
-    ui::button(sv.display, kDry, "DRY RUN (NOTHING IS SENT)");
+    ui::button(sv.display, kLimits, "LIMITS / HOMING");
+    ui::button(sv.display, kDry, "DRY RUN");
     ui::wrap(sv.display, { 16, 428, 768, 48 },
              "Read-only queries: nothing is changed on the controller. Values are discarded if the connection is "
-             "lost. Whether A is rotary (degrees) cannot be read from FluidNC; it is declared in Settings.",
+             "lost. Whether A is rotary (degrees) cannot be read from FluidNC; it is declared in Settings. "
+             "Soft/hard limits and homing are on LIMITS / HOMING.",
              FontId::Body16, ui::kMuted, ui::kBg);
     _drawn_key = (static_cast<uint32_t>(sv.loader.state()) << 24) | (static_cast<uint32_t>(sv.loader.step()) << 8)
                  | jc_profile_limits_mask(sv.profile);
@@ -181,6 +184,10 @@ void JcCapsScreen::on_touch(uint16_t x, uint16_t y) {
             return;
         }
         draw();
+        return;
+    }
+    if (ui::hit(kLimits, x, y)) {
+        sv.host.go(JcPage::LimitsHoming);
         return;
     }
     if (ui::hit(kDry, x, y)) {

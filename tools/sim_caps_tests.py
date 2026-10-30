@@ -11,9 +11,10 @@ import socket
 import time
 
 ALLOWED = [re.compile(p) for p in (
-    r"^\$I$", r"^\$G$", r"^\$/probe/pin$", r"^\$/probe/toolsetter_pin$",
+    r"^\$I$", r"^\$G$", r"^\$/probe/pin$", r"^\$/probe/toolsetter_pin$", r"^\$/start/must_home$",
     r"^\$/axes/[xyza]/(steps_per_mm|max_travel_mm|max_rate_mm_per_min|acceleration_mm_per_sec2|"
-    r"homing/cycle|homing/positive_direction)$",
+    r"homing/cycle|homing/positive_direction|soft_limits|motor0/hard_limits|motor0/limit_neg_pin|"
+    r"motor0/limit_pos_pin|motor0/limit_all_pin|homing/mpos_mm)$",
 )]
 
 
@@ -132,7 +133,11 @@ def run_all(exe, check, Sim, Tool, port):
     probes = ["$I", "$G", "$/probe/pin", "$/probe/toolsetter_pin", "$/axes/x/steps_per_mm",
               "$/axes/a/homing/positive_direction", "$/axes/b/steps_per_mm", "$/axes/x/steps_per_mm=1",
               "$H", "$HX", "$X", "$J=G91G21F100X1", "G0 X1", "G10 L20 P0 X0", "$SD/Run=/a.nc",
-              "$Localfs/Run=/m.nc", "$/axes/x", "$Config/Dump", "$$", "$I ", " $I", "$/axes/x/homing/cycle"]
+              "$Localfs/Run=/m.nc", "$/axes/x", "$Config/Dump", "$$", "$I ", " $I", "$/axes/x/homing/cycle",
+              "$/axes/x/soft_limits", "$/axes/y/motor0/hard_limits", "$/axes/z/motor0/limit_pos_pin",
+              "$/axes/a/homing/mpos_mm", "$/start/must_home", "$/start/must_home=false",
+              "$/axes/x/soft_limits=false", "$/axes/x/motor0/hard_limits=true", "$/axes/x/motor1/hard_limits",
+              "$/axes/x/motor0/limit_all_pin=NO_PIN", "$/start/", "$J=G91G21F100X1.000", "$J=G91G21F100X1.000\n"]
     mismatch = [p for p in probes if (tool.cmd("QOK " + p, reply=True) == "1") != py_allowed(p)]
     check(not mismatch, "C++ and Python allowlists agree on %d probe lines %s" % (len(probes), mismatch or ""))
     tool.close()
@@ -141,24 +146,31 @@ def run_all(exe, check, Sim, Tool, port):
     def good(q, sent, closed, load, tool, clock):
         check(load == "started", "operator-started read accepted (fresh, Idle)")
         check(q["lstate"] == "Complete" and q["lfail"] == "none", "read completes")
-        check(int(q["ok"]) == 28 and int(q["err"]) == 0 and len(sent) == 28, "28 queries sent, 28 answered, none refused")
-        check(sent[0] == "$I" and sent[1] == "$G", "read starts with $I then $G")
+        check(int(q["ok"]) == 53 and int(q["err"]) == 0 and len(sent) == 53, "53 queries sent, 53 answered, none refused")
+        check(sent[0] == "$I" and sent[1] == "$G" and sent[-1] == "$/start/must_home", "read starts with $I then $G, ends with must_home")
         check(q["mask"] == "15", "limits confirmed for all four axes")
-        check(ax(q, 0) == ["800", "300", "5000", "200", "2", "0"], "X steps/travel/rate/accel/cycle parsed exactly")
-        check(ax(q, 2) == ["800", "100", "2000", "100", "1", "1"], "Z values and +direction parsed")
-        check(ax(q, 3) == ["17.778", "360", "3600", "50", "0", "0"], "A (rotary) values parsed; homing cycle 0")
+        check(q["envmask"] == "15", "soft / hard limit settings read for all four axes")
+        check(ax(q, 0)[:6] == ["800", "300", "5000", "200", "2", "0"], "X steps/travel/rate/accel/cycle parsed exactly")
+        check(ax(q, 2)[:6] == ["800", "100", "2000", "100", "1", "1"], "Z values and +direction parsed")
+        check(ax(q, 3)[:6] == ["17.778", "360", "3600", "50", "0", "0"], "A (rotary) values parsed; homing cycle 0")
+        # soft, hard, neg pin, pos pin, all pin (1 = assigned), mpos
+        check(ax(q, 0)[6:] == ["1", "0", "0", "0", "1", "0"], "X: soft limits ON, hard OFF, only the ALL pin assigned, mpos 0")
+        check(ax(q, 2)[6:] == ["1", "0", "0", "1", "0", "-5"], "Z: soft ON, hard OFF, only the + pin assigned, mpos -5")
+        check(ax(q, 3)[6] == "0" and ax(q, 3)[7] == "0", "A: soft limits OFF, hard OFF")
+        check(q["musthome"] == "1", "start/must_home read as true")
         check(q["wcs"] == "G55" and q["tool"] == "2", "active WCS and tool read from $G")
         check(q["probe"] == "gpio.36:low", "probe pin read")
-        check(int(q["lines"]) >= 28 and q["timeouts"] == "0" and q["losses"] == "0", "no timeouts or losses")
+        check(int(q["lines"]) >= 53 and q["timeouts"] == "0" and q["losses"] == "0", "no timeouts or losses")
 
     scenario("caps", good)
     scenario("caps-fragmented", good)
 
     # ---- controller refuses the A axis ---------------------------------------------
     def refuse_a(q, sent, closed, load, tool, clock):
-        check(q["lstate"] == "Complete" and int(q["err"]) == 6, "read completes; 6 A-axis queries refused (error:3)")
+        check(q["lstate"] == "Complete" and int(q["err"]) == 12, "read completes; 12 A-axis queries refused (error:3)")
         check(q["mask"] == "7", "limits confirmed for X Y Z only; A stays a placeholder")
-        check(ax(q, 3) == ["E"] * 6, "A fields recorded as controller errors, no values invented")
+        check(q["envmask"] == "15", "refused soft / hard limit items still count as 'reached' (shown as error, never as OFF)")
+        check(ax(q, 3) == ["E"] * 12, "A fields recorded as controller errors, no values invented")
         check(ax(q, 0)[1] == "300", "other axes unaffected")
 
     scenario("caps-refuse-a", refuse_a)
@@ -227,7 +239,7 @@ def run_all(exe, check, Sim, Tool, port):
     q3, closed3, load3 = session(port, tool, clock, s2)
     if q3["lstate"] != "Complete":
         print("      diagnostic:", load3, q3)
-    check(q3["lstate"] == "Complete" and int(q3["ok"]) == 28, "a fresh read afterwards completes normally")
+    check(q3["lstate"] == "Complete" and int(q3["ok"]) == 53, "a fresh read afterwards completes normally")
     out = sim.stop()
     check("VIOLATION" not in out, "simulator audit: only allowlisted read-only queries received")
     tool.close()

@@ -3,7 +3,10 @@
 
 Compilers tried: $CXX, g++, clang++, then `python -m ziglang c++`.
 Runs two configurations: the shipping policy (machine control disabled) and a
-test-only build with the authorization rules compiled in.
+test-only build with the authorization rules compiled in. The first-live-jog
+tests (test_jc_jog.cpp) run in three: shipping, rules compiled in, and the
+experimental live-jog policy (JC_LIVE_JOG_TEST=1). The other suites are not run
+with JC_LIVE_JOG_TEST because that policy deliberately authorizes only jogs.
 """
 import os
 import shutil
@@ -37,5 +40,12 @@ with tempfile.TemporaryDirectory() as tmp:
             cmd = cxx + ["-std=c++17", "-Wall", "-Wextra", f"-DJC_MACHINE_CONTROL_ENABLED={enabled}", src, "-o", exe]
             subprocess.run(cmd, check=True)
             rc |= subprocess.run([exe]).returncode
+    jog = os.path.join(root, "test", "host", "test_jc_jog.cpp")
+    for enabled, live in ((0, 0), (1, 0), (1, 1)):
+        exe = os.path.join(tmp, f"tjog{enabled}{live}.exe")
+        cmd = cxx + ["-std=c++17", "-Wall", "-Wextra", f"-DJC_MACHINE_CONTROL_ENABLED={enabled}",
+                     f"-DJC_LIVE_JOG_TEST={live}", jog, "-o", exe]
+        subprocess.run(cmd, check=True)
+        rc |= subprocess.run([exe]).returncode
 rc |= subprocess.run([sys.executable, os.path.join(root, "tools", "check_no_sink.py")]).returncode
 sys.exit(rc)

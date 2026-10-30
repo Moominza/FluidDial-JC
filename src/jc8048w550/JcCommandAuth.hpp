@@ -18,6 +18,16 @@
 #define JC_MACHINE_CONTROL_ENABLED 0
 #endif
 
+// Experimental, explicitly named live-jog TEST configuration (PlatformIO env
+// jc8048w550_livejog_test). Always 0 in the ordinary firmware. When 1 (together
+// with JC_MACHINE_CONTROL_ENABLED=1) the gate authorizes ONLY an incremental
+// jog and the jog-cancel byte; every other command class stays blocked, and the
+// jog limits in JcJogTest.hpp apply. tools/check_no_sink.py enforces that the
+// macro is set nowhere except that one environment.
+#ifndef JC_LIVE_JOG_TEST
+#define JC_LIVE_JOG_TEST 0
+#endif
+
 namespace jc8048w550 {
 
 enum class JcCommandClass : uint8_t {
@@ -46,6 +56,8 @@ enum class JcAuthDecision : uint8_t {
     BlockedUnconfirmed,    // operator confirmation required and missing
     BlockedBadState,       // machine state does not permit this command class
     BlockedLimitsUnconfirmed,  // axis limits are still placeholders, not controller values
+    BlockedOperationPending,   // a previous motion operation is not yet resolved
+    BlockedEnvelopeUnread,     // soft / hard limit settings were not read for this axis
 };
 
 struct JcAuthContext {
@@ -57,6 +69,14 @@ struct JcAuthContext {
     // from the controller (JcMachineCaps). The dispatcher sets both fields.
     bool        limits_required = false;
     bool        limits_confirmed = false;
+    // ... and once its soft / hard limit settings were read, so the operator has
+    // been shown what the controller itself enforces. A configured travel
+    // distance is NOT a proof of a safe movement envelope.
+    bool        envelope_required = false;
+    bool        envelope_confirmed = false;
+    // A previous jog / motion operation has not been resolved (acknowledged,
+    // completed and verified): no new motion may start.
+    bool        operation_pending = false;
     char        machine_state[20] = "";  // last reported state
     uint32_t    now_ms = 0;
     uint32_t    command_issued_ms = 0;
@@ -76,6 +96,8 @@ inline const char* jc_auth_name(JcAuthDecision d) {
         case JcAuthDecision::BlockedUnconfirmed: return "blocked: operator confirmation required";
         case JcAuthDecision::BlockedBadState: return "blocked: machine state does not permit command";
         case JcAuthDecision::BlockedLimitsUnconfirmed: return "blocked: axis limits not confirmed by the controller";
+        case JcAuthDecision::BlockedOperationPending: return "blocked: a previous operation is unresolved";
+        case JcAuthDecision::BlockedEnvelopeUnread: return "blocked: soft/hard limit settings not read from the controller";
     }
     return "blocked";
 }
@@ -90,9 +112,22 @@ inline bool jc_needs_confirmation(JcCommandClass c) {
         case JcCommandClass::Macro:
         case JcCommandClass::Other:
             return true;
+        case JcCommandClass::Jog:
+            return JC_LIVE_JOG_TEST != 0;  // every test jog is confirmed by the operator
         default:
-            return false;  // jog is armed + fresh; stops/unlock must be immediate
+            return false;  // stops/unlock must be immediate
     }
+}
+
+// Stopping must never be blocked by bookkeeping (arming, freshness, command age):
+// the jog-cancel and feed-hold bytes only need a real (LIVE) connection.
+inline bool jc_is_stop_always_allowed(JcCommandClass c) {
+    return c == JcCommandClass::JogCancel || c == JcCommandClass::Hold;
+}
+
+// The classes the experimental live-jog build may ever authorize.
+inline bool jc_live_jog_class_allowed(JcCommandClass c) {
+    return c == JcCommandClass::Jog || c == JcCommandClass::JogCancel;
 }
 
 // Commands whose purpose is to stop or recover; allowed in alarm / any state.
@@ -107,6 +142,16 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     (void)ctx;
     return JcAuthDecision::BlockedBuildPolicy;
 #else
+#if JC_LIVE_JOG_TEST
+    // Continuous jog is not authorizable here either: the transport only accepts the
+    // strict incremental line (JcJogTest.hpp), and the builder never generates it.
+    if (!jc_live_jog_class_allowed(cls)) {
+        return JcAuthDecision::BlockedBuildPolicy;
+    }
+#endif
+    if (jc_is_stop_always_allowed(cls)) {
+        return ctx.live ? JcAuthDecision::Allowed : JcAuthDecision::BlockedNotLive;
+    }
     if (!ctx.armed) {
         return JcAuthDecision::BlockedNotArmed;
     }
@@ -125,8 +170,14 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     if (strcmp(ctx.machine_state, "Alarm") == 0) {
         return JcAuthDecision::BlockedAlarm;
     }
+    if (ctx.operation_pending) {
+        return JcAuthDecision::BlockedOperationPending;
+    }
     if (ctx.limits_required && !ctx.limits_confirmed) {
         return JcAuthDecision::BlockedLimitsUnconfirmed;
+    }
+    if (ctx.envelope_required && !ctx.envelope_confirmed) {
+        return JcAuthDecision::BlockedEnvelopeUnread;
     }
     const bool motion_idle_only = cls == JcCommandClass::Home || cls == JcCommandClass::Probe
                                   || cls == JcCommandClass::WorkOffset || cls == JcCommandClass::Macro

@@ -19,7 +19,12 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _uart(uart),
       _settings(jc_settings_defaults()),
       _profile(jc_profile_from_settings(_settings)),
-      _sv { display, link, _model, _settings, _profile, _dispatcher, _loader, live_mode, *this },
+#if JC_LIVE_JOG_TEST
+      _jogs(&JcApp::jog_tx_thunk, this),
+#else
+      _jogs(nullptr, nullptr),
+#endif
+      _sv { display, link, _model, _settings, _profile, _dispatcher, _loader, _jogs, live_mode, *this },
       _menu(_sv),
       _jog(_sv),
       _homing(_sv),
@@ -34,6 +39,7 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _jog_settings(_sv),
       _machine(_sv),
       _caps_screen(_sv),
+      _limits_screen(_sv),
       _dry_run(_sv),
       _diagnostics(_sv, uart),
       _input(_sv) {}
@@ -61,6 +67,14 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
     refresh_profile();
     _link.set_line_listener(&JcApp::line_thunk, this);
     _uart.set_line_listener(&JcApp::line_thunk, this);
+#if JC_LIVE_JOG_TEST
+    // EXPERIMENTAL live-jog test build: the ONLY place a command sink is installed.
+    _dispatcher.set_sink_ex(&JcJogSession::sink, &_jogs);
+    Serial.println("*** LIVE JOG TEST BUILD: restricted incremental jog + jog cancel are ENABLED ***");
+    Serial.println("*** X/Y 1 mm @100, Z 0.5 mm @50, A disabled; continuous/home/probe/macro/file/spindle blocked ***");
+#else
+    Serial.println("app: motion commands disabled");
+#endif
 
     ledcSetup(kBacklightChannel, 5000, 8);
     ledcAttachPin(kBacklightPin, kBacklightChannel);
@@ -104,6 +118,7 @@ JcScreen* JcApp::screen_for(JcPage page) {
         case JcPage::SetJogging: return &_jog_settings;
         case JcPage::SetMachine: return &_machine;
         case JcPage::Capabilities: return &_caps_screen;
+        case JcPage::LimitsHoming: return &_limits_screen;
         case JcPage::DryRun: return &_dry_run;
         case JcPage::Diagnostics: return &_diagnostics;
         case JcPage::Input: return &_input;
@@ -164,10 +179,24 @@ void JcApp::tick() {
     screen_for(_nav.current())->tick(millis());
 }
 
+void JcApp::feed_status(const JcLiveMachineStatus& status, bool fresh) {
+    _model.on_status(status);
+    JcJogStatus view;
+    view.fresh = fresh && _sv.live_mode;
+    view.state = status.machine_state;
+    view.sequence = status.sequence;
+    view.pos_valid = status.has_data;
+    memcpy(view.pos, status.axes, sizeof(view.pos));
+    _jogs.on_status(view, millis());
+}
+
 void JcApp::note_link_fresh(bool fresh) {
     _model.set_fresh(fresh);
     if (_last_fresh && !fresh) {
         _dispatcher.on_link_lost();  // arming never survives a loss of fresh data
+        // A jog that is still unresolved: try to cancel it if the socket is still open
+        // (stale data), otherwise record the loss. Nothing is ever replayed.
+        _jogs.on_link_lost(millis(), !uart_active() && _link.tcp_connected());
         // Controller values may be stale after a loss (it may have restarted or
         // been reconfigured): abandon any read and fall back to placeholders.
         const uint32_t now = millis();
@@ -195,10 +224,17 @@ void JcApp::refresh_profile() {
     if (_loader.state() == JcLoadState::Complete) {
         jc_profile_apply_caps(_profile, _loader.caps());
     }
+#if JC_LIVE_JOG_TEST
+    // Last, so the controller's travel can only ever lower the test limits, never widen them.
+    jc_profile_apply_test_limits(_profile);
+#endif
 }
 
 const char* JcApp::start_caps_read() {
     const char* blocker = jc_caps_read_blocker(_sv.live_mode, _model.fresh(), _model.state(), _loader.running());
+    if (blocker == nullptr && _jogs.unresolved()) {
+        blocker = "a jog operation is unresolved";
+    }
     if (blocker != nullptr) {
         Serial.printf("caps: read refused: %s\n", blocker);
         return blocker;
@@ -216,11 +252,38 @@ void JcApp::cancel_caps_read() {
 }
 
 void JcApp::on_controller_line(const char* line) {
-    _loader.on_line(line, millis());
+    const uint32_t now = millis();
+    _loader.on_line(line, now);
+    _jogs.on_line(line, now);
 }
+
+#if JC_LIVE_JOG_TEST
+bool JcApp::send_jog(const char* bytes, size_t length) {
+    if (uart_active()) {
+        return false;  // the wired link has no jog path in this build
+    }
+    return _link.send_jog_bytes(bytes, length);
+}
+#endif
 
 void JcApp::service() {
     const uint32_t now = millis();
+    _jogs.set_clock(now);
+    _jogs.tick(now);
+    if (!_sv.live_mode && _jogs.unresolved()) {
+        _jogs.on_link_lost(now, false);  // DEMO mode has no controller
+    }
+#if JC_LIVE_JOG_TEST
+    // Arming is only meaningful on the jog page (or an input dialog opened from it).
+    if (_dispatcher.armed() && _nav.current() != JcPage::Jog && _nav.current() != JcPage::Input) {
+        _dispatcher.disarm();
+        Serial.println("jogtest: disarmed (left the jog page)");
+    }
+    if (_dispatcher.armed() && !_dispatcher.armed_at(now)) {
+        _dispatcher.disarm();
+        Serial.println("jogtest: arming lapsed");
+    }
+#endif
     if (_loader.running() && !_sv.live_mode) {
         _loader.cancel(now);  // DEMO mode has no controller to ask
     }
@@ -252,21 +315,32 @@ void JcApp::on_caps_finished() {
     static constexpr const char* names = "XYZA";
     for (uint8_t i = 0; i < 4; ++i) {
         const JcAxisCaps& a = c.axes[i];
-        char field[320];
+        char field[720];
         field[0] = '\0';
         for (uint8_t f = 0; f < kJcQueryFieldCount; ++f) {
             const size_t used = strlen(field);
+            const JcQueryField qf = static_cast<JcQueryField>(f);
             if (a.state[f] == JcFieldState::Valid) {
-                snprintf(field + used, sizeof(field) - used, " %s=%g", jc_query_field_key(static_cast<JcQueryField>(f)),
-                         static_cast<double>(a.value[f]));
+                if (jc_query_field_kind(qf) == JcFieldKind::Pin) {
+                    snprintf(field + used, sizeof(field) - used, " %s=%s", jc_query_field_key(qf),
+                             a.pin[f - static_cast<uint8_t>(JcQueryField::LimitNegPin)]);
+                } else {
+                    snprintf(field + used, sizeof(field) - used, " %s=%g", jc_query_field_key(qf),
+                             static_cast<double>(a.value[f]));
+                }
+            } else if (a.state[f] == JcFieldState::CtrlError) {
+                snprintf(field + used, sizeof(field) - used, " %s=error:%d", jc_query_field_key(qf), a.error_code[f]);
             } else {
-                snprintf(field + used, sizeof(field) - used, " %s=(%u)", jc_query_field_key(static_cast<JcQueryField>(f)),
+                snprintf(field + used, sizeof(field) - used, " %s=(%u)", jc_query_field_key(qf),
                          static_cast<unsigned>(a.state[f]));
             }
         }
-        Serial.printf("caps: axis %c limits_confirmed=%d%s\n", names[i], a.limits_confirmed() ? 1 : 0, field);
+        Serial.printf("caps: axis %c limits_confirmed=%d envelope_read=%d%s\n", names[i], a.limits_confirmed() ? 1 : 0,
+                      a.envelope_read() ? 1 : 0, field);
     }
-    Serial.printf("caps: probe_pin=[%s] toolsetter_pin=[%s]\n", c.probe_pin, c.toolsetter_pin);
+    Serial.printf("caps: probe_pin=[%s] toolsetter_pin=[%s] must_home=%s\n", c.probe_pin, c.toolsetter_pin,
+                  c.must_home_state == JcFieldState::Valid ? (c.must_home ? "true" : "false")
+                  : c.must_home_state == JcFieldState::CtrlError ? "error" : "unknown");
 }
 
 }  // namespace jc8048w550

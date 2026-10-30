@@ -68,7 +68,9 @@ Status: **experimental**. Machine control is disabled in the shipping firmware.
   `$/axes/<x|y|z|a>/<steps_per_mm|max_travel_mm|max_rate_mm_per_min|
   acceleration_mm_per_sec2|homing/cycle|homing/positive_direction>`. A line with
   `=` (an assignment), a space, a control character or any other text fails
-  `jc_query_allowed()`. Queries are sent one at a time, only after the operator
+  `jc_query_allowed()`. (Instruction 006 added `soft_limits`, `motor0/hard_limits`,
+  `motor0/limit_{neg,pos,all}_pin`, `homing/mpos_mm` per axis and `$/start/must_home`: 53
+  fixed lines in total, all reads.) Queries are sent one at a time, only after the operator
   taps READ FROM CONTROLLER, only in LIVE mode with fresh status in the Idle or
   Alarm state, and are never repeated automatically. Nothing is written to the
   controller and its configuration is not modified.
@@ -101,6 +103,34 @@ Status: **experimental**. Machine control is disabled in the shipping firmware.
   Dry Run) shows the generated command, the real gate's decision, the expected
   reply and the timeout / error / link-loss handling. It calls
   `JcDispatcher::evaluate()`, which records, counts and transmits nothing.
+
+## Instruction 006 additions (first-live-jog preparation; nothing flashed or sent)
+
+Full report: [jc-live-jog-readiness.md](jc-live-jog-readiness.md). Summary of the safety design:
+
+* **Two builds.** The ordinary firmware is unchanged (`JC_MACHINE_CONTROL_ENABLED=0`, no
+  sink). The explicitly named `env:jc8048w550_livejog_test` is the only place either macro
+  is set, and its image has never been flashed. `tools/check_no_sink.py` fails if the macros
+  appear anywhere else, if the sink or the jog transmit function is referenced outside a
+  `#if JC_LIVE_JOG_TEST` block, if a second raw `::send` appears, or if the strict-line check
+  is missing before the live send.
+* **Class allowlist.** In the live-jog build the gate authorizes only `Jog` and `JogCancel`.
+  Home, probe, offsets, spindle, jobs, macros, unlock, reset, feed hold and unclassified
+  commands are `BlockedBuildPolicy` even when armed, confirmed and in Idle.
+* **Three independent checks of the same jog rule**: the builder (`TestLimit`, `JogDisabled`),
+  the transport (`jc_jog_line_allowed`, a separate strict parser) and, in the simulator, a
+  Python copy of the rule. Test limits: X/Y 1 mm @ 100 mm/min, Z 0.5 mm @ 50 mm/min, A disabled.
+* **Stopping is never blocked by bookkeeping.** `JogCancel` (and `Hold`, where compiled in)
+  need only LIVE mode: not arming, not a fresh link, not a recent command, not a free executor.
+* **Unresolved operations block new motion** (`BlockedOperationPending`): an in-flight jog,
+  an unacknowledged failure, a configuration read in progress.
+* **Envelope**: `BlockedEnvelopeUnread` until the soft / hard limit settings were read. A
+  configured travel is never treated as a safe movement envelope.
+* **Arming** lapses after 120 s, on leaving the jog page, in DEMO and on any loss of fresh data.
+* **Late start** of a jog after a cancel is detected, cancelled again and latched; motion by
+  another client is counted and never cancelled by this pendant.
+* **Motion completion** is judged from an Idle status frame newer than the acknowledgement and
+  from the reported position, never from the `ok` alone.
 
 ### Outstanding safety requirements before any motion is enabled
 

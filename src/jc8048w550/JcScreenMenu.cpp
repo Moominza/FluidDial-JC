@@ -38,8 +38,13 @@ void JcMenuScreen::on_draw() {
         ui::text(sv.display, r.x + 16, r.y + 24, kTiles[i].title, FontId::Heading24, WHITE, ui::kPanelLight);
         ui::text(sv.display, r.x + 16, r.y + 70, kTiles[i].subtitle, FontId::Body16, ui::kMuted, ui::kPanelLight);
     }
+#if JC_LIVE_JOG_TEST
+    ui::text(sv.display, 18, 458, "LIVE JOG TEST BUILD: only a restricted jog can be sent. Other pages are previews only.",
+             FontId::Body16, RED, ui::kBg);
+#else
     ui::text(sv.display, 18, 458, "Machine control disabled in this build: motion pages show command previews only.",
              FontId::Body16, ui::kWarn, ui::kBg);
+#endif
 }
 
 void JcMenuScreen::on_touch(uint16_t x, uint16_t y) {

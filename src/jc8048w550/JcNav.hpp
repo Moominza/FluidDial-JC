@@ -28,6 +28,7 @@ enum class JcPage : uint8_t {
     Diagnostics,
     Capabilities,  // controller capabilities (read-only queries)
     DryRun,        // diagnostic dry run: command, authorization, expected reply
+    LimitsHoming,  // soft / hard limit and homing settings as the controller reports them
     Input,  // modal text / numeric entry; returns to its caller
     Count,
 };
@@ -50,6 +51,7 @@ inline const char* jc_page_title(JcPage p) {
         case JcPage::Diagnostics: return "DIAGNOSTICS";
         case JcPage::Capabilities: return "CONTROLLER CAPABILITIES";
         case JcPage::DryRun: return "DRY RUN";
+        case JcPage::LimitsHoming: return "LIMITS AND HOMING";
         case JcPage::Input: return "ENTER VALUE";
         case JcPage::Count: break;
     }
@@ -72,7 +74,7 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
         case JcPage::SetMachine:
             return to == JcPage::Capabilities;
         case JcPage::Capabilities:
-            return to == JcPage::DryRun;
+            return to == JcPage::DryRun || to == JcPage::LimitsHoming;
         case JcPage::Tools:
             return to == JcPage::Probing;  // tool measurement configuration
         case JcPage::Files:
@@ -86,6 +88,7 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
         case JcPage::SetJogging:
         case JcPage::Diagnostics:
         case JcPage::DryRun:
+        case JcPage::LimitsHoming:
         case JcPage::Input:
         case JcPage::Count:
             return false;

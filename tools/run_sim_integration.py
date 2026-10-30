@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,10 +58,24 @@ class Tool:
 
 class Sim:
     def __init__(self, scenario):
-        self.p = subprocess.Popen([sys.executable, SIM, "--scenario", scenario, "--port", str(PORT), "--bind", "127.0.0.1"],
-                                  stdout=subprocess.PIPE, text=True)
+        # -u: unbuffered. The pipe is drained continuously by a thread: an OS pipe holds
+        # only a few KB (4 KB on Windows), and a simulator blocked in print() would stop
+        # answering, which looks exactly like a controller that went silent.
+        self.p = subprocess.Popen([sys.executable, "-u", SIM, "--scenario", scenario, "--port", str(PORT),
+                                   "--bind", "127.0.0.1"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.lines = []
         self.p.stdout.readline()  # "listening"
+        self.reader = threading.Thread(target=self._drain, daemon=True)
+        self.reader.start()
         time.sleep(0.2)
+
+    def _drain(self):
+        try:
+            for line in self.p.stdout:
+                self.lines.append(line)
+        except (OSError, ValueError):
+            pass
 
     def stop(self):
         if os.name == "nt":
@@ -71,11 +86,11 @@ class Sim:
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.p.terminate()
         try:
-            out = self.p.communicate(timeout=3)[0]
+            self.p.wait(timeout=3)
         except subprocess.TimeoutExpired:
             self.p.kill()
-            out = ""
-        return out
+        self.reader.join(timeout=3)
+        return "".join(self.lines)
 
 
 def session(tool, clock, queries, sent_log, per_query_wait=0.25, drain_slow=False):
@@ -160,6 +175,10 @@ def main():
         exe = os.path.join(tmp, "jc_link_tool.exe")
         subprocess.run(find_cxx() + ["-std=c++17", TOOL_SRC, "-o", exe], check=True,
                        stderr=subprocess.DEVNULL)
+        # Same tool, built with the experimental live-jog policy, for the jog scenarios.
+        exe_jog = os.path.join(tmp, "jc_link_tool_jog.exe")
+        subprocess.run(find_cxx() + ["-std=c++17", "-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_LIVE_JOG_TEST=1",
+                                     TOOL_SRC, "-o", exe_jog], check=True, stderr=subprocess.DEVNULL)
 
         def normal(q, tool, clock, result):
             check(int(q["frames"]) == 3 and q["invalid"] == "0", "3 valid four-axis frames, 0 errors")
@@ -243,6 +262,10 @@ def main():
         # Read-only capability queries (Instruction 005).
         import sim_caps_tests
         sim_caps_tests.run_all(exe, check, Sim, Tool, PORT)
+
+        # First-live-jog scenarios (Instruction 006): real C++ session + gate against the simulator.
+        import sim_jog_tests
+        sim_jog_tests.run_all(exe_jog, check, Sim, Tool, PORT)
 
     print("\nRESULT:", "FAIL (%d)" % len(failures) if failures else "PASS")
     return 1 if failures else 0

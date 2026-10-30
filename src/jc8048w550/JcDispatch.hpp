@@ -24,6 +24,8 @@ struct JcDispatchContext {
     bool        operator_confirmed = false;
     uint32_t    now_ms = 0;
     uint8_t     limits_mask = 0;  // bit i set: axis i limits confirmed by the controller
+    uint8_t     envelope_mask = 0;  // bit i set: axis i soft / hard limit settings were read
+    bool        operation_pending = false;  // a previous motion operation is unresolved
 };
 
 struct JcDispatchRecord {
@@ -44,7 +46,8 @@ public:
     // side-effect-free evaluate() used by the dry-run page.
     JcAuthContext make_auth(const JcCommand& command, const JcDispatchContext& ctx) const {
         JcAuthContext auth;
-        auth.armed = _armed;
+        auth.armed = _armed && (_arm_expires_ms == 0 || static_cast<int32_t>(ctx.now_ms - _arm_expires_ms) < 0);
+        auth.operation_pending = ctx.operation_pending;
         auth.live = ctx.live;
         auth.link_fresh = ctx.link_fresh;
         auth.operator_confirmed = ctx.operator_confirmed;
@@ -54,6 +57,8 @@ public:
                                 && command.axis != 0xFF;
         auth.limits_required = moves_axis;
         auth.limits_confirmed = moves_axis && command.axis < 4 && ((ctx.limits_mask >> command.axis) & 1u) != 0;
+        auth.envelope_required = moves_axis;
+        auth.envelope_confirmed = moves_axis && command.axis < 4 && ((ctx.envelope_mask >> command.axis) & 1u) != 0;
         strncpy(auth.machine_state, ctx.machine_state ? ctx.machine_state : "", sizeof(auth.machine_state) - 1);
         return auth;
     }
@@ -137,13 +142,32 @@ public:
     void set_sink_ex(JcCommandSinkEx sink, void* user) { _gate.set_sink_ex(sink, user); }
 
     // Explicit operator arming. Nothing in the shipping UI calls arm().
-    void arm() { _armed = true; }
-    void disarm() { _armed = false; }
+    void arm() {
+        _armed = true;
+        _arm_expires_ms = 0;
+    }
+    // Arming that lapses by itself after ttl_ms (used by the live-jog test build).
+    void arm_for(uint32_t now_ms, uint32_t ttl_ms) {
+        _armed = true;
+        _arm_expires_ms = now_ms + ttl_ms;
+        if (_arm_expires_ms == 0) _arm_expires_ms = 1;
+    }
+    void disarm() {
+        _armed = false;
+        _arm_expires_ms = 0;
+    }
     bool armed() const { return _armed; }
+    bool armed_at(uint32_t now_ms) const {
+        return _armed && (_arm_expires_ms == 0 || static_cast<int32_t>(now_ms - _arm_expires_ms) < 0);
+    }
+    uint32_t arm_remaining_ms(uint32_t now_ms) const {
+        if (!armed_at(now_ms)) return 0;
+        return _arm_expires_ms == 0 ? UINT32_MAX : _arm_expires_ms - now_ms;
+    }
 
     // Any loss of the link drops arming; reconnecting never restores it.
     void on_link_lost() {
-        _armed = false;
+        disarm();
         abort_sequence();
     }
 
@@ -187,6 +211,7 @@ private:
     uint8_t          _pending_count = 0;
     uint8_t          _pending_next = 0;
     bool             _armed = false;
+    uint32_t         _arm_expires_ms = 0;  // 0 = no expiry
     JcDispatchRecord _history[kHistory] {};
     uint8_t          _next = 0;
     uint8_t          _count = 0;

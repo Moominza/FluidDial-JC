@@ -41,6 +41,7 @@ protected:
     void on_draw() override;
     void on_touch(uint16_t x, uint16_t y) override;
     void on_tick(uint32_t now) override;
+    void on_custom_confirm() override;
 
 private:
     void draw_axes();
@@ -48,15 +49,22 @@ private:
     void draw_feeds();
     void draw_mode();
     void draw_live();
+    void draw_bottom();
     void do_jog(int direction);
     float step_value() const;
     float feed_value() const;
+    // Experimental live-jog build only (defined under JC_LIVE_JOG_TEST).
+    void jog_live(int direction);
+    void request_arm();
+    void do_cancel();
+    const char* arm_blocker() const;
 
     uint8_t _axis = 0;
     uint8_t _step = 1;
     uint8_t _feed = 0;
     bool _continuous = false;
     uint32_t _last_tick = 0;
+    uint32_t _live_key = 0;
     ui::Slot _dro, _motion, _preview, _result;
 };
 
@@ -266,6 +274,25 @@ private:
     ui::Slot _lines[5];
     uint32_t _last_tick = 0;
     uint32_t _drawn_key = 0;  // redraw the value area only when the loader state changes
+};
+
+class JcLimitsScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::LimitsHoming; }
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+
+private:
+    void draw_values(bool full);
+    ui::Slot _cells[4][5];
+    ui::Slot _lines[4];
+    uint32_t _last_tick = 0;
+    uint32_t _drawn_key = 0;
 };
 
 class JcDryRunScreen : public JcScreen {

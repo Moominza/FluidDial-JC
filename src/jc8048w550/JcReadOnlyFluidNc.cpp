@@ -19,6 +19,7 @@
 #include <strings.h>
 
 #include "GrblParserC.h"
+#include "JcJogTest.hpp"
 #include "JcStatusFrame.hpp"
 
 namespace jc8048w550 {
@@ -872,6 +873,49 @@ bool JcReadOnlyFluidNc::send_query_line(const char* line) {
     close_tcp(true);
     return false;
 }
+
+#if JC_LIVE_JOG_TEST
+// EXPERIMENTAL live-jog build only. The one and only motion transmit path; it is
+// reached solely through JcJogSession::sink() after the authorization gate, and it
+// re-checks the bytes itself so that nothing but the restricted test jog and the
+// jog-cancel byte can ever leave the device.
+bool JcReadOnlyFluidNc::send_jog_bytes(const char* bytes, size_t length) {
+    if (bytes == nullptr || length == 0 || _socket < 0) {
+        return false;
+    }
+    const bool cancel = length == 1 && static_cast<uint8_t>(bytes[0]) == 0x85;
+    char line[96];
+    if (!cancel) {
+        if (length < 2 || length >= sizeof(line) || bytes[length - 1] != '\n') {
+            ++_blocked_transmissions;
+            Serial.println("SAFETY: blocked a jog transmission that is not one complete line");
+            return false;
+        }
+        memcpy(line, bytes, length - 1);
+        line[length - 1] = '\0';
+        if (!jc_jog_line_allowed(line, jc_test_jog_limits())) {
+            ++_blocked_transmissions;
+            Serial.println("SAFETY: blocked a line that is not an allowed live-jog test line");
+            return false;
+        }
+    }
+    const ssize_t sent = ::send(_socket, bytes, length, MSG_DONTWAIT);
+    if (sent == static_cast<ssize_t>(length)) {
+        if (cancel) {
+            ++_jog_cancels_sent;
+            Serial.println("jogtest: SENT jog-cancel 0x85");
+        } else {
+            ++_jog_lines_sent;
+            Serial.printf("jogtest: SENT [%s]\n", line);
+        }
+        return true;
+    }
+    // A short or failed write would leave a partial line in the controller's input.
+    set_error("Jog send failed");
+    close_tcp(true);
+    return false;
+}
+#endif
 
 void JcReadOnlyFluidNc::set_error(const char* message, bool parse_error) {
     if (message != nullptr) {

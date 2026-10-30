@@ -8,6 +8,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
+#include "JcCommandAuth.hpp"
 #include "JcFrameAssembler.hpp"
 #include "JcQuery.hpp"
 #include "JcStreamSplitter.hpp"
@@ -50,6 +51,16 @@ public:
     // Sends ONE allowlisted read-only query (see JcQuery.hpp). Anything that is
     // not on the allowlist is refused and counted, never transmitted.
     bool send_query_line(const char* line);
+#if JC_LIVE_JOG_TEST
+    // EXPERIMENTAL live-jog build only (PlatformIO env jc8048w550_livejog_test);
+    // this method does not exist in the ordinary firmware. Sends either the single
+    // jog-cancel byte 0x85 or ONE complete incremental jog line ("$J=G91G21F..\n")
+    // that passes jc_jog_line_allowed() against the test limits. Everything else is
+    // refused and counted. A short or failed write drops the connection.
+    bool send_jog_bytes(const char* bytes, size_t length);
+    uint32_t jog_lines_sent() const { return _jog_lines_sent; }
+    uint32_t jog_cancels_sent() const { return _jog_cancels_sent; }
+#endif
     bool tcp_connected() const { return _socket >= 0; }
     uint32_t rejected_query_lines() const { return _rejected_queries; }
     uint32_t queries_sent() const { return _queries_sent; }
@@ -118,6 +129,10 @@ private:
     void* _line_user = nullptr;
     uint32_t _rejected_queries = 0;
     uint32_t _queries_sent = 0;
+#if JC_LIVE_JOG_TEST
+    uint32_t _jog_lines_sent = 0;
+    uint32_t _jog_cancels_sent = 0;
+#endif
     JcStatusFrame _pending_frame {};
     int _socket = -1;
     int _connecting_socket = -1;

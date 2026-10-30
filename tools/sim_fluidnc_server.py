@@ -9,9 +9,16 @@ data, not any real machine.
 Everything the device sends is audited:
   * the single byte '?' (status query) is permitted;
   * a text line is permitted only if it is one of the closed set of read-only
-    queries ($I, $G, $/axes/<x|y|z|a>/<item>, $/probe/pin, $/probe/toolsetter_pin);
+    queries ($I, $G, $/axes/<x|y|z|a>/<item>, $/probe/pin, $/probe/toolsetter_pin,
+    $/start/must_home);
   * anything else (jog, home, unlock, G-code, assignments, real-time bytes) is
     reported as a VIOLATION and makes the process exit non-zero.
+  * ONLY in the jog-* scenarios (first-live-jog tests, Instruction 006) the audit also
+    permits the jog-cancel byte 0x85 and ONE strictly formatted incremental jog line
+    inside the test limits (X/Y 1 mm @ 100 mm/min, Z 0.5 mm @ 50 mm/min; A never). The
+    check is a deliberately independent re-implementation of the C++ rule: an oversized,
+    rotary, malformed or extra-word jog line is still a VIOLATION, and so is every
+    other real-time byte.
 
 Usage:
   python tools/sim_fluidnc_server.py --scenario normal [--port 23]
@@ -32,6 +39,16 @@ Capability scenarios (normal frames plus answers to the read-only queries):
   caps-close       the socket is closed after a few queries (loss mid-read)
   caps-alarm       ALARM:1 is raised in reply to the 5th query
   caps-late-ok     the 3rd query is answered only after a long delay (late reply)
+Jog scenarios (a simple motion model: Idle -> Jog -> Idle with interpolated MPos):
+  jog              ok after 60 ms, motion at the commanded feed, then Idle
+  jog-reject       error:15 (nothing moves)
+  jog-alarm        ALARM:1 (machine enters Alarm)
+  jog-silent       the jog line is never answered and never executed
+  jog-close        ok, then the socket is closed mid-jog (loss during jogging)
+  jog-stale        ok, then no status frames for 5 s (stale status during jogging)
+  jog-late-start   ok only after 1.5 s, and the jog STILL starts after a cancel
+  jog-nocancel     ignores the jog-cancel byte and keeps jogging
+  jog-short        the move ends 0.4 mm short (position mismatch)
 """
 import argparse
 import re
@@ -58,25 +75,127 @@ MALFORMED = [
 ]
 THREE_AXIS = ["<Idle|MPos:1.000,2.000,3.000|FS:0,0>"]
 
-# Invented configuration: steps/mm, travel mm, max rate, accel, homing cycle, +dir
+# Invented configuration: steps/mm, travel mm, max rate, accel, homing cycle, +dir,
+# soft limits, hard limits, limit neg / pos / all pin, homing mpos
 CONFIG = {
-    "x": ["800.000", "300.000", "5000.000", "200.000", "2", "false"],
-    "y": ["800.000", "250.000", "5000.000", "200.000", "3", "false"],
-    "z": ["800.000", "100.000", "2000.000", "100.000", "1", "true"],
-    "a": ["17.778", "360.000", "3600.000", "50.000", "0", "false"],
+    "x": ["800.000", "300.000", "5000.000", "200.000", "2", "false", "true", "false", "NO_PIN", "NO_PIN", "gpio.34:low:pu", "0.000"],
+    "y": ["800.000", "250.000", "5000.000", "200.000", "3", "false", "true", "false", "NO_PIN", "NO_PIN", "NO_PIN", "0.000"],
+    "z": ["800.000", "100.000", "2000.000", "100.000", "1", "true", "true", "false", "NO_PIN", "gpio.35:low:pu", "NO_PIN", "-5.000"],
+    "a": ["17.778", "360.000", "3600.000", "50.000", "0", "false", "false", "false", "NO_PIN", "NO_PIN", "NO_PIN", "0.000"],
 }
 ITEMS = ["steps_per_mm", "max_travel_mm", "max_rate_mm_per_min", "acceleration_mm_per_sec2",
-         "homing/cycle", "homing/positive_direction"]
+         "homing/cycle", "homing/positive_direction", "soft_limits", "motor0/hard_limits",
+         "motor0/limit_neg_pin", "motor0/limit_pos_pin", "motor0/limit_all_pin", "homing/mpos_mm"]
 
 ALLOWED = [re.compile(p) for p in (
     r"^\$I$",
     r"^\$G$",
     r"^\$/probe/pin$",
     r"^\$/probe/toolsetter_pin$",
+    r"^\$/start/must_home$",
     r"^\$/axes/[xyza]/(steps_per_mm|max_travel_mm|max_rate_mm_per_min|acceleration_mm_per_sec2|"
-    r"homing/cycle|homing/positive_direction)$",
+    r"homing/cycle|homing/positive_direction|soft_limits|motor0/hard_limits|motor0/limit_neg_pin|"
+    r"motor0/limit_pos_pin|motor0/limit_all_pin|homing/mpos_mm)$",
 )]
 REALTIME_BYTES = {0x18, 0x85, ord("!"), ord("~")}
+
+# ---- jog scenarios: an INDEPENDENT re-implementation of the strict test-jog rule -------------
+JOG_RE = re.compile(r"^\$J=G91G21F(\d{1,5})([XYZ])(-?\d{1,4}\.\d{3})$")
+JOG_LIMITS = {"X": (1.0, 100.0), "Y": (1.0, 100.0), "Z": (0.5, 50.0)}   # max step mm, max feed mm/min
+JOG_CANCEL = 0x85
+
+
+def jog_allowed(line):
+    """(axis index, distance, feed) for a strictly formatted jog line inside the test
+    limits, else None. The rotary axis never matches."""
+    m = JOG_RE.match(line)
+    if not m:
+        return None
+    feed, axis, dist = int(m.group(1)), m.group(2), float(m.group(3))
+    step_max, feed_max = JOG_LIMITS[axis]
+    if dist == 0.0 or abs(dist) > step_max + 0.0005 or feed < 1 or feed > feed_max + 0.5:
+        return None
+    return "XYZ".index(axis), dist, feed
+
+
+JOG_SCENARIOS = {
+    "jog": dict(reply="ok", ack_delay=0.06),
+    "jog-reject": dict(reply="error:15", ack_delay=0.06),
+    "jog-alarm": dict(reply="ALARM:1", ack_delay=0.06),
+    "jog-silent": dict(reply=None),
+    "jog-close": dict(reply="ok", ack_delay=0.06, close_after_ack=True),
+    "jog-stale": dict(reply="ok", ack_delay=0.06, mute_status_s=5.0),
+    "jog-late-start": dict(reply="ok", ack_delay=1.5, start_even_if_cancelled=True),
+    "jog-nocancel": dict(reply="ok", ack_delay=0.06, ignore_cancel=True, move_s=60.0),
+    "jog-short": dict(reply="ok", ack_delay=0.06, end_short=0.4),
+}
+
+
+class Machine:
+    """Idle -> Jog -> Idle. Position is MPos; during a move it is interpolated."""
+
+    def __init__(self):
+        self.state = "Idle"
+        self.pos = [0.0, 0.0, 0.0, 0.0]
+        self.move = None          # dict(axis, start_pos, dist, t0, dur, end_short)
+        self.pending = None       # dict(due, reply, axis, dist, feed)
+        self.mute_until = 0.0
+        self.cancels = 0
+        self.jog_lines = 0
+
+    def update(self, now, cfg):
+        """Advances the machine. Returns the reply text due now (the jog's ok / error), or None."""
+        due_reply = None
+        p = self.pending
+        if p is not None and now >= p["due"]:
+            self.pending = None
+            self.on_ack(p, now, cfg)
+            due_reply = p["reply"]
+        m = self.move
+        if m is not None and now >= m["t0"] + m["dur"]:
+            self.pos[m["axis"]] = m["start"] + m["dist"] - m["end_short"]
+            self.move = None
+            if self.state == "Jog":
+                self.state = "Idle"
+        return due_reply
+
+    def on_ack(self, p, now, cfg):
+        r = p["reply"]
+        if r == "ok":
+            dur = cfg.get("move_s") or abs(p["dist"]) / p["feed"] * 60.0
+            self.state = "Jog"
+            self.move = dict(axis=p["axis"], start=self.pos[p["axis"]], dist=p["dist"], t0=now, dur=dur,
+                             end_short=cfg.get("end_short", 0.0))
+            if cfg.get("mute_status_s"):
+                self.mute_until = now + cfg["mute_status_s"]
+        elif r and r.startswith("ALARM"):
+            self.state = "Alarm"
+
+    def position(self, now):
+        pos = list(self.pos)
+        m = self.move
+        if m is not None:
+            frac = min(1.0, (now - m["t0"]) / m["dur"])
+            pos[m["axis"]] = m["start"] + m["dist"] * frac
+        return pos
+
+    def frame(self, now):
+        p = self.position(now)
+        return f"<{self.state}|MPos:{p[0]:.3f},{p[1]:.3f},{p[2]:.3f},{p[3]:.3f}|FS:0,0>"
+
+    def cancel(self, now, cfg):
+        self.cancels += 1
+        if cfg.get("ignore_cancel"):
+            return
+        if self.move is not None:
+            m = self.move
+            frac = min(1.0, (now - m["t0"]) / m["dur"])
+            self.pos[m["axis"]] = m["start"] + m["dist"] * frac
+            self.move = None
+            if self.state == "Jog":
+                self.state = "Idle"
+        if self.pending is not None and not cfg.get("start_even_if_cancelled"):
+            self.pending = None
 
 violations = 0
 queries_seen = []
@@ -101,6 +220,8 @@ def reply_for(line, scenario, query_index):
         return "$/probe/pin=gpio.36:low\r\nok\r\n"
     if line == "$/probe/toolsetter_pin":
         return "$/probe/toolsetter_pin=NO_PIN\r\nok\r\n"
+    if line == "$/start/must_home":
+        return "$/start/must_home=true\r\nok\r\n"
     m = re.match(r"^\$/axes/([xyza])/(.+)$", line)
     axis, item = m.group(1), m.group(2)
     if scenario == "caps-refuse-a" and axis == "a":
@@ -139,8 +260,13 @@ def send(conn, data, scenario):
         conn.sendall(data)
 
 
+machine = Machine()  # shared by every connection of this server process (jog scenarios)
+
+
 def serve(conn, peer, scenario):
-    conn.settimeout(0.2)
+    is_jog = scenario in JOG_SCENARIOS
+    cfg = JOG_SCENARIOS.get(scenario, {})
+    conn.settimeout(0.02 if is_jog else 0.2)
     frames = frames_for(scenario)
     is_caps = scenario.startswith("caps")
     index = sent = queries = 0
@@ -149,6 +275,18 @@ def serve(conn, peer, scenario):
     delayed = []  # (due_time, bytes) for caps-late-ok
     while True:
         now = time.time()
+        if is_jog:
+            due = machine.update(now, cfg)
+            if due is not None:
+                try:
+                    conn.sendall((due + "\r\n").encode())
+                except OSError:
+                    return
+                print(f"{peer}: REPLY {due}", flush=True)
+                if cfg.get("close_after_ack") and due == "ok":
+                    print(f"{peer}: closing mid-jog", flush=True)
+                    conn.close()
+                    return
         for item in list(delayed):
             if now >= item[0]:
                 delayed.remove(item)
@@ -171,12 +309,30 @@ def serve(conn, peer, scenario):
             if b == ord("?"):
                 status_queries += 1
                 queries += 1
+            elif b == JOG_CANCEL and is_jog:
+                machine.cancel(now, cfg)
+                print(f"{peer}: CANCEL 0x85 (#{machine.cancels})", flush=True)
             elif b in REALTIME_BYTES:
                 violation(peer, f"real-time byte 0x{b:02x}")
             elif b == 0x0A:
                 line = buffer.decode("latin-1").strip("\r")
                 buffer = b""
                 if not line:
+                    continue
+                if is_jog and line.startswith("$J"):
+                    parsed = jog_allowed(line)
+                    if parsed is None:
+                        violation(peer, f"line {line!r} (not a strictly formatted jog inside the test limits)")
+                        continue
+                    if machine.state != "Idle" or machine.pending is not None or machine.move is not None:
+                        violation(peer, f"line {line!r} while a previous jog is unresolved")
+                        continue
+                    machine.jog_lines += 1
+                    print(f"{peer}: JOG {line}", flush=True)
+                    if cfg.get("reply") is not None:
+                        axis, dist, feed = parsed
+                        machine.pending = dict(due=now + cfg["ack_delay"], reply=cfg["reply"], axis=axis, dist=dist,
+                                               feed=feed)
                     continue
                 if not any(p.match(line) for p in ALLOWED):
                     violation(peer, f"line {line!r}")
@@ -210,7 +366,13 @@ def serve(conn, peer, scenario):
         if is_caps and status_queries > 1:
             status_queries = 1  # coalesce: the capability scenarios care about the query replies
         for _ in range(status_queries):  # a real controller answers every '?'
-            frame = (frames[index % len(frames)] + "\r\n").encode()
+            if is_jog:
+                machine.update(now, cfg)
+                if now < machine.mute_until:
+                    continue  # jog-stale: the status stream goes quiet
+                frame = (machine.frame(now) + "\r\n").encode()
+            else:
+                frame = (frames[index % len(frames)] + "\r\n").encode()
             index += 1
             try:
                 send(conn, frame, "fragmented" if scenario == "fragmented" else "normal")
@@ -227,7 +389,7 @@ def serve(conn, peer, scenario):
 def main():
     choices = ["normal", "work", "fragmented", "malformed", "three-axis", "close", "silent",
                "caps", "caps-fragmented", "caps-refuse-a", "caps-bad", "caps-silent", "caps-close",
-               "caps-alarm", "caps-late-ok"]
+               "caps-alarm", "caps-late-ok"] + sorted(JOG_SCENARIOS)
     p = argparse.ArgumentParser()
     p.add_argument("--scenario", default="normal", choices=choices)
     p.add_argument("--port", type=int, default=23)

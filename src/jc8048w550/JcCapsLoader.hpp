@@ -50,8 +50,9 @@ inline const char* jc_load_failure_name(JcLoadFailure f) {
 
 class JcCapsLoader {
 public:
-    // $I, $G, 4 axes x 6 fields, probe pin, toolsetter pin.
-    static constexpr uint8_t kSteps = 2 + kJcQueryAxes * kJcQueryFieldCount + 2;
+    // $I, $G, 4 axes x 12 fields, probe pin, toolsetter pin, start/must_home.
+    static constexpr uint8_t kAxisSteps = kJcQueryAxes * kJcQueryFieldCount;
+    static constexpr uint8_t kSteps = 2 + kAxisSteps + 3;
 
     // Begins a fresh read. Previous results are discarded first; if the start
     // conditions are not met the loader fails with NotReady instead.
@@ -160,19 +161,21 @@ private:
     void build_line(uint8_t step, char* out, size_t size) const {
         if (step == 0) { snprintf(out, size, "%s", kJcQueryBuildInfo); return; }
         if (step == 1) { snprintf(out, size, "%s", kJcQueryModalState); return; }
-        const uint8_t axis_steps = kJcQueryAxes * kJcQueryFieldCount;
-        if (step < 2 + axis_steps) {
+        if (step < 2 + kAxisSteps) {
             const uint8_t i = static_cast<uint8_t>(step - 2);
             jc_query_axis_line(out, size, static_cast<uint8_t>(i / kJcQueryFieldCount),
                                static_cast<JcQueryField>(i % kJcQueryFieldCount));
             return;
         }
-        snprintf(out, size, "%s", step == 2 + axis_steps ? kJcQueryProbePin : kJcQueryToolsetterPin);
+        const char* fixed = kJcQueryProbePin;
+        if (step == 3 + kAxisSteps) fixed = kJcQueryToolsetterPin;
+        if (step == 4 + kAxisSteps) fixed = kJcQueryMustHome;
+        snprintf(out, size, "%s", fixed);
     }
 
     // Maps the current step to (axis, field); false for non-axis steps.
     bool current_axis_field(uint8_t& axis, JcQueryField& field) const {
-        if (_step < 2 || _step >= 2 + kJcQueryAxes * kJcQueryFieldCount) return false;
+        if (_step < 2 || _step >= 2 + kAxisSteps) return false;
         const uint8_t i = static_cast<uint8_t>(_step - 2);
         axis = static_cast<uint8_t>(i / kJcQueryFieldCount);
         field = static_cast<JcQueryField>(i % kJcQueryFieldCount);
@@ -195,17 +198,30 @@ private:
             if (jc_caps_field_valid(field, r.value, v)) {
                 a.state[f] = JcFieldState::Valid;
                 a.value[f] = v;
+                if (jc_query_field_kind(field) == JcFieldKind::Pin) {
+                    const uint8_t slot = static_cast<uint8_t>(f - static_cast<uint8_t>(JcQueryField::LimitNegPin));
+                    snprintf(a.pin[slot], sizeof(a.pin[slot]), "%s", r.value);
+                }
             } else {
                 a.state[f] = JcFieldState::BadValue;
             }
             return;
         }
-        if (_step == 2 + kJcQueryAxes * kJcQueryFieldCount && strcmp(r.key, "/probe/pin") == 0) {
+        if (_step == 2 + kAxisSteps && strcmp(r.key, "/probe/pin") == 0) {
             _got_value = true;
             snprintf(_caps.probe_pin, sizeof(_caps.probe_pin), "%s", r.value);
-        } else if (_step == 3 + kJcQueryAxes * kJcQueryFieldCount && strcmp(r.key, "/probe/toolsetter_pin") == 0) {
+        } else if (_step == 3 + kAxisSteps && strcmp(r.key, "/probe/toolsetter_pin") == 0) {
             _got_value = true;
             snprintf(_caps.toolsetter_pin, sizeof(_caps.toolsetter_pin), "%s", r.value);
+        } else if (_step == 4 + kAxisSteps && strcmp(r.key, "/start/must_home") == 0) {
+            _got_value = true;
+            float v = 0.0f;
+            if (jc_caps_parse_bool(r.value, v)) {
+                _caps.must_home_state = JcFieldState::Valid;
+                _caps.must_home = v != 0.0f;
+            } else {
+                _caps.must_home_state = JcFieldState::BadValue;
+            }
         }
     }
 
@@ -263,11 +279,16 @@ private:
                 const uint8_t f = static_cast<uint8_t>(field);
                 _caps.axes[axis].state[f] = JcFieldState::CtrlError;
                 _caps.axes[axis].error_code[f] = _exec.code();
+            } else if (_step == 4 + kAxisSteps) {
+                _caps.must_home_state = JcFieldState::CtrlError;
+                _caps.must_home_error = _exec.code();
             }
         } else if (outcome == JcExecOutcome::Acked) {
             ++_caps.queries_ok;
             if (is_axis && !_got_value) {
                 _caps.axes[axis].state[static_cast<uint8_t>(field)] = JcFieldState::NoValue;
+            } else if (_step == 4 + kAxisSteps && !_got_value) {
+                _caps.must_home_state = JcFieldState::NoValue;
             }
         }
         _exec.release();

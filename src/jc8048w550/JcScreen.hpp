@@ -20,6 +20,7 @@
 #include "JcCommandBuilder.hpp"
 #include "JcDryRun.hpp"
 #include "JcDispatch.hpp"
+#include "JcJogTest.hpp"
 #include "JcMachineModel.hpp"
 #include "JcNav.hpp"
 #include "JcReadOnlyFluidNc.hpp"
@@ -68,6 +69,7 @@ struct JcAppServices {
     JcMachineProfile&  profile;
     JcDispatcher&      dispatcher;
     JcCapsLoader&      loader;
+    JcJogSession&      jogs;   // inert (no transport) in the ordinary firmware
     const bool&        live_mode;
     JcAppHost&         host;
 
@@ -81,6 +83,10 @@ struct JcAppServices {
         c.operator_confirmed = confirmed;
         c.now_ms = millis();
         c.limits_mask = jc_profile_limits_mask(profile);
+        // The soft / hard limit settings only count once a complete read is held.
+        c.envelope_mask = loader.state() == JcLoadState::Complete ? loader.caps().envelope_axis_mask() : 0;
+        // A configuration read or an unresolved jog is an operation in flight.
+        c.operation_pending = jogs.unresolved() || loader.running();
         return c;
     }
 };
@@ -113,6 +119,11 @@ protected:
     JcAuthDecision submit_now(const JcCommand& command);
     void show_message(const char* title, const char* line1, const char* line2 = nullptr,
                       const char* line3 = nullptr);
+    // A confirmation that is not a staged command (e.g. arming the live-jog test).
+    // The caller adds its lines to `dialog` and calls draw(); on CONFIRM the page's
+    // on_custom_confirm() runs.
+    void open_custom_confirm(const char* title, const char* confirm_label);
+    virtual void on_custom_confirm() {}
 
     JcAppServices& sv;
     ui::Dialog     dialog;
@@ -125,6 +136,7 @@ private:
     JcCommandSequence _sequence;
     bool              _pending_is_sequence = false;
     bool              _has_pending = false;
+    bool              _custom_pending = false;
 };
 
 }  // namespace jc8048w550

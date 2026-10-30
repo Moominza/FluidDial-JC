@@ -106,7 +106,7 @@ void PendantUi::update_model() {
         _model_source = &status;
         _model_sequence = status.sequence;
         if (status.has_data) {
-            _app.feed_status(status);
+            _app.feed_status(status, live_fresh());
         }
     }
     _app.note_link_fresh(live_fresh());

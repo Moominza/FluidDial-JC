@@ -43,7 +43,11 @@ void JcSettingsScreen::on_draw() {
         ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 98), 162, 56 },
                  kHub[i].subtitle, FontId::Body16, ui::kMuted, ui::kPanelLight);
     }
+#if JC_LIVE_JOG_TEST
+    ui::text(sv.display, 400, 322, "Firmware: LIVE JOG TEST BUILD (restricted jog enabled)", FontId::Body16, RED, ui::kBg);
+#else
     ui::text(sv.display, 400, 322, "Firmware: experimental, machine control disabled", FontId::Body16, ui::kWarn, ui::kBg);
+#endif
 }
 
 void JcSettingsScreen::on_touch(uint16_t x, uint16_t y) {
