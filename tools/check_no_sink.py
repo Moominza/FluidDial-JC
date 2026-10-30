@@ -258,7 +258,8 @@ if "jog_tx_thunk" in pv or "send_jog" in pv:
     fail("JcApp.cpp: the preview block must not reference the real jog transport")
 if "_jogs(nullptr, nullptr)" not in app_b["ordinary"]:
     fail("JcApp.cpp: neither-flag builds must keep a jog session without a transport")
-for pure in ("JcCommandSystem.hpp", "JcWorkflow.hpp", "JcWorkflowPlans.hpp", "JcSimNc.hpp", "JcCommandPolicy.hpp", "JcHomingState.hpp", "JcProbeCalc.hpp"):
+for pure in ("JcCommandSystem.hpp", "JcWorkflow.hpp", "JcWorkflowPlans.hpp", "JcSimNc.hpp", "JcCommandPolicy.hpp", "JcHomingState.hpp", "JcProbeCalc.hpp",
+             "JcBleUart.hpp", "JcSdBrowser.hpp", "JcJobState.hpp", "JcToolInfo.hpp", "JcTransportManager.hpp", "JcStatusApply.hpp"):
     code_p = "\n".join(l.split("//")[0] for l in read(os.path.join(SRC, pure)).splitlines())
     for word in ("Serial", "WiFi", "Arduino", "::send", "socket", "Serial1", "millis("):
         if word in code_p:
@@ -280,6 +281,50 @@ for name in ("JcScreenJog.cpp", "JcScreenJogPreview.cpp", "JcScreen.cpp"):
     text = read(os.path.join(SRC, name))
     if re.search(r"send_jog|send_query_line|send_status|_link\.|sv\.link\.send", text):
         fail(f"{name}: jog UI code refers to a link transmit function")
+
+# ---- 7. BLE UART (Instruction 010): no independent command path -------------------------------------------------
+ble_hdr = read(os.path.join(SRC, "JcBleUart.hpp"))
+ble_b = split_buckets(ble_hdr)
+if "send_command_bytes" in ble_b["ordinary"] or "send_command_bytes" in ble_b["ui"] or "send_command_bytes" in ble_b["preview"]:
+    fail("JcBleUart.hpp: send_command_bytes must exist only inside a JC_FULL_CONTROL_TEST block (the ordinary firmware has no BLE command path)")
+m = re.search(r"bool send_command_bytes\(const char\* bytes, size_t length\) \{(.*?)\n    \}\n", ble_b["live"], re.S)
+if not m or "jc_command_bytes_allowed(bytes, length)" not in m.group(1) or m.group(1).find("jc_command_bytes_allowed") > m.group(1).find("enqueue"):
+    fail("JcBleUart.hpp: send_command_bytes must apply jc_command_bytes_allowed() before anything is queued")
+m = re.search(r"bool send_query_line\(const char\* line\) \{(.*?)\n    \}\n", ble_hdr, re.S)
+if not m or "jc_query_allowed(line)" not in m.group(1)[:120]:
+    fail("JcBleUart.hpp: send_query_line must check jc_query_allowed() first")
+code_ble = "\n".join(l.split("//")[0] for l in ble_hdr.splitlines())
+if len(re.findall(r"\benqueue\(", code_ble)) != 3:      # the definition and exactly the two policy-checked callers
+    fail("JcBleUart.hpp: enqueue() must be called only from send_query_line and send_command_bytes")
+if len(re.findall(r"\bpriority\(", code_ble)) != 3:     # the definition, the '?' keep-alive and the checked real-time byte
+    fail("JcBleUart.hpp: priority() must be called only for the '?' keep-alive and the policy-checked real-time byte")
+if len(re.findall(r"_radio->write\(", code_ble)) != 1:
+    fail("JcBleUart.hpp: the radio must be written from exactly one place (the paced pump)")
+blelink = read(os.path.join(SRC, "JcBleLink.cpp"))
+if len(re.findall(r"writeValue\s*\(", blelink)) != 1:
+    fail("JcBleLink.cpp: expected exactly one GATT write site")
+for name in sorted(os.listdir(SRC)):
+    if name.endswith((".cpp", ".hpp")) and name not in ("JcBleUart.hpp", "JcBleLink.cpp", "JcBleLink.hpp"):
+        t = "\n".join(l.split("//")[0] for l in read(os.path.join(SRC, name)).splitlines())
+        if re.search(r"writeValue\s*\(|_radio->write\(|_ble_radio\.write\(", t):
+            fail(f"{name}: a BLE write outside JcBleUart / JcBleLink")
+# read-only queries: the SD allowlist names no write operation
+q = read(os.path.join(SRC, "JcQuery.hpp"))
+q_code = "\n".join(l.split("//")[0] for l in q.splitlines())
+for word in ("$SD/Delete", "$SD/Rename", "$SD/Run", "$Localfs", "$LocalFS", "Format", "Remove"):
+    if word in q_code:
+        fail(f"JcQuery.hpp: the read-only allowlist must not contain {word}")
+# the SD run string exists only where commands are built / checked and in the simulator
+for name in sorted(os.listdir(SRC)):
+    if name.endswith((".cpp", ".hpp")) and name not in ("JcCommandBuilder.hpp", "JcCommandPolicy.hpp", "JcSimNc.hpp"):
+        t = "\n".join(l.split("//")[0] for l in read(os.path.join(SRC, name)).splitlines())
+        if '"$SD/Run' in t:
+            fail(f"{name}: builds a $SD/Run line outside the command builder")
+# no M6 / T word anywhere in the command builder or the policy (no automatic tool changer is assumed)
+for name in ("JcCommandBuilder.hpp", "JcCommandPolicy.hpp"):
+    t = "\n".join(l.split("//")[0] for l in read(os.path.join(SRC, name)).splitlines())
+    if re.search(r'"M6|"T%|"T[0-9]', t):
+        fail(f"{name}: an M6 / T tool-change word must never be generated")
 
 print("check_no_sink:", "FAIL" if failures else "PASS")
 sys.exit(1 if failures else 0)

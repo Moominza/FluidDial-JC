@@ -86,6 +86,28 @@ inline bool JcWorkflow::build_plan() {
         m.mask = static_cast<uint8_t>((hx ? 1 : 0) | (hy ? 2 : 0));
         return true;
     }
+    const bool tool_kind = _kind == JcWfKind::ToolReference || _kind == JcWfKind::ToolMeasure || _kind == JcWfKind::ToolChange;
+    if (tool_kind) {
+        if (_kind == JcWfKind::ToolChange) {
+            add_check(JcWfCheck::ClearanceNotBelow, "clearance not below the current Z");
+            if (!_status.wpos_valid) { snprintf(_reason, sizeof(_reason), "work position unknown"); return false; }
+            if (fabsf(_p.clearance_z - _status.wpos[2]) > 0.001f) add_goto_z(_p.clearance_z, "raise to the safe clearance");
+            add_check(JcWfCheck::SpindleOff, "spindle stopped (stop it with its own control)");
+            add_wait("CHANGE THE TOOL BY HAND, keep clear, then CONTINUE");
+            add_check(JcWfCheck::StatusIdle, "machine still Idle");
+            add_check(JcWfCheck::SpindleOff, "spindle still stopped");
+        }
+        add_check(JcWfCheck::ProbeReady, "probe input assigned and not triggered");
+        // Probe-contact verification BEFORE any probing move: the operator touches the tool to the plate by hand and
+        // the controller's own Pn:P must appear, then clear.
+        push(JcWfOp::AwaitTouch, "TOUCH the tool to the plate by hand (probe must show contact)");
+        push(JcWfOp::AwaitRelease, "release it (probe must clear)");
+        add_check(JcWfCheck::StatusIdle, "machine Idle");
+        add_touch(2, _p.tool_dir, 0, "");
+        JcWfStep& c = push(JcWfOp::Compute, _kind == JcWfKind::ToolReference ? "record the reference contact" : "calculate the tool length offset");
+        c.arg = static_cast<uint8_t>(_kind == JcWfKind::ToolReference ? JcWfCalc::ToolRef : JcWfCalc::ToolLength);
+        return true;
+    }
     add_check(JcWfCheck::ProbeReady, "probe input assigned and not triggered");
     const bool outside = _p.feature == JcFeatureKind::Outside;
     if (outside || _kind == JcWfKind::FindRotary) {

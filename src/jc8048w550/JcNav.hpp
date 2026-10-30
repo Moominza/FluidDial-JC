@@ -30,7 +30,8 @@ enum class JcPage : uint8_t {
     DryRun,        // diagnostic dry run: command, authorization, expected reply
     LimitsHoming,  // soft / hard limit and homing settings as the controller reports them
     JogPreview,    // non-motion jog test mode: simulated-controller scenario and counters
-    Workflow,      // guided positioning and probing routines (macros)
+    Workflow,      // guided positioning, probing and tool-length routines
+    Ble,           // BLE UART: scan, devices, connect, diagnostics (Instruction 010)
     Input,  // modal text / numeric entry; returns to its caller
     Count,
 };
@@ -56,6 +57,7 @@ inline const char* jc_page_title(JcPage p) {
         case JcPage::LimitsHoming: return "LIMITS AND HOMING";
         case JcPage::JogPreview: return "JOG PREVIEW TEST";
         case JcPage::Workflow: return "POSITIONING / PROBING";
+        case JcPage::Ble: return "BLUETOOTH LE";
         case JcPage::Input: return "ENTER VALUE";
         case JcPage::Count: break;
     }
@@ -82,14 +84,16 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
         case JcPage::Capabilities:
             return to == JcPage::DryRun || to == JcPage::LimitsHoming;
         case JcPage::Tools:
-            return to == JcPage::Probing;  // tool measurement configuration
+            return to == JcPage::Probing || to == JcPage::Workflow;  // tool measurement settings / guided tool routines
+        case JcPage::SetConnections:
+            return to == JcPage::Ble;
         case JcPage::Files:
         case JcPage::Workflow:
         case JcPage::Jog:
         case JcPage::Homing:
         case JcPage::Probing:
         case JcPage::Offsets:
-        case JcPage::SetConnections:
+        case JcPage::Ble:
         case JcPage::SetDisplay:
         case JcPage::SetJogging:
         case JcPage::Diagnostics:

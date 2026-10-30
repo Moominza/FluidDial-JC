@@ -48,10 +48,15 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(cmd, check=True)
         rc |= subprocess.run([exe]).returncode
     # Unified command interface and guided routines (Instructions 009 / 009A): the controller-authoritative policy.
-    for name in ("test_jc_commands.cpp", "test_jc_workflow.cpp"):
+    for name in ("test_jc_commands.cpp", "test_jc_workflow.cpp", "test_jc_sdjob.cpp", "test_jc_ble.cpp"):
         exe = os.path.join(tmp, "t" + name + ".exe")
         subprocess.run(cxx + ["-std=c++17", "-Wall", "-Wextra", "-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_FULL_CONTROL_TEST=1",
                               os.path.join(root, "test", "host", name), "-o", exe], check=True)
+        rc |= subprocess.run([exe]).returncode
+    # BLE transport policy (Instruction 010): no command transmit function in the ordinary build, the policy-checked one in the full build.
+    for tag, flags in (("ordinary", ["-DJC_MACHINE_CONTROL_ENABLED=0"]), ("full", ["-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_FULL_CONTROL_TEST=1"])):
+        exe = os.path.join(tmp, f"tblepolicy_{tag}.exe")
+        subprocess.run(cxx + ["-std=c++17", "-Wall", "-Wextra"] + flags + [os.path.join(root, "test", "host", "test_jc_ble_policy.cpp"), "-o", exe], check=True)
         rc |= subprocess.run([exe]).returncode
     # Non-motion jog test mode (Instruction 007): the real gate against the simulated controller.
     prev = os.path.join(root, "test", "host", "test_jc_preview.cpp")

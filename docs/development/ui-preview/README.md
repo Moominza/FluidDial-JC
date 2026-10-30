@@ -12,3 +12,8 @@ about the real controller. The operator's photographs remain the real visual che
 
 `live_*` = the experimental live-jog build's UI (`JC_LIVE_JOG_TEST=1`). `ordinary_*` = the ordinary
 firmware's UI. Nothing here was transmitted to any controller.
+
+`preview_files_*`, `preview_tools_*`, `preview_toolref_*`, `preview_toolmeasure_*`, `preview_toolchange_*` and
+`preview_ble_*` (Instruction 010) show the SD files and job page, the Tools page, the guided tool routines and
+the Bluetooth LE page of the ordinary image (`preview_` = the ordinary firmware with the simulated controller).
+The file list in those frames is a SIMULATED card; the BLE devices are a MOCK radio's.

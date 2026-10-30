@@ -141,6 +141,8 @@ private:
     void draw_live_info(bool force);
     void draw_diagnostics(bool force);
     bool use_uart() const;
+    bool use_ble() const;      // BLE UART is the selected control transport
+    bool use_serial() const;   // UART or BLE: not the Wi-Fi link
     const JcLiveMachineStatus& live_status() const;
     bool live_fresh() const;
     JcFluidState live_state() const;

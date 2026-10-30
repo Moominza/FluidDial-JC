@@ -1,4 +1,4 @@
-# JC full-control commissioning checklist (Instructions 009 / 009A)
+# JC full-control commissioning checklist (Instructions 009 / 009A / 010)
 
 **Nothing below has been done.** The full-control image (`env:jc8048w550_fullcontrol_test`) is built and tested
 against a simulated FluidNC only. It must not be flashed until the independent stopping system is installed,
@@ -33,5 +33,32 @@ functionally verified, and the owner explicitly authorizes the flash. FluidNC is
 - [ ] Outside feature (boss) X / Y; contact timeout and no-contact reported; stop with cancel.
 - [ ] FIND ROTARY A CENTRELINE on a reference cylinder: Y / Z centreline and tilt plausible; A calibration unchanged.
 
-## 6. Not implemented yet (do not test)
-SD browsing, job progress / pause / resume UI, tool-change workflow, TLO from a tool probe, BLE UART.
+## 6. SD card and jobs (ordinary image first, then full-control)
+- [ ] Ordinary image, real controller: FILES > REFRESH SD LIST shows the files that are really on the controller's SD card (compare with the card / WebUI). The parser matches the v4.1.1 reply read from this controller (relative names, folder depth as leading spaces, `[/sd Free: Used: Total:]` summary). Record any difference.
+- [ ] Remove the card: the page says NO SD CARD (error:60); empty card: SD CARD HAS NO FILES; the pendant's own flash files never appear.
+- [ ] Long names and deep folders display ellipsized without overlap; a name with a space or `#` is shown but START refuses it (decide whether to allow spaces; first test with a read-only probe how FluidNC parses `$SD/Run=` with a space).
+- [ ] Full-control image, test file with a harmless program (spindle removed, no workpiece): START JOB shows the file and needs one confirmation; the percentage follows the controller's `SD:` field, not a timer.
+- [ ] FEED HOLD (`!`) pauses at once; CYCLE START (`~`) resumes the same job; RESET (Ctrl-X) ends it and it cannot be resumed.
+- [ ] Pull the Wi-Fi link during a job: the page shows JOB STATE UNKNOWN; after reconnecting nothing is restarted or resumed; the controller's job state is simply re-read.
+
+## 7. Tools and tool length (full-control image; spindle removed)
+- [ ] READ TOOL STATE shows the controller's T word and `[TLO:]`. If `[TLO:]` is not reported, the tool routines stay disabled.
+- [ ] Measure the reference tool on a known surface: the pin must react to a hand touch before any probing move; contact is stored (machine Z).
+- [ ] CHANGE TOOL BY HAND + MEASURE: Z rises to your clearance, waits for you; no M6 / T is ever sent (check the serial log).
+- [ ] APPLY TOOL OFFSET sends `G43.1 Z<x>` and the readback matches. **Verify the sign convention on the machine**: after applying the offset for a tool that is longer by d, the work Z display at the same physical tip position must be unchanged. If FluidNC v4.1.1 does not accept G43.1 / G49, record the error; nothing else depends on it.
+- [ ] CLEAR TOOL OFFSET (G49) reads back 0. Work offsets (`$#` G54..G59) are identical before and after.
+
+## 8. Positioning and centre finding (review of 009A)
+- [ ] The planning preview shows the safe Z clearance and the XY move as separate steps; clearance is operator-entered and is not claimed to be clear of obstacles.
+- [ ] Inside X / Y, outside X / Y, XY inside and the rotary reference cylinder are checked against gauge pins of known diameter; the measured size equals the gauge and a wrong tip radius is flagged.
+- [ ] No work offset changes unless SET WORK ORIGIN is confirmed; the readback matches.
+
+## 9. Bluetooth LE UART (needs the external module; NOT verified)
+- [ ] CC2541 / HM-10 wired to the controller UART at the right baud rate; module advertises FFE0/FFE1. Select BLE on CONNECTIONS, open BLE SETUP, SCAN: the module appears with the `serial` marker.
+- [ ] Connect: the page reaches READY, `?` status frames arrive, the dashboard shows 4 axes. Record the negotiated chunk size (20 bytes if the MTU stays at 23).
+- [ ] Fragmentation: long `$SD/List` and `$#` replies arrive intact (invalid frames stay 0, dropped stays 0).
+- [ ] Power-cycle the module: the page shows RECONNECTING and returns to READY by itself; nothing queued earlier is sent.
+- [ ] Wi-Fi, UART and BLE are never active together: switching transport stops the others and the dashboard shows no data until the new one delivers a frame.
+
+## 10. Still not implemented / not claimed
+Automatic tool changer or M6 macro (never assumed), rotary-axis probing, outside-feature XY centre in one routine (use X then Y), SD file deletion / upload / rename (deliberately not offered), file names with spaces, job resume after a controller reset, any BLE hardware verification, any physical commissioning.

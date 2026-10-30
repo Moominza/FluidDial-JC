@@ -66,7 +66,7 @@ inline bool eat(const char*& p, const char* lit) {
 }
 
 inline bool path_ok(const char* p) {
-    if (p == nullptr || p[0] != '/' || strlen(p) >= 96) return false;
+    if (p == nullptr || p[0] != '/' || strlen(p) > 80) return false;
     if (strstr(p, "..") != nullptr) return false;
     for (; *p; ++p) {
         const char c = *p;
@@ -129,6 +129,11 @@ inline bool jc_command_line_allowed(JcCommandClass cls, const char* text) {
             return strcmp(text, "$H") == 0 || (text[0] == '$' && text[1] == 'H' && is_axis(text[2]) && text[3] == '\0');
         case JcCommandClass::WorkOffset: {
             if (text[0] == 'G' && text[1] == '5' && text[2] >= '4' && text[2] <= '9' && text[3] == '\0') return true;
+            if (strcmp(text, "G49") == 0) return true;                      // cancel the tool length offset
+            if (eat(p, "G43.1 Z")) {                                        // dynamic tool length offset, Z only
+                float t = 0.0f;
+                return read_fixed3(p, t) && *p == '\0' && fabsf(t) <= 1000.0f;
+            }
             if (eat(p, "G10 L2 P")) {   // origin of a WCS from machine coordinates; X, Y, Z in that order, each once
                 if (*p < '1' || *p > '6') return false;
                 ++p;

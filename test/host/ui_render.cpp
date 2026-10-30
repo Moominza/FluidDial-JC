@@ -61,6 +61,25 @@ public:
 #endif
     int reads_started = 0;
     void cancel_caps_read() override {}
+    // Instruction 010 hooks: the renderer's stand-ins record what a page asked for.
+    int sd_refreshes = 0, tool_reads = 0, ble_scans = 0, ble_connects = 0, ble_disconnects = 0, ble_forgets = 0, clears = 0;
+    JcWfKind opened = JcWfKind::GoToXY;
+    const char* (*sd_fn)(void*) = nullptr;
+    void* sd_user = nullptr;
+    JcBleUart* ble = nullptr;
+    bool simulated_job = false;
+    const char* sd_refresh() override { ++sd_refreshes; return sd_fn != nullptr ? sd_fn(sd_user) : nullptr; }
+    const char* tool_read() override { ++tool_reads; return nullptr; }
+    const char* select_transport(uint8_t) override { return nullptr; }
+    bool ble_scan() override { ++ble_scans; return ble != nullptr && ble->scan(g_stub_millis); }
+    bool ble_connect(const char* a, const char* n) override { ++ble_connects; return ble != nullptr && ble->connect_to(a, n, g_stub_millis); }
+    void ble_disconnect() override { ++ble_disconnects; if (ble != nullptr) ble->disconnect(g_stub_millis); }
+    void ble_forget() override { ++ble_forgets; if (ble != nullptr) ble->forget(); }
+    bool job_simulated() const override { return simulated_job; }
+#if JC_AUTHORITY
+    void workflow_open(JcWfKind k) override { opened = k; }
+    bool workflow_clear_tlo() override { ++clears; return true; }
+#endif
 };
 
 struct Rig {
@@ -74,6 +93,13 @@ struct Rig {
     JcJogSession jogs;
     bool live_mode = true;
     StubHost host;
+    JcSdBrowser sd;
+    JcJobTracker job;
+    JcToolReader tool_reader;
+    JcToolStore tool_store;
+    JcBleUart ble;
+    JcBleSaved ble_saved {};
+    JcTransportManager tm;
 #if JC_JOG_PREVIEW
     JcPreviewBridge bridge;   // the SIMULATED controller: the only place a jog can go
     JcJogStatus real;         // the latest REAL read-only status
@@ -94,7 +120,7 @@ struct Rig {
     bool tx_ok = true;
     uint32_t seq = 1000;
 
-    Rig() : jogs(&Rig::tx, this), sv { gfx, link, model, settings, profile, dispatcher, loader, jogs, live_mode, host
+    Rig() : jogs(&Rig::tx, this), sv { gfx, link, model, settings, profile, dispatcher, loader, jogs, live_mode, host, sd, job, tool_reader, tool_store, ble, ble_saved, tm
 #if JC_JOG_PREVIEW
                                        , bridge
 #endif
@@ -102,6 +128,7 @@ struct Rig {
                                        , cmd, wf
 #endif
                                      } {
+        host.ble = &ble;
 #if JC_AUTHORITY
         wfh.r = this;
         host.prepare_fn = &Rig::prepare_thunk;
@@ -138,6 +165,12 @@ struct Rig {
 #if JC_AUTHORITY
     static bool prepare_thunk(void* user, JcWfKind kind, const JcWfParams& p) {
         Rig* r = static_cast<Rig*>(user);
+        if (kind == JcWfKind::ToolReference || kind == JcWfKind::ToolMeasure || kind == JcWfKind::ToolChange) {
+            if (r->nc.feat != JcSimFeature::Plate) r->nc.plate_z = r->nc.m[2] - 15.0f - 20.0f;   // fixed once: the reference tool is 20 mm long
+            r->nc.feat = JcSimFeature::Plate;
+            r->nc.tool_len = p.has_ref ? 26.5f : 20.0f;
+            return r->wf.prepare(kind, p, r->wf_status(), g_stub_millis);
+        }
         r->nc.centre_feature_here(kind == JcWfKind::FindRotary ? JcSimFeature::Cylinder : (p.feature == JcFeatureKind::Outside ? JcSimFeature::Boss : JcSimFeature::Bore), 10.0f, 20.0f);
         return r->wf.prepare(kind, p, r->wf_status(), g_stub_millis);
     }
@@ -613,6 +646,396 @@ static void pure_checks() {
 // ---- scenarios --------------------------------------------------------------------------------------------
 
 static void detector_self_test();
+
+// ---- Instruction 010: SD files and jobs, tools, BLE ------------------------------------------------------------
+
+struct MockRadio : JcBleRadio {
+    JcBleUart* link = nullptr;
+    bool scan_start(uint32_t) override {
+        link->on_scan_result("AA:BB:CC:DD:EE:01", "HM-10", -58, true, g_stub_millis);
+        link->on_scan_result("AA:BB:CC:DD:EE:02", "JC-Bridge-with-a-very-long-name", -71, true, g_stub_millis);
+        link->on_scan_result("11:22:33:44:55:66", "Phone", -40, false, g_stub_millis);
+        link->on_scan_result("11:22:33:44:55:67", "", -80, false, g_stub_millis);
+        link->on_scan_result("11:22:33:44:55:68", "Headset", -85, false, g_stub_millis);
+        return true;
+    }
+    void scan_stop() override {}
+    bool connect(const char*) override { link->on_connected(true, g_stub_millis); return true; }
+    void disconnect() override {}
+    bool discover() override {
+        JcBleDiscovery d; memset(&d, 0, sizeof(d));
+        d.n = 1; strcpy(d.services[0].uuid, "ffe0"); d.services[0].nchars = 1;
+        strcpy(d.services[0].chars[0].uuid, "ffe1"); d.services[0].chars[0].props = kBleNotify | kBleWriteNoRsp;
+        link->on_discovery(d, g_stub_millis);
+        return true;
+    }
+    bool subscribe(const JcBleSelection&) override { link->on_subscribed(true, g_stub_millis); return true; }
+    bool write(const JcBleSelection&, const uint8_t*, size_t) override { return true; }
+    uint16_t mtu() const override { return 185; }
+};
+
+// Hitboxes: every rectangle must lie on the 800x480 screen, be at least 38 px in both directions, not overlap
+// another, and be the very rectangle the page drew a control in (a fill with exactly that rectangle).
+static void check_hitboxes(const Arduino_GFX& g, const char* name, const std::vector<ui::Rect>& boxes) {
+    bool inside = true, big = true, disjoint = true, drawn = true;
+    for (size_t i = 0; i < boxes.size(); ++i) {
+        const ui::Rect& a = boxes[i];
+        if (a.x < 0 || a.y < 0 || a.x + a.w > ui::kWidth || a.y + a.h > ui::kHeight) inside = false;
+        if (a.w < 38 || a.h < 38) big = false;
+        for (size_t j = i + 1; j < boxes.size(); ++j) {
+            const ui::Rect& b = boxes[j];
+            if (a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y) disjoint = false;
+        }
+        bool found = false;
+        for (const StubFill& f : g.fills) if (same_rect(f, a)) { found = true; break; }
+        if (!found) { drawn = false; printf("             no control drawn at x=%d y=%d w=%d h=%d\n", a.x, a.y, a.w, a.h); }
+    }
+    char buf[120];
+    snprintf(buf, sizeof(buf), "%s: hitboxes inside 800x480", name); check(inside, buf);
+    snprintf(buf, sizeof(buf), "%s: every hitbox is at least 38 px", name); check(big, buf);
+    snprintf(buf, sizeof(buf), "%s: hitboxes do not overlap", name); check(disjoint, buf);
+    snprintf(buf, sizeof(buf), "%s: hitboxes are the rectangles actually drawn (shared geometry)", name); check(drawn, buf);
+}
+
+static JcSimNc* g_scene = nullptr;
+static bool scene_query(void*, const char* line) {
+    if (g_scene == nullptr || !jc_query_allowed(line)) return false;
+    const std::string l = std::string(line) + "\n";
+    return g_scene->send(l.data(), l.size());
+}
+static void scene_run(Rig& r, JcSimNc& nc, uint32_t ms) {
+    for (uint32_t done = 0; done < ms; done += 10) {
+        r.advance(10);
+        nc.update(g_stub_millis);
+        char line[200];
+        while (nc.pop_line(line, sizeof(line))) { r.sd.on_line(line, g_stub_millis); r.tool_reader.on_line(line); }
+        r.sd.service(g_stub_millis);
+        r.tool_reader.service(g_stub_millis);
+    }
+}
+
+static void pages_010() {
+    printf("[010: files and jobs]\n");
+    {
+        Rig r;
+        r.status("Idle", 50, 50, -5, 0);
+        r.advance(500);
+        JcSimNc nc;
+        g_scene = &nc;
+        r.sd.set_query(&scene_query, nullptr);
+        r.tool_reader.set_query(&scene_query, nullptr);
+        JcFilesScreen fs(r.sv);
+        fs.enter();
+        check_frame(r.gfx, "files_idle", false);
+        check_hitboxes(r.gfx, "files page", { ui::Rect { 560, 68, 224, 40 }, ui::Rect { 16, 110, 86, 38 }, ui::Rect { 724, 152, 60, 78 },
+                                              ui::Rect { 724, 234, 60, 78 }, ui::Rect { 16, 412, 186, 60 }, ui::Rect { 210, 412, 186, 60 },
+                                              ui::Rect { 404, 412, 186, 60 }, ui::Rect { 598, 412, 186, 60 } });
+        // listing
+        nc.add_file("/jobs/first_part_program.nc", 18432);
+        nc.add_file("/jobs/a_really_long_part_program_name_for_the_rotary_axis_fixture_number_12_final_v3.nc", 5u * 1024u * 1024u);
+        nc.add_file("/jobs/odd#name.nc", 999);
+        nc.add_file("/jobs/deep/sub/folder/x.nc", 7);
+        nc.add_file("/readme.txt", 120);
+        for (int i = 0; i < 9; ++i) { char p[48]; snprintf(p, sizeof(p), "/jobs/part_%02d.gcode", i); nc.add_file(p, 1000u * static_cast<uint32_t>(i + 1)); }
+        touch_center(fs, ui::Rect { 560, 68, 224, 40 });                 // REFRESH SD LIST
+        check(r.host.sd_refreshes == 1, "REFRESH asks the application for the read-only listing");
+        r.sd.refresh(g_stub_millis);                                     // the application would start it
+        scene_run(r, nc, 120);
+        fs.tick(g_stub_millis);
+        check_frame(r.gfx, "files_reading", false);
+        scene_run(r, nc, 3000);
+        fs.tick(g_stub_millis + 400);
+        fs.enter();
+        check(r.sd.state() == JcSdState::Ready, "the listing is complete");
+        check_frame(r.gfx, "files_root", false);
+        touch_center(fs, ui::Rect { 16, 152, 700, 38 });                  // the folder row (directories first)
+        check(strcmp(r.sd.cwd(), "/jobs") == 0, "tapping a folder enters it");
+        check_frame(r.gfx, "files_folder", false);
+        touch_center(fs, ui::Rect { 16, 192, 700, 38 });                  // second entry
+        touch_center(fs, ui::Rect { 16, 232, 700, 38 });
+        check_frame(r.gfx, "files_selected", false);
+        touch_center(fs, ui::Rect { 724, 234, 60, 78 });                  // page down
+        check_frame(r.gfx, "files_page_down", false);
+        touch_center(fs, ui::Rect { 724, 234, 60, 78 });
+        touch_center(fs, ui::Rect { 724, 152, 60, 78 });                  // page up
+        check_frame(r.gfx, "files_page_up", false);
+        touch_center(fs, ui::Rect { 16, 110, 86, 38 });                   // UP
+        check(strcmp(r.sd.cwd(), "/") == 0, "UP leaves the folder");
+        // a file that cannot be started from the pendant (space in the name)
+        r.sd.enter(0);
+        fs.enter();
+        for (uint16_t i = 0; i < r.sd.visible_count(); ++i) if (strstr(r.sd.visible(i)->path, "odd#name") != nullptr) r.sd.select(i);
+        fs.enter();
+        check_frame(r.gfx, "files_not_runnable", false);
+        touch_center(fs, ui::Rect { 16, 412, 186, 60 });                  // START JOB -> explains
+        check_frame(r.gfx, "files_start_refused", true);
+        touch_center(fs, ui::kDialogOk);
+        // a runnable file
+        for (uint16_t i = 0; i < r.sd.visible_count(); ++i) if (strstr(r.sd.visible(i)->path, "first_part") != nullptr) r.sd.select(i);
+        fs.enter();
+        check_frame(r.gfx, "files_ready_to_start", false);
+#if JC_AUTHORITY
+        touch_center(fs, ui::Rect { 16, 412, 186, 60 });                  // START JOB -> one confirmation
+        check_frame(r.gfx, "files_start_confirm", true);
+        check(r.wire.find("$SD/Run") == std::string::npos, "nothing is sent before the confirmation");
+        touch_center(fs, ui::kDialogConfirm);
+        check(r.wire.find("$SD/Run=/jobs/first_part_program.nc\n") != std::string::npos, "the confirmed START sends exactly one $SD/Run");
+        check(!r.dispatcher.armed(), "the confirmation arms ONE submission and is dropped again");
+        r.cmd.on_line("ok"); r.cmd.tick();   // the controller answered
+#endif
+        // job states, all from the controller's own report
+        const struct { const char* state; bool sd; float pct; JcJobPhase expect; const char* name; } steps[] = {
+            { "Run", true, 12.5f, JcJobPhase::Running, "files_job_running" },
+            { "Hold:0", true, 12.5f, JcJobPhase::Paused, "files_job_paused" },
+            { "Run", true, 99.8f, JcJobPhase::Running, "files_job_end" },
+            { "Idle", false, 0, JcJobPhase::Complete, "files_job_complete" },
+        };
+        for (const auto& st : steps) {
+            r.job.on_status(true, st.state, st.sd, st.pct, "/jobs/first_part_program.nc");
+            r.status(st.state, 50, 50, -5, 0);
+            fs.enter();
+            check(r.job.phase() == st.expect, st.name);
+            check_frame(r.gfx, st.name, false);
+        }
+        r.job.on_status(false, nullptr, false, 0, nullptr);
+        r.job.on_status(true, "Run", true, 40.0f, "/jobs/x.nc");
+        r.job.on_status(false, nullptr, false, 0, nullptr);
+        fs.enter();
+        check(r.job.phase() == JcJobPhase::Unknown, "a lost connection leaves the job state unknown");
+        check_frame(r.gfx, "files_job_unknown", false);
+        r.host.simulated_job = true;
+        r.job.on_status(true, "Run", true, 30.0f, "/jobs/x.nc");
+        fs.enter();
+        check_frame(r.gfx, "files_job_simulated", false);
+        r.host.simulated_job = false;
+        r.job.on_status(true, "Alarm", true, 40.0f, "/jobs/x.nc");
+        fs.enter();
+        check_frame(r.gfx, "files_job_alarm", false);
+        // feed hold is immediate, resume / reset need a confirmation
+        r.job.on_status(true, "Hold:0", true, 40.0f, "/jobs/x.nc");
+        r.status("Hold:0", 50, 50, -5, 0);
+        fs.enter();
+#if JC_AUTHORITY
+        const size_t wire0 = r.wire.size();
+        touch_center(fs, ui::Rect { 210, 412, 186, 60 });                 // FEED HOLD
+        check(r.wire.size() > wire0 && r.wire[r.wire.size() - 1] == '!', "FEED HOLD sends '!' at once, without a dialog");
+        touch_center(fs, ui::Rect { 404, 412, 186, 60 });                 // CYCLE START
+        check_frame(r.gfx, "files_resume_confirm", true);
+        touch_center(fs, ui::kDialogCancel);
+        touch_center(fs, ui::Rect { 598, 412, 186, 60 });                 // RESET
+        check_frame(r.gfx, "files_reset_confirm", true);
+        touch_center(fs, ui::kDialogCancel);
+        check(r.wire.find("~") == std::string::npos && r.wire.find("\x18") == std::string::npos, "cancelling the dialogs sent neither '~' nor reset");
+#endif
+        // card problems
+        Rig m;
+        m.status("Idle", 50, 50, -5, 0);
+        m.advance(500);
+        JcSimNc nc2;
+        nc2.sd_present = false;
+        g_scene = &nc2;
+        m.sd.set_query(&scene_query, nullptr);
+        JcFilesScreen ms(m.sv);
+        ms.enter();
+        m.sd.refresh(g_stub_millis);
+        scene_run(m, nc2, 2000);
+        ms.enter();
+        check(m.sd.state() == JcSdState::NoCard, "a missing card is reported, not invented");
+        check_frame(m.gfx, "files_no_card", false);
+        nc2.sd_present = true;
+        m.sd.refresh(g_stub_millis);
+        scene_run(m, nc2, 2000);
+        ms.enter();
+        check_frame(m.gfx, "files_empty", false);
+        nc2.sd_list_error = 62;
+        m.sd.refresh(g_stub_millis);
+        scene_run(m, nc2, 2000);
+        ms.enter();
+        check_frame(m.gfx, "files_error", false);
+        Rig big;
+        big.status("Idle", 50, 50, -5, 0);
+        big.advance(500);
+        JcSimNc nc3;
+        for (int i = 0; i < 210; ++i) { char p[48]; snprintf(p, sizeof(p), "/f%03d.nc", i); nc3.add_file(p, static_cast<uint32_t>(i) * 100u); }
+        g_scene = &nc3;
+        big.sd.set_query(&scene_query, nullptr);
+        JcFilesScreen bs(big.sv);
+        bs.enter();
+        big.sd.refresh(g_stub_millis);
+        scene_run(big, nc3, 20000);
+        bs.enter();
+        check(big.sd.overflow(), "a very large card is bounded and flagged");
+        check_frame(big.gfx, "files_large", false);
+        g_scene = nullptr;
+    }
+
+    printf("[010: tools]\n");
+    {
+        Rig t;
+        t.status("Idle", 50, 50, -5, 0);
+        t.advance(500);
+        JcSimNc nc;
+        nc.tool = 3; nc.tlo = 2.5f; nc.tlo_active = true;
+        g_scene = &nc;
+        t.tool_reader.set_query(&scene_query, nullptr);
+        JcToolsScreen ts(t.sv);
+        ts.enter();
+        check_frame(t.gfx, "tools_unread", false);
+        std::vector<ui::Rect> boxes;
+        for (int i = 0; i < 6; ++i) boxes.push_back(ui::Rect { 416, static_cast<int16_t>(72 + i * 66), 368, 58 });
+        check_hitboxes(t.gfx, "tools page", boxes);
+        touch_center(ts, boxes[1]);                                       // before the state is read
+        check_frame(t.gfx, "tools_read_first", true);
+        touch_center(ts, ui::kDialogOk);
+        touch_center(ts, boxes[0]);
+        check(t.host.tool_reads == 1, "READ TOOL STATE asks for the two read-only queries");
+        t.tool_reader.start(g_stub_millis);
+        scene_run(t, nc, 600);
+        ts.tick(g_stub_millis + 400);
+        ts.enter();
+        check(t.tool_reader.state() == JcToolReadState::Done && t.tool_reader.info().tool == 3, "the T word and [TLO:] come from the controller");
+        check_frame(t.gfx, "tools_read", false);
+        touch_center(ts, boxes[2]);                                       // change + measure without a reference
+        check_frame(t.gfx, "tools_need_reference", true);
+        touch_center(ts, ui::kDialogOk);
+        t.tool_store.set_ref(-20.0f, 5.0f, -1);
+        ts.enter();
+        check_frame(t.gfx, "tools_with_reference", false);
+#if JC_AUTHORITY
+        touch_center(ts, boxes[2]);
+        check(t.host.opened == JcWfKind::ToolChange, "CHANGE TOOL opens the guided routine, nothing moves");
+        touch_center(ts, boxes[4]);                                       // CLEAR TOOL OFFSET
+        check_frame(t.gfx, "tools_clear_confirm", true);
+        check(t.wire.empty(), "nothing is sent before the confirmation");
+        touch_center(ts, ui::kDialogConfirm);
+        check(t.host.clears == 1, "the confirmed clear is handed to the application");
+#endif
+        t.tool_store.invalidate("connection lost");
+        ts.enter();
+        check_frame(t.gfx, "tools_reference_discarded", false);
+        g_scene = nullptr;
+    }
+#if JC_AUTHORITY
+    printf("[010: tool routines]\n");
+    {
+        Rig w;
+        w.status("Idle", 50, 50, -5, 0);
+        w.advance(500);
+        w.nc.m[0] = 50; w.nc.m[1] = 50; w.nc.m[2] = -5;
+        JcWorkflowScreen wfs(w.sv);
+        wfs.preselect(JcWfKind::ToolReference, w.tool_store);
+        wfs.enter();
+        check_frame(w.gfx, "toolref_setup", false);
+        touch_center(wfs, ui::Rect { 198, 408, 586, 52 });                // PREPARE
+        w.wf_run(600);
+        check(w.wf.state() == JcWfState::Planned, "the reference routine is planned");
+        wfs.tick(g_stub_millis);
+        check_frame(w.gfx, "toolref_preview", false);
+        touch_center(wfs, ui::Rect { 258, 408, 250, 52 });                // START
+        check_frame(w.gfx, "toolref_start_confirm", true);
+        touch_center(wfs, ui::kDialogConfirm);
+        w.wf_run(1500);
+        wfs.tick(g_stub_millis);
+        check_frame(w.gfx, "toolref_wait_touch", false);
+        check(w.wire.find("G38.2") == std::string::npos, "no probing move before the contact has been verified by hand");
+        strcpy(w.nc.pins, "P"); w.wf_run(500);
+        wfs.tick(g_stub_millis + 300);
+        w.nc.pins[0] = '\0'; w.wf_run(500);
+        for (int i = 0; i < 40 && w.wf.state() == JcWfState::Running; ++i) w.wf_run(500);
+        wfs.tick(g_stub_millis + 300);
+        check(w.wf.state() == JcWfState::Done && w.wf.result().tool_contact_ok, "the reference contact was measured on the simulated plate");
+        check_frame(w.gfx, "toolref_done", false);
+        w.tool_store.set_ref(w.wf.result().tool_contact_mz, 5.0f, -1);
+
+        Rig m;
+        m.status("Idle", 50, 50, -5, 0);
+        m.advance(500);
+        m.nc.m[0] = 50; m.nc.m[1] = 50; m.nc.m[2] = -5;
+        m.tool_store.set_ref(-20.0f, 5.0f, -1);
+        JcWorkflowScreen ms(m.sv);
+        ms.preselect(JcWfKind::ToolMeasure, m.tool_store);
+        ms.enter();
+        check_frame(m.gfx, "toolmeasure_setup", false);
+        touch_center(ms, ui::Rect { 198, 408, 586, 52 });
+        m.wf_run(600);
+        touch_center(ms, ui::Rect { 258, 408, 250, 52 });
+        touch_center(ms, ui::kDialogConfirm);
+        m.wf_run(1500);
+        strcpy(m.nc.pins, "P"); m.wf_run(500); m.nc.pins[0] = '\0'; m.wf_run(500);
+        for (int i = 0; i < 40 && m.wf.state() == JcWfState::Running; ++i) m.wf_run(500);
+        ms.tick(g_stub_millis + 300);
+        check(m.wf.state() == JcWfState::Done && m.wf.result().tlo_ok, "the tool length offset is proposed");
+        check(m.wire.find("G43") == std::string::npos, "the offset is only proposed: no G43.1 yet");
+        check_frame(m.gfx, "toolmeasure_done", false);
+        check_hitboxes(m.gfx, "tool result page", { ui::Rect { 16, 340, 380, 52 }, ui::Rect { 404, 340, 380, 52 }, ui::Rect { 520, 408, 264, 52 } });
+        touch_center(ms, ui::Rect { 16, 340, 380, 52 });                  // APPLY TOOL OFFSET
+        check_frame(m.gfx, "toolmeasure_apply_confirm", true);
+        check(m.wire.find("G43") == std::string::npos, "nothing is sent before the confirmation");
+        touch_center(ms, ui::kDialogConfirm);
+        for (int i = 0; i < 20 && m.wf.state() == JcWfState::Running; ++i) m.wf_run(300);
+        ms.tick(g_stub_millis + 300);
+        check(m.wf.result().tlo_readback_ok && m.wire.find("G43.1 Z6.500") != std::string::npos, "G43.1 Z6.500 was applied and read back");
+        check(m.wire.find("G10") == std::string::npos && m.wire.find("G92") == std::string::npos, "no work offset was touched");
+        check_frame(m.gfx, "toolmeasure_applied", false);
+
+        Rig c;
+        c.status("Idle", 50, 50, -5, 0);
+        c.advance(500);
+        c.nc.m[0] = 50; c.nc.m[1] = 50; c.nc.m[2] = -5;
+        c.tool_store.set_ref(-20.0f, 5.0f, -1);
+        JcWorkflowScreen cs(c.sv);
+        cs.preselect(JcWfKind::ToolChange, c.tool_store);
+        cs.enter();
+        check_frame(c.gfx, "toolchange_setup", false);
+    }
+#endif
+
+    printf("[010: bluetooth LE page]\n");
+    {
+        Rig b;
+        b.status("Idle", 50, 50, -5, 0);
+        b.advance(500);
+        MockRadio radio;
+        radio.link = &b.ble;
+        b.ble.set_radio(&radio);
+        JcBleScreen bs(b.sv);
+        bs.enter();
+        check_frame(b.gfx, "ble_not_selected", false);
+        check_hitboxes(b.gfx, "ble page", { ui::Rect { 16, 108, 188, 48 }, ui::Rect { 212, 108, 188, 48 }, ui::Rect { 408, 108, 188, 48 },
+                                            ui::Rect { 628, 164, 156, 58 }, ui::Rect { 628, 228, 156, 58 } });
+        touch_center(bs, ui::Rect { 16, 108, 188, 48 });
+        check_frame(b.gfx, "ble_cannot_scan", true);
+        touch_center(bs, ui::kDialogOk);
+        b.settings.transport = 2;
+        b.ble.begin(b.ble_saved, false, g_stub_millis);
+        bs.enter();
+        touch_center(bs, ui::Rect { 16, 108, 188, 48 });                  // SCAN
+        check(b.ble.state() == JcBleState::Scanning && b.ble.devices().count() == 5, "scanning lists the advertising devices");
+        bs.tick(g_stub_millis + 400);
+        check_frame(b.gfx, "ble_scan_list", false);
+        touch_center(bs, ui::Rect { 628, 228, 156, 58 });                 // page down
+        check_frame(b.gfx, "ble_scan_list_page2", false);
+        touch_center(bs, ui::Rect { 628, 164, 156, 58 });
+        touch_center(bs, ui::Rect { 16, 164, 604, 38 });                  // the strongest serial device
+        for (int i = 0; i < 100; ++i) { g_stub_millis += 10; b.ble.service(g_stub_millis); }
+        check(b.ble.ready() && b.ble.selection().profile == JcBleProfile::Hm10, "connecting validates the GATT table and subscribes");
+        JcBleSaved sv;
+        if (b.ble.take_save_request(sv)) b.ble_saved = sv;
+        bs.enter();
+        bs.tick(g_stub_millis + 400);
+        check_frame(b.gfx, "ble_connected", false);
+        touch_center(bs, ui::Rect { 408, 108, 188, 48 });                 // FORGET SAVED
+        check(b.host.ble_forgets == 1, "FORGET SAVED asks the application");
+        b.ble_saved = JcBleSaved {};
+        bs.enter();
+        check_frame(b.gfx, "ble_forgotten", false);
+        touch_center(bs, ui::Rect { 212, 108, 188, 48 });                 // DISCONNECT
+        check(b.host.ble_disconnects == 1 && b.ble.state() == JcBleState::Idle, "DISCONNECT ends the session and does not reconnect by itself");
+        bs.enter();
+        check_frame(b.gfx, "ble_disconnected", false);
+    }
+}
+
 static void scenarios() {
     Rig r;
     JcJogScreen jog(r.sv);
@@ -1025,6 +1448,7 @@ int main(int argc, char** argv) {
     pure_checks();
     detector_self_test();
     scenarios();
+    pages_010();
     printf("\n%d frames checked, %d problem(s)\n", g_frames, g_problems);
     return g_problems == 0 ? 0 : 1;
 }

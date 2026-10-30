@@ -133,13 +133,13 @@ inline float tidy(float v) { return fabsf(v) < 0.0005f ? 0.0f : v; }
 // Allow only plain path characters; rejects anything that could smuggle a
 // second command, a parameter assignment, or a traversal.
 inline bool path_ok(const char* path) {
-    if (path == nullptr || path[0] != '/' || strlen(path) > 80) {
+    if (path == nullptr || path[0] != '/' || strlen(path) > 80) {   // same rule as jc_command_line_allowed(): one policy
         return false;
     }
     for (const char* p = path; *p; ++p) {
         const char c = *p;
         const bool good = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                          || c == '/' || c == '.' || c == '_' || c == '-' || c == ' ';
+                          || c == '/' || c == '.' || c == '_' || c == '-';
         if (!good) {
             return false;
         }
@@ -364,5 +364,14 @@ inline JcCommand jc_run_macro_file(const char* path) {
 }
 
 inline JcCommand jc_spindle_stop() { return detail::make(JcCommandClass::Spindle, "M5"); }
+
+// Tool length offset (Instruction 010): dynamic G43.1 Z<offset> and its cancel G49. This is NOT a work offset:
+// G10 / G54..G59 are not touched, and no M6 / T word is ever generated (no tool changer is assumed).
+inline JcCommand jc_set_tlo(float z) {
+    using namespace detail;
+    if (!isfinite(z) || fabsf(z) > 1000.0f) return fail(JcCommandClass::WorkOffset, JcCmdError::BadValue);
+    return make(JcCommandClass::WorkOffset, "G43.1 Z%.3f", tidy(z));
+}
+inline JcCommand jc_clear_tlo() { return detail::make(JcCommandClass::WorkOffset, "G49"); }
 
 }  // namespace jc8048w550

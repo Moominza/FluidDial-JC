@@ -21,7 +21,7 @@
 
 namespace jc8048w550 {
 
-enum class JcSimFeature : uint8_t { None, Bore, Boss, Cylinder };
+enum class JcSimFeature : uint8_t { None, Bore, Boss, Cylinder, Plate };
 
 class JcSimNc {
 public:
@@ -47,7 +47,42 @@ public:
     uint32_t now = 1000;
     int   probes = 0, cmds = 0;
 
-    float work(int a) const { return m[a] - off[wcs][a] - off[8][a]; }
+    // ---- SD card and job (Instruction 010) ----
+    struct SimFile { char path[96]; uint32_t size; };
+    static constexpr int kMaxFiles = 220;
+    bool  sd_present = true;
+    bool  sd_status_supported = true;      // false: "$SD/Status" is answered error:3
+    bool  list_dir_lines = false;          // also emit explicit [DIR:..] lines
+    bool  list_full_paths = false;         // tolerance test: the old full-path entries instead of FluidNC's relative, indented ones
+    bool  list_space_after_colon = false;  // with full paths: "[FILE: /x|SIZE:n]" instead of "[FILE:/x|SIZE:n]"
+    int   sd_list_error = 0;               // that error number answers $SD/List
+    int   run_error = 0;                   // that error number answers $SD/Run
+    bool  list_never_ends = false;         // no "ok" after the listing
+    SimFile files[kMaxFiles];
+    int   nfiles = 0;
+    bool  job = false, job_hold = false;
+    float job_pct = 0.0f;
+    char  job_name[96] = "";
+    uint32_t job_total_ms = 10000;
+    int   job_alarm_at_pct = 0;            // >0: the job ends in ALARM:1 at that percentage
+    int   resets = 0;
+    void add_file(const char* path, uint32_t size) {
+        if (nfiles >= kMaxFiles) return;
+        snprintf(files[nfiles].path, sizeof(files[nfiles].path), "%s", path);
+        files[nfiles].size = size;
+        ++nfiles;
+    }
+
+    // ---- tool (Instruction 010) ----
+    int   tool = 0;
+    float tlo = 0.0f;
+    bool  tlo_active = false;
+    bool  ignore_tlo = false;              // G43.1 / G49 are acknowledged but not applied
+    bool  m6_supported = false;            // false: T / M6 answered error:20 (no tool changer / macro configured)
+    float plate_z = -40.0f;                // machine Z of the touch plate surface (Plate feature)
+    float tool_len = 20.0f;                // how far the tool tip extends below the spindle datum (longer => contact higher)
+
+    float work(int a) const { return m[a] - off[wcs][a] - off[8][a] - (a == 2 && tlo_active ? tlo : 0.0f); }
 
     // Centre the feature on the current position (the preview has no fixed geometry).
     void centre_feature_here(JcSimFeature f, float half_width, float cyl_dia) {
@@ -62,7 +97,16 @@ public:
     bool send(const char* bytes, size_t n) {
         if (n == 0) return false;
         if (n == 1) {
-            if (bytes[0] == '!') { moving_ = false; set_state("Hold"); npend_ = 0; }
+            if (bytes[0] == '!') {
+                moving_ = false; npend_ = 0;
+                if (job) { job_hold = true; set_state("Hold:0"); } else set_state("Hold");
+            } else if (bytes[0] == '~') {
+                if (job && job_hold) { job_hold = false; set_state("Run"); }
+            } else if (static_cast<uint8_t>(bytes[0]) == 0x18) {
+                ++resets;
+                job = false; job_hold = false; moving_ = false; npend_ = 0;
+                set_state("Idle");
+            }
             return true;
         }
         char line[kLineLen];
@@ -74,12 +118,53 @@ public:
         return true;
     }
 
+    // A '<...>' status report as FluidNC sends it (work position + FS, SD progress while a job runs).
+    void status_frame(char* out, size_t size) const {
+        char sd[128] = "";
+        if (job) snprintf(sd, sizeof(sd), "|SD:%.2f,%s", static_cast<double>(job_pct), job_name);
+        char pn[16] = "";
+        if (pins[0] != '\0') snprintf(pn, sizeof(pn), "|Pn:%s", pins);
+        snprintf(out, size, "<%s|WPos:%.3f,%.3f,%.3f,0.000|FS:0,%d%s%s>", state, static_cast<double>(work(0)),
+                 static_cast<double>(work(1)), static_cast<double>(work(2)), static_cast<int>(spindle), pn, sd);
+    }
+
     void update(uint32_t t) {
+        if (job && !job_hold && t > now) {
+            job_pct += 100.0f * static_cast<float>(t - now) / static_cast<float>(job_total_ms);
+            if (job_alarm_at_pct > 0 && job_pct >= static_cast<float>(job_alarm_at_pct)) {
+                job = false; job_hold = false; set_state("Alarm"); push_line("ALARM:1");
+            } else if (job_pct >= 100.0f) {
+                job_pct = 100.0f; job = false; set_state("Idle");
+            }
+        }
         now = t;
         if (moving_) {
             const float frac = t >= t1_ ? 1.0f : static_cast<float>(t - t0_) / static_cast<float>(t1_ - t0_);
             for (int a = 0; a < 3; ++a) m[a] = from_[a] + (to_[a] - from_[a]) * frac;
             if (t >= t1_) { moving_ = false; if (strcmp(state, "Run") == 0) set_state("Idle"); }
+        }
+        while (listing_ && t >= list_at_ && nlines_ < kLines - 2) {
+            char b[kLineLen + 24];
+            bool have = false;
+            if (list_full_paths) {
+                if (list_i_ < nfiles) {
+                    snprintf(b, sizeof(b), "[FILE:%s%s|SIZE:%u]", list_space_after_colon ? " " : "", files[list_i_].path, static_cast<unsigned>(files[list_i_].size));
+                    have = true;
+                }
+            } else {
+                have = tree_line(list_i_, b, sizeof(b));
+            }
+            if (have) {
+                push_line(b);
+                ++list_i_;
+            } else {
+                if (list_dir_lines) push_line("[DIR:/sim_dir]");
+                if (!list_never_ends) {
+                    if (!list_full_paths) push_line("[/sd Free:14.57 GB Used:25.72 MB Total:14.59 GB]");   // FluidNC's card summary
+                    push_line("ok");
+                }
+                listing_ = false;
+            }
         }
         for (uint8_t i = 0; i < npend_;) {
             if (static_cast<int32_t>(t - pend_[i].at) >= 0) {
@@ -106,6 +191,41 @@ public:
     void clear_pending() { npend_ = 0; nlines_ = 0; head_ = 0; moving_ = false; }
 
 private:
+    // Line `target` of FluidNC's listing: a folder as "[DIR:<depth spaces>name]", then its entries; a file as
+    // "[FILE:<depth + 1 spaces>name|SIZE:n]". Walks the stored full paths; false when `target` is past the end.
+    bool tree_line(int target, char* out, size_t size) const {
+        int counter = 0;
+        return walk("", 0, counter, target, out, size);
+    }
+    bool walk(const char* prefix, int depth, int& counter, int target, char* out, size_t size) const {
+        const size_t pl = strlen(prefix);
+        for (int i = 0; i < nfiles; ++i) {
+            const char* path = files[i].path;
+            if (strncmp(path, prefix, pl) != 0 || path[pl] != '/') continue;
+            const char* rel = path + pl + 1;
+            const char* slash = strchr(rel, '/');
+            if (slash == nullptr) {
+                if (counter++ == target) {
+                    snprintf(out, size, "[FILE:%*s%s|SIZE:%u]", depth + 1, "", rel, static_cast<unsigned>(files[i].size));
+                    return true;
+                }
+            } else {
+                const size_t nl = static_cast<size_t>(slash - rel);
+                bool seen = false;
+                for (int j = 0; j < i && !seen; ++j) seen = strncmp(files[j].path, path, pl + 1 + nl + 1) == 0;
+                if (seen) continue;
+                char sub[kLineLen];
+                snprintf(sub, sizeof(sub), "%.*s", static_cast<int>(pl + 1 + nl), path);
+                if (counter++ == target) {
+                    snprintf(out, size, "[DIR:%*s%.*s]", depth, "", static_cast<int>(nl), rel);
+                    return true;
+                }
+                if (walk(sub, depth + 1, counter, target, out, size)) return true;
+            }
+        }
+        return false;
+    }
+
     struct Pending { uint32_t at; char text[kLineLen]; bool alarm; };
 
     void push_line(const char* s) {
@@ -148,6 +268,9 @@ private:
                 if (axis == 1) return dir > 0 ? reach(yhi - tip, true) : reach(ylo + tip, false);
                 if (axis == 2 && dir < 0) return reach(zc - 4.0f + tip, false);   // a floor, for a Z probe
                 return false;
+            case JcSimFeature::Plate:
+                if (axis == 2) return dir < 0 ? reach(plate_z + tool_len, false) : reach(plate_z + tool_len, true);
+                return false;
             case JcSimFeature::Boss:
                 if (axis == 0) return dir > 0 ? reach(xlo - tip, true) : reach(xhi + tip, false);
                 if (axis == 1) return dir > 0 ? reach(ylo - tip, true) : reach(yhi + tip, false);
@@ -169,7 +292,7 @@ private:
         if (error_on_cmd == cmds) { later(30, "error:9"); return; }
         if (strcmp(line, "$G") == 0) {
             char g[kLineLen];
-            snprintf(g, sizeof(g), "[GC:G0 G%d G17 G21 G90 G94 M5 M9 T0 F0 S0]", 54 + wcs);
+            snprintf(g, sizeof(g), "[GC:G0 G%d G17 G21 G90 G94 %sM5 M9 T%d F0 S0]", 54 + wcs, tlo_active ? "G43.1 " : "", tool);
             later(20, g);
             later(20, "ok");
             return;
@@ -181,8 +304,48 @@ private:
                 snprintf(b, sizeof(b), "[%s:%.3f,%.3f,%.3f,0.000]", tags[i], static_cast<double>(off[i][0]),
                          static_cast<double>(off[i][1]), static_cast<double>(off[i][2]));
                 later(20, b);
+                if (i == 5) {   // FluidNC v4 also prints the three extra work coordinate systems
+                    later(20, "[G59.1:0.000,0.000,0.000,0.000]");
+                    later(20, "[G59.2:0.000,0.000,0.000,0.000]");
+                    later(20, "[G59.3:0.000,0.000,0.000,0.000]");
+                }
             }
-            later(20, "[TLO:0.000]");
+            char t[kLineLen];
+            snprintf(t, sizeof(t), "[TLO:0.000,0.000,%.3f,0.000]", static_cast<double>(tlo));   // one value per axis
+            later(20, t);
+            later(20, "ok");
+            return;
+        }
+        if (strcmp(line, "$SD/Status") == 0) {
+            if (!sd_status_supported) { later(20, "error:3"); return; }
+            later(20, sd_present ? "SD card detected" : "No SD card detected");
+            later(20, "ok");
+            return;
+        }
+        if (strcmp(line, "$SD/List") == 0) {
+            if (!sd_present) { later(20, "error:60"); return; }
+            if (sd_list_error != 0) { char e[24]; snprintf(e, sizeof(e), "error:%d", sd_list_error); later(20, e); return; }
+            listing_ = true; list_i_ = 0; list_at_ = now + 20;      // streamed by update(): a long list never overflows the buffers
+            return;
+        }
+        if (strncmp(line, "$SD/Run=", 8) == 0) {
+            if (!sd_present) { later(20, "error:60"); return; }
+            if (job) { later(20, "error:67"); return; }
+            if (run_error != 0) { char e[24]; snprintf(e, sizeof(e), "error:%d", run_error); later(20, e); return; }
+            bool found = false;
+            for (int i = 0; i < nfiles; ++i) if (strcmp(files[i].path, line + 8) == 0) found = true;
+            if (!found) { later(20, "error:65"); return; }
+            job = true; job_hold = false; job_pct = 0.0f;
+            snprintf(job_name, sizeof(job_name), "%s", line + 8);
+            set_state("Run");
+            later(20, "ok");
+            return;
+        }
+        if (strcmp(line, "G49") == 0) { if (!ignore_tlo) { tlo = 0.0f; tlo_active = false; } later(20, "ok"); return; }
+        if (strncmp(line, "G43.1 Z", 7) == 0) { if (!ignore_tlo) { tlo = strtof(line + 7, nullptr); tlo_active = true; } later(20, "ok"); return; }
+        if (line[0] == 'T' || strncmp(line, "M6", 2) == 0) {
+            if (!m6_supported) { later(20, "error:20"); return; }
+            if (line[0] == 'T') tool = atoi(line + 1);
             later(20, "ok");
             return;
         }
@@ -221,7 +384,7 @@ private:
                 axis = a;
                 val = v;
                 if (rel) tgt[a] = m[a] + v;
-                else if (absmove) tgt[a] = v + off[wcs][a] + off[8][a];
+                else if (absmove) tgt[a] = v + off[wcs][a] + off[8][a] + (a == 2 && tlo_active ? tlo : 0.0f);
             }
         }
         if (probe) {
@@ -247,6 +410,9 @@ private:
     float    from_[3] = {}, to_[3] = {};
     uint32_t t0_ = 0, t1_ = 0;
     bool     moving_ = false;
+    bool     listing_ = false;
+    int      list_i_ = 0;
+    uint32_t list_at_ = 0;
     Pending  pend_[kPending];
     uint8_t  npend_ = 0;
     char     lines_[kLines][kLineLen];

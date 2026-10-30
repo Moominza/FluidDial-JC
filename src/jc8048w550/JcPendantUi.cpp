@@ -92,15 +92,26 @@ bool PendantUi::use_uart() const {
     return _app.settings().transport == 1 && _uart.running();
 }
 
+bool PendantUi::use_ble() const {
+    return _app.settings().transport == 2;
+}
+
+bool PendantUi::use_serial() const {
+    return use_uart() || use_ble();
+}
+
 const JcLiveMachineStatus& PendantUi::live_status() const {
+    if (use_ble()) return _app.ble().status();
     return use_uart() ? _uart.status() : _fluidnc.status();
 }
 
 bool PendantUi::live_fresh() const {
+    if (use_ble()) return _app.ble().status_is_fresh(millis());
     return use_uart() ? _uart.status_is_fresh() : _fluidnc.status_is_fresh();
 }
 
 JcFluidState PendantUi::live_state() const {
+    if (use_ble()) return _app.ble().link_state(millis());
     return use_uart() ? _uart.state() : _fluidnc.state();
 }
 
@@ -618,7 +629,7 @@ void PendantUi::draw_header(const char* title) {
     const bool connected = link_state == JcFluidState::Connected;
     // Wi-Fi: the six honest states (WIFI CONNECTING / FLUIDNC CONNECTING / CONNECTED / RECONNECTING /
     // DISCONNECTED / STALE). CONNECTED only ever means valid, fresh status. The wired UART keeps its own text.
-    const char* link_label = use_uart()
+    const char* link_label = use_serial()
         ? (connected ? "FLUIDNC LINK"
            : (_live_mode && (link_state == JcFluidState::Stale || link_state == JcFluidState::Lost
                              || link_state == JcFluidState::InvalidData) ? "DISCONNECTED" : "CNC OFFLINE"))
@@ -840,7 +851,7 @@ void PendantUi::draw_live_info(bool force) {
             default:
                 snprintf(value, sizeof(value), "%s%s",
                          transport_name(static_cast<TransportKind>(_app.settings().transport)),
-                         use_uart() ? " (UART)" : "");
+                         use_uart() ? " (UART)" : (use_ble() ? " (BLE)" : ""));
                 break;
         }
         draw_text_top(_display, x, y, labels[i], FontId::Body16, kMuted, kPanel);
@@ -857,7 +868,10 @@ void PendantUi::draw_diagnostics(bool force) {
     const JcLiveMachineStatus& status = live_status();
     const bool fresh = live_fresh();
     char line[120];
-    if (use_uart()) {
+    if (use_ble()) {
+        snprintf(line, sizeof(line), "BLE UART %s   Frames: %lu   Errors: %lu", jc_ble_state_name(_app.ble().state()),
+                 static_cast<unsigned long>(_app.ble().frames()), static_cast<unsigned long>(_app.ble().diag().invalid_frames));
+    } else if (use_uart()) {
         snprintf(line, sizeof(line), "Wired UART   Frames: %lu   Errors: %lu", static_cast<unsigned long>(_uart.frames()),
                  static_cast<unsigned long>(_uart.parse_errors()));
     } else {
@@ -1676,7 +1690,7 @@ void PendantUi::set_live_mode(bool live) {
     if (live == _live_mode) {
         return;
     }
-    if (!live && !use_uart()) {
+    if (!live && !use_serial()) {
         // DEMO is a decision too: stop the live connection and never silently reconnect to the
         // controller. LIVE (or CONNECT) is needed to bring it back.
         _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::SwitchToDemo));
@@ -1715,7 +1729,7 @@ void PendantUi::set_live_mode(bool live) {
         }
         return;
     }
-    if (live && !use_uart()) {
+    if (live && !use_serial()) {
         _fluidnc.set_auto_pref(jc_autopref_after(_fluidnc.auto_pref(), JcConnEvent::SwitchToLive));
     }
     _live_mode = live;

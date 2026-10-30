@@ -25,6 +25,7 @@ constexpr ui::Rect kUartBaud { 268, 276, 140, 44 };
 constexpr ui::Rect kUartStart { 416, 276, 200, 44 };
 constexpr ui::Rect kUartSelect { 626, 276, 148, 44 };
 constexpr ui::Rect kBleSelect { 626, 350, 148, 44 };
+constexpr ui::Rect kBleSetup { 468, 350, 148, 44 };
 
 void pin_callback(void* user, bool ok, const char* text) {
     static_cast<JcConnectionsScreen*>(user)->edit_done(ok, text);
@@ -50,6 +51,10 @@ void JcConnectionsScreen::draw_status() {
     }
     _uart_state.draw(sv.display, { 28, 244, 740, 28 }, line, FontId::Body16,
                      _uart.status_is_fresh() ? ui::kGood : ui::kMuted, ui::kPanel);
+    snprintf(line, sizeof(line), "BLE: %s   saved device: %s", jc_ble_state_name(sv.ble.state()),
+             sv.ble_saved.valid ? sv.ble_saved.addr : "none");
+    _ble_state.draw(sv.display, { 28, 392, 740, 28 }, line, FontId::Body16, sv.ble.ready() ? ui::kGood : ui::kMuted,
+                    s.transport == 2 ? ui::kPanelLight : ui::kPanel);
 }
 
 void JcConnectionsScreen::on_draw() {
@@ -77,14 +82,14 @@ void JcConnectionsScreen::on_draw() {
     ui::button(sv.display, kUartSelect, t == 1 ? "SELECTED" : "SELECT", t == 1 ? ui::Btn::Selected : ui::Btn::Normal);
 
     ui::panel(sv.display, kBlePanel, t == 2 ? ui::kPanelLight : ui::kPanel);
-    ui::text(sv.display, 28, 348, "Bluetooth LE  -  UNAVAILABLE", FontId::Button20, ui::kWarn, t == 2 ? ui::kPanelLight : ui::kPanel);
-    ui::wrap(sv.display, { 28, 378, 580, 44 }, JcBleTransportInfo::reason(), FontId::Body16, ui::kMuted,
-             t == 2 ? ui::kPanelLight : ui::kPanel);
-    ui::button(sv.display, kBleSelect, "SELECT", ui::Btn::Disabled);
+    ui::text(sv.display, 28, 354, "Bluetooth LE UART", FontId::Button20, WHITE, t == 2 ? ui::kPanelLight : ui::kPanel);
+    ui::button(sv.display, kBleSetup, "BLE SETUP");
+    ui::button(sv.display, kBleSelect, t == 2 ? "SELECTED" : "SELECT", t == 2 ? ui::Btn::Selected : ui::Btn::Normal);
+    _ble_state.invalidate();
 
     ui::wrap(sv.display, { 16, 430, 768, 46 },
-             "Switching transport ends the session and never reconnects by itself. Wi-Fi reconnects "
-             "automatically only while AUTO is on. Refused while the machine reports motion.",
+             "Switching transport ends the session and invalidates the machine status. Wi-Fi reconnects while AUTO is on; "
+             "BLE only to its saved device. Refused while the machine moves.",
              FontId::Body16, ui::kMuted, ui::kBg);
     _wifi.invalidate();
     _uart_state.invalidate();
@@ -100,13 +105,13 @@ void JcConnectionsScreen::select_transport(uint8_t transport) {
     if (sv.settings.transport == transport) {
         return;
     }
-    // Terminate every active session; the operator must reconnect deliberately.
-    sv.link.disconnect();
-    _uart.end();
-    sv.dispatcher.on_link_lost();
-    sv.settings.transport = transport;
-    sv.host.save_settings();
-    Serial.printf("transport: selected %u; sessions closed; reconnect is manual\n", transport);
+    // The transport manager stops every other session and invalidates stale status and pending operations.
+    const char* why = sv.host.select_transport(transport);
+    if (why != nullptr) {
+        show_message("SWITCH REFUSED", why);
+        return;
+    }
+    Serial.printf("transport: selected %u; other sessions closed\n", transport);
     draw();
 }
 
@@ -152,8 +157,9 @@ void JcConnectionsScreen::on_touch(uint16_t x, uint16_t y) {
     } else if (ui::hit(kUartSelect, x, y)) {
         select_transport(1);
     } else if (ui::hit(kBleSelect, x, y)) {
-        show_message("BLUETOOTH LE UNAVAILABLE", JcBleTransportInfo::reason(),
-                     "No BLE connection or discovery is attempted.");
+        select_transport(2);
+    } else if (ui::hit(kBleSetup, x, y)) {
+        sv.host.go(JcPage::Ble);
     } else if (ui::hit(kUartRx, x, y) || ui::hit(kUartTx, x, y)) {
         _edit_pin = ui::hit(kUartRx, x, y) ? 0 : 1;
         JcInputRequest r {};

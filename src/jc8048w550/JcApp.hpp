@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "JcBleLink.hpp"
 #include "JcScreens.hpp"
 
 namespace jc8048w550 {
@@ -33,10 +34,15 @@ public:
     JcUserSettings& settings() { return _settings; }
     const JcUserSettings& settings() const { return _settings; }
     JcDispatcher& dispatcher() { return _dispatcher; }
+    JcBleUart& ble() { return _ble; }
+    const JcBleUart& ble() const { return _ble; }
+    bool job_simulated() const override;   // the job shown is the rehearsal on the SIMULATED controller (ordinary firmware)
 #if JC_AUTHORITY
     // Prepares a routine: reads $G / $# (read-only), then the preview is shown. In the preview build the
     // routine runs against the shared simulated FluidNC, started from the real work position.
     bool workflow_prepare(JcWfKind kind, const JcWfParams& params) override;
+    void workflow_open(JcWfKind kind) override;
+    bool workflow_clear_tlo() override;
 #endif
 
     // JcAppHost
@@ -48,6 +54,13 @@ public:
     void leave(JcLeaveTarget target) override;
     const char* start_caps_read() override;
     void cancel_caps_read() override;
+    const char* sd_refresh() override;
+    const char* tool_read() override;
+    const char* select_transport(uint8_t transport) override;
+    bool ble_scan() override;
+    bool ble_connect(const char* addr, const char* name) override;
+    void ble_disconnect() override;
+    void ble_forget() override;
 
 private:
     JcScreen* screen_for(JcPage page);
@@ -57,6 +70,13 @@ private:
     void on_controller_line(const char* line);
     static void line_thunk(void* user, const char* line) { static_cast<JcApp*>(user)->on_controller_line(line); }
     bool uart_active() const;
+    const char* query_blocker() const;
+    void drop_extra_state();          // SD listing, tool state, reference contact, job: nothing survives a lost link
+    void invalidate_for_switch();     // transport switch: stale status and pending operations never carry over
+    void persist_ble(const JcBleSaved& s);
+    static bool query_thunk(void* user, const char* line) { return static_cast<JcApp*>(user)->send_query(line); }
+    static void tm_stop(void* user, JcTransportKind which);
+    static void tm_invalidate(void* user) { static_cast<JcApp*>(user)->invalidate_for_switch(); }
 #if JC_AUTHORITY
     class WfHost : public JcWfHost {
     public:
@@ -92,6 +112,17 @@ private:
     JcMachineModel _model;
     JcDispatcher _dispatcher;   // a transmit sink is installed ONLY in the live-jog test build
     JcCapsLoader _loader;
+    JcBleUart _ble;                 // BLE UART transport core (the shared parser, the shared command policy)
+    JcBleRadioEsp _ble_radio;       // the platform radio under it
+    JcBleSaved _ble_saved {};
+    JcSdBrowser _sd;                // the controller's SD card
+    JcJobTracker _job;
+    JcToolReader _tool_reader;
+    JcToolStore _tool_store;
+    JcTransportManager _tm;         // exactly one active control transport
+    bool _job_from_sim = false;     // ordinary firmware: the job on screen is the rehearsal
+    uint32_t _sim_job_frame = 0;
+    JcWfState _wf_seen_state = JcWfState::Idle;
 #if JC_JOG_PREVIEW
     JcPreviewBridge _preview;   // SIMULATED controller: the only jog transport in the ordinary firmware
     JcJogStatus _real;          // latest REAL read-only status, as the session would see it
@@ -116,6 +147,7 @@ private:
     JcFilesScreen _files;
     JcMacrosScreen _macros;
     JcToolsScreen _tools;
+    JcBleScreen _ble_screen;
     JcSettingsScreen _settings_screen;
     JcConnectionsScreen _connections;
     JcDisplaySettingsScreen _display_settings;

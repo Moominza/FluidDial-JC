@@ -7,8 +7,7 @@
 // replies with the shared JcFrameAssembler / jc_parse_status_frame. It starts
 // only when the operator presses START UART LINK on the Connections page.
 //
-// Bluetooth LE has no compatible FluidNC service; JcBleTransportInfo reports
-// that honestly instead of pretending to connect.
+// Bluetooth LE UART is a separate transport (JcBleUart.hpp) that carries the same byte stream.
 
 #pragma once
 
@@ -23,13 +22,6 @@
 #include "JcStatusFrame.hpp"
 
 namespace jc8048w550 {
-
-struct JcBleTransportInfo {
-    static constexpr bool available() { return false; }
-    static constexpr const char* reason() {
-        return "No compatible FluidNC BLE GATT service exists; JC-side BLE is not implemented.";
-    }
-};
 
 class JcUartLink {
 public:

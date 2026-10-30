@@ -31,7 +31,7 @@
 
 namespace jc8048w550 {
 
-enum class JcWfKind : uint8_t { GoToXY, GoToX, GoToY, FindX, FindY, FindXY, FindRotary };
+enum class JcWfKind : uint8_t { GoToXY, GoToX, GoToY, FindX, FindY, FindXY, FindRotary, ToolReference, ToolMeasure, ToolChange };
 
 inline const char* jc_wf_title(JcWfKind k) {
     switch (k) {
@@ -42,6 +42,9 @@ inline const char* jc_wf_title(JcWfKind k) {
         case JcWfKind::FindY: return "FIND Y CENTRE";
         case JcWfKind::FindXY: return "FIND XY CENTRE";
         case JcWfKind::FindRotary: return "FIND ROTARY A CENTRELINE";
+        case JcWfKind::ToolReference: return "MEASURE REFERENCE TOOL";
+        case JcWfKind::ToolMeasure: return "MEASURE TOOL LENGTH";
+        case JcWfKind::ToolChange: return "MANUAL TOOL CHANGE + MEASURE";
     }
     return "?";
 }
@@ -65,6 +68,14 @@ struct JcWfParams {
     // Rotary (A parallel to X).
     float cylinder_diameter = 0.0f;
     float station_spacing = 0.0f;
+    // Tool length (Instruction 010). The probed surface is a touch plate of this thickness, or a fixed reference
+    // surface (thickness 0). The thickness cancels when the reference and the new tool touch the same surface; it
+    // is NOT part of the tool length offset and it never changes a work offset.
+    float plate_thickness = 0.0f;
+    int   tool_dir = -1;           // -1: probe down (touch plate), +1: probe up (fixed sensor above the tool)
+    bool  has_ref = false;         // a reference contact (machine Z) exists
+    float ref_mz = 0.0f;           // machine Z at which the reference tool touched
+    int   tool_number = 0;         // the operator's label for the tool being fitted (display only; T / M6 are never sent)
 };
 
 inline bool jc_wf_validate(JcWfKind kind, const JcWfParams& p, char* why, size_t size) {
@@ -75,6 +86,14 @@ inline bool jc_wf_validate(JcWfKind kind, const JcWfParams& p, char* why, size_t
             return bad("set a safe Z clearance (work Z): Z0 is not assumed safe");
     }
     if (goto_kind) return true;
+    const bool tool_kind = kind == JcWfKind::ToolReference || kind == JcWfKind::ToolMeasure || kind == JcWfKind::ToolChange;
+    if (tool_kind) {
+        if (p.tool_dir != -1 && p.tool_dir != 1) return bad("probe direction must be down (-) or up (+)");
+        if (!(p.plate_thickness >= 0.0f && p.plate_thickness <= 100.0f)) return bad("plate thickness must be 0..100 mm");
+        if (kind != JcWfKind::ToolReference && !p.has_ref) return bad("measure the REFERENCE tool first: no reference contact stored");
+        if (kind == JcWfKind::ToolChange && (!p.clearance_set || !isfinite(p.clearance_z))) return bad("set a safe Z clearance (work Z): Z0 is not assumed safe");
+        if (p.tool_number < 0 || p.tool_number > 999) return bad("tool number must be 0..999");
+    }
     if (!(p.search > 0.0f && p.search <= 500.0f)) return bad("search distance must be 0..500 mm");
     if (!(p.feed >= 1.0f && p.feed <= kJcSanityMaxFeed)) return bad("probe feed not valid");
     if (!(p.retract >= 0.1f && p.retract <= 50.0f)) return bad("retract must be 0.1..50 mm");
@@ -82,6 +101,7 @@ inline bool jc_wf_validate(JcWfKind kind, const JcWfParams& p, char* why, size_t
     if (p.slow_second && !(p.slow_feed >= 1.0f && p.slow_feed <= p.feed)) return bad("slow feed must be 1..probe feed");
     if (!(p.contact_timeout_s >= 1.0f && p.contact_timeout_s <= 300.0f)) return bad("contact timeout must be 1..300 s");
     if (p.expected_size < 0.0f || !(p.tolerance > 0.0f)) return bad("expected size / tolerance not valid");
+    if (tool_kind) return true;   // the feature / size rules below belong to the centre-finding routines
     if (kind == JcWfKind::FindXY && p.feature == JcFeatureKind::Outside) {
         return bad("XY centre supports inside features; probe an outside feature with FIND X then FIND Y");
     }
@@ -120,9 +140,9 @@ struct JcWfStatus {
 
 enum class JcWfState : uint8_t { Idle, Reading, Planned, Running, WaitOperator, Done, Failed, Cancelled };
 
-enum class JcWfOp : uint8_t { Check, Send, Probe, WaitOperator, Compute, QueryWcs, QueryOffsets, VerifyOrigin };
+enum class JcWfOp : uint8_t { Check, Send, Probe, WaitOperator, Compute, QueryWcs, QueryOffsets, VerifyOrigin, AwaitTouch, AwaitRelease, VerifyTlo };
 enum class JcWfCheck : uint8_t { SpindleOff, ProbeReady, ClearanceNotBelow, StatusIdle, WcsUnchanged };
-enum class JcWfCalc : uint8_t { AxisCentre, Station, Centreline };
+enum class JcWfCalc : uint8_t { AxisCentre, Station, Centreline, ToolRef, ToolLength };
 
 struct JcWfStep {
     JcWfOp    op = JcWfOp::Check;
@@ -151,6 +171,13 @@ struct JcWfResult {
     float  g5x[4] = { 0, 0, 0, 0 };
     float  g92[4] = { 0, 0, 0, 0 };
     bool   readback_done = false, readback_ok = false;
+    // Tool length (Instruction 010). Machine Z of the contact, the offset it implies and the readback of an applied offset.
+    bool   tool_contact_ok = false;
+    float  tool_contact_mz = 0.0f;
+    bool   tlo_ok = false;
+    float  tlo_proposed = 0.0f;
+    bool   tlo_readback_done = false, tlo_readback_ok = false;
+    float  tlo_read = 0.0f;
     char   summary[3][72] = { "", "", "" };
 };
 
@@ -209,6 +236,8 @@ public:
         const bool x = (_kind == JcWfKind::FindX || _kind == JcWfKind::FindXY) && _res.x.ok;
         const bool y = (_kind == JcWfKind::FindY || _kind == JcWfKind::FindXY) && _res.y.ok;
         if (!x && !y) return false;
+        _tlo_action = 0;
+        snprintf(_title, sizeof(_title), "MOVE TO THE CENTRE");
         const bool outside = _p.feature == JcFeatureKind::Outside;
         add_check(JcWfCheck::SpindleOff, "spindle stopped");
         add_check(JcWfCheck::StatusIdle, "machine Idle");
@@ -234,6 +263,8 @@ public:
         const bool y = (_kind == JcWfKind::FindY || _kind == JcWfKind::FindXY) && _res.y.ok;
         if (!x && !y) return false;
         _n = 0;
+        _tlo_action = 0;
+        snprintf(_title, sizeof(_title), "SET WORK ORIGIN");
         add_check(JcWfCheck::StatusIdle, "machine Idle");
         add_check(JcWfCheck::WcsUnchanged, "active WCS unchanged");
         JcWfStep& s = push(JcWfOp::Send, "set work origin (G10 L2)");
@@ -243,6 +274,38 @@ public:
         JcWfStep& v = push(JcWfOp::VerifyOrigin, "compare with the request");
         v.arg = s.arg;
         return begin_action(now, JcWfOp::QueryWcs);
+    }
+
+    // APPLY TOOL LENGTH OFFSET: G43.1 Z<offset> from the measured contact, then read [TLO:] back and compare.
+    // Separate, confirmed action; never automatic; never touches a work offset.
+    bool request_apply_tlo(uint32_t now) {
+        if (_state != JcWfState::Done || !_res.tlo_ok || (_kind != JcWfKind::ToolMeasure && _kind != JcWfKind::ToolChange)) return false;
+        _n = 0;
+        add_check(JcWfCheck::StatusIdle, "machine Idle");
+        add_check(JcWfCheck::SpindleOff, "spindle stopped");
+        _tlo_expect = _res.tlo_proposed;
+        _tlo_action = 1;
+        _res.tlo_readback_done = false; _res.tlo_readback_ok = false;
+        snprintf(_title, sizeof(_title), "APPLY TOOL LENGTH OFFSET");
+        push(JcWfOp::Send, "apply the tool length offset (G43.1)").cmd = jc_set_tlo(_res.tlo_proposed);
+        push(JcWfOp::QueryOffsets, "read [TLO:] back");
+        push(JcWfOp::VerifyTlo, "compare with the request");
+        return begin_action(now, JcWfOp::QueryOffsets);
+    }
+    // CLEAR TOOL LENGTH OFFSET: G49, read back, must read 0.
+    bool request_clear_tlo(uint32_t now) {
+        if (running()) return false;
+        _n = 0;
+        add_check(JcWfCheck::StatusIdle, "machine Idle");
+        _tlo_expect = 0.0f;
+        _tlo_action = 2;
+        _res.tlo_readback_done = false; _res.tlo_readback_ok = false;
+        snprintf(_title, sizeof(_title), "CLEAR TOOL LENGTH OFFSET");
+        push(JcWfOp::Send, "cancel the tool length offset (G49)").cmd = jc_clear_tlo();
+        push(JcWfOp::QueryOffsets, "read [TLO:] back");
+        push(JcWfOp::VerifyTlo, "compare with the request");
+        _reason[0] = '\0';
+        return begin_action(now, JcWfOp::QueryOffsets);
     }
 
     // ---- events from the application ----
@@ -265,6 +328,9 @@ public:
             JcProbeReport pr;
             if (strcmp(r.key, "PRB") == 0) {
                 if (jc_parse_prb(r, pr)) { _prb = pr; _prb_seq = ++_prb_counter; } else { _prb = JcProbeReport(); }
+            } else if (strcmp(r.key, "TLO") == 0) {
+                float t = 0.0f;
+                if (jc_parse_tlo_z(r.value, &t)) { _tlo = t; _tlo_known = true; }
             } else {
                 const int idx = jc_offset_tag_index(r.key);
                 if (idx >= 0 && idx <= 8) {
@@ -351,6 +417,14 @@ public:
                 break;
             }
             case Phase::AwaitMotion: check_motion(s, now); break;
+            case Phase::AwaitTouch:
+                if (_status.pins != nullptr && strchr(_status.pins, 'P') != nullptr) { _phase = Phase::Begin; advance(); }
+                else if (now - _step_started > 60000u) fail_now("NO PROBE CONTACT SEEN in 60 s: touch the tool to the plate by hand; check the probe wiring");
+                break;
+            case Phase::AwaitRelease:
+                if (_status.pins == nullptr || strchr(_status.pins, 'P') == nullptr) advance();
+                else if (now - _step_started > 60000u) fail_now("probe still shows contact after 60 s: release the tool from the plate");
+                break;
         }
     }
 
@@ -358,6 +432,12 @@ public:
     JcWfState state() const { return _state; }
     bool running() const { return _state == JcWfState::Reading || _state == JcWfState::Running || _state == JcWfState::WaitOperator; }
     JcWfKind kind() const { return _kind; }
+    // 0 none, 1 apply, 2 clear: which tool-offset action ran last (its readback is in result()).
+    uint8_t tlo_action() const { return _tlo_action; }
+    // Title of what is running: an action's own name, else the routine's.
+    const char* title() const { return _title[0] ? _title : jc_wf_title(_kind); }
+    bool tlo_known() const { return _tlo_known; }
+    float tlo() const { return _tlo; }
     const char* reason() const { return _reason; }
     uint8_t step_index() const { return _idx; }
     uint8_t step_count() const { return _n; }
@@ -377,7 +457,7 @@ public:
     }
 
 private:
-    enum class Phase : uint8_t { Begin, AwaitQuery, AwaitResult, AwaitMotion };
+    enum class Phase : uint8_t { Begin, AwaitQuery, AwaitResult, AwaitMotion, AwaitTouch, AwaitRelease };
 
     void reset_run() {
         _state = JcWfState::Idle;
@@ -390,6 +470,8 @@ private:
         _prb = JcProbeReport();
         _wcs = -1; _wcs_seen = -1;
         _query_wait = _query_got = _gc_wait = false;
+        _tlo = 0.0f; _tlo_known = false; _tlo_expect = 0.0f;
+        _tlo_action = 0; _title[0] = '\0'; _action = false;
         _sent = 0;
         _frames = 0; _prb_seen = _prb_seq;
     }
@@ -527,6 +609,15 @@ private:
             case JcWfOp::VerifyOrigin:
                 do_verify(s);
                 return;
+            case JcWfOp::VerifyTlo:
+                do_verify_tlo();
+                return;
+            case JcWfOp::AwaitTouch:
+                _step_started = now; _phase = Phase::AwaitTouch;
+                return;
+            case JcWfOp::AwaitRelease:
+                _step_started = now; _phase = Phase::AwaitRelease;
+                return;
             case JcWfOp::Send:
             case JcWfOp::Probe: {
                 if (s.dyn != 0) {
@@ -592,6 +683,24 @@ private:
             if (!c.ok) { fail_now(c.why); return; }
             if (s.axis == 0) _res.x = c; else _res.y = c;
             if (c.suspect) snprintf(_res.summary[2], sizeof(_res.summary[2]), "%s", c.why);
+        } else if (calc == JcWfCalc::ToolRef) {
+            if (!_slot_ok[0]) { fail_now("no tool contact recorded"); return; }
+            _res.tool_contact_ok = true;
+            _res.tool_contact_mz = contact(0, 2);
+            snprintf(_res.summary[0], sizeof(_res.summary[0]), "reference contact at machine Z%.3f", static_cast<double>(_res.tool_contact_mz));
+        } else if (calc == JcWfCalc::ToolLength) {
+            if (!_slot_ok[0]) { fail_now("no tool contact recorded"); return; }
+            const float c = contact(0, 2);
+            _res.tool_contact_ok = true;
+            _res.tool_contact_mz = c;
+            // A longer tool touches earlier: probing down it contacts HIGHER, probing up LOWER. Either way the
+            // offset is the extra length relative to the reference: new_len - ref_len.
+            const float tlo = _p.tool_dir < 0 ? (c - _p.ref_mz) : (_p.ref_mz - c);
+            if (!isfinite(tlo) || fabsf(tlo) > 500.0f) { fail_now("implausible tool length difference (> 500 mm): check the reference and the plate"); return; }
+            _res.tlo_ok = true;
+            _res.tlo_proposed = tlo;
+            snprintf(_res.summary[0], sizeof(_res.summary[0]), "contact at machine Z%.3f, reference Z%.3f", static_cast<double>(c), static_cast<double>(_p.ref_mz));
+            snprintf(_res.summary[1], sizeof(_res.summary[1]), "proposed tool length offset TLO = %+.3f mm", static_cast<double>(tlo));
         } else if (calc == JcWfCalc::Station) {
             const bool ok_hi = _slot_ok[s.slot_hi], ok_lo = _slot_ok[s.slot_lo], ok_top = _slot_ok[s.slot_out];
             const JcCentre c = jc_axis_centre(JcFeatureKind::Outside, ok_hi, ok_hi ? contact(s.slot_hi, 1) : 0.0f, ok_lo,
@@ -604,6 +713,14 @@ private:
             _res.line = jc_rotary_centreline(_res.st[0], _res.st[1], _p.tip_radius, _p.cylinder_diameter, _p.tolerance);
             if (!_res.line.ok) { fail_now(_res.line.why); return; }
         }
+        advance();
+    }
+
+    void do_verify_tlo() {
+        _res.tlo_readback_done = true;
+        _res.tlo_read = _tlo;
+        _res.tlo_readback_ok = _tlo_known && fabsf(_tlo - _tlo_expect) <= 0.002f;
+        if (!_res.tlo_readback_ok) { fail_now("TLO READBACK MISMATCH: FluidNC's [TLO:] differs from the request"); return; }
         advance();
     }
 
@@ -645,6 +762,10 @@ private:
     uint8_t     _read_phase = 0;
     uint32_t    _step_started = 0, _now = 0, _frames = 0, _ack_frame = 0, _last_seq = 0, _sent = 0;
     float       _probe_z = 0.0f, _y_start = 0.0f;
+    float       _tlo = 0.0f, _tlo_expect = 0.0f;
+    bool        _tlo_known = false;
+    uint8_t     _tlo_action = 0;
+    char        _title[40] = "";
     float       _start_wpos[4] = { 0, 0, 0, 0 };
     bool        _start_wpos_valid = false;
 };

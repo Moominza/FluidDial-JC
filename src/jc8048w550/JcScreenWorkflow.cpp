@@ -13,7 +13,7 @@ namespace jc8048w550 {
 
 namespace {
 
-enum class P : uint8_t { Clear, Search, Feed, Retract, Tip, Feature, Expected, Timeout, Slow, SlowFeed, EstWidth, CylDia, Spacing };
+enum class P : uint8_t { Clear, Search, Feed, Retract, Tip, Feature, Expected, Timeout, Slow, SlowFeed, EstWidth, CylDia, Spacing, PlateThick, ToolDir, ToolNum };
 
 constexpr ui::Rect kBackList { 16, 408, 170, 52 };
 constexpr ui::Rect kPrepare { 198, 408, 586, 52 };
@@ -36,6 +36,9 @@ const JcWfKind kKinds[7] = { JcWfKind::GoToXY, JcWfKind::GoToX, JcWfKind::GoToY,
 
 uint8_t params_for(JcWfKind k, P out[14]) {
     uint8_t n = 0;
+    if (k == JcWfKind::ToolReference) { out[n++] = P::PlateThick; out[n++] = P::ToolDir; out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; return n; }
+    if (k == JcWfKind::ToolMeasure) { out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; return n; }
+    if (k == JcWfKind::ToolChange) { out[n++] = P::Clear; out[n++] = P::ToolNum; out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; return n; }
     out[n++] = P::Clear;
     if (k == JcWfKind::GoToXY || k == JcWfKind::GoToX || k == JcWfKind::GoToY) return n;
     out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; out[n++] = P::Tip;
@@ -94,9 +97,24 @@ void JcWorkflowScreen::param_label(uint8_t i, char* label, char* value, size_t s
         case P::EstWidth: l = "APPROX WIDTH (outside)"; if (_p.est_width > 0.0f) snprintf(v, sizeof(v), "%.1f mm", static_cast<double>(_p.est_width)); else snprintf(v, sizeof(v), "NOT SET"); break;
         case P::CylDia: l = "CYLINDER DIAMETER"; if (_p.cylinder_diameter > 0.0f) snprintf(v, sizeof(v), "%.3f mm", static_cast<double>(_p.cylinder_diameter)); else snprintf(v, sizeof(v), "NOT SET"); break;
         case P::Spacing: l = "STATION SPACING (along X)"; if (_p.station_spacing > 0.0f) snprintf(v, sizeof(v), "%.1f mm", static_cast<double>(_p.station_spacing)); else snprintf(v, sizeof(v), "NOT SET"); break;
+        case P::PlateThick: l = "PLATE THICKNESS (not in the offset)"; snprintf(v, sizeof(v), "%.3f mm", static_cast<double>(_p.plate_thickness)); break;
+        case P::ToolDir: l = "PROBE DIRECTION"; snprintf(v, sizeof(v), "%s", _p.tool_dir < 0 ? "DOWN (plate)" : "UP (sensor)"); break;
+        case P::ToolNum: l = "NEW TOOL LABEL (display only)"; snprintf(v, sizeof(v), "T%d", _p.tool_number); break;
     }
     snprintf(label, size, "%s", l);
     snprintf(value, size, "%s", v);
+}
+
+void JcWorkflowScreen::preselect(JcWfKind kind, const JcToolStore& store) {
+    _kind = kind;
+    _p = JcWfParams();
+    if (store.has_ref) {   // measurements are made the way the reference was
+        _p.has_ref = true;
+        _p.ref_mz = store.ref_mz;
+        _p.tool_dir = store.ref_dir;
+        _p.plate_thickness = store.ref_plate_thickness;
+    }
+    _mode = Mode::Setup;
 }
 
 void JcWorkflowScreen::on_enter() {
@@ -129,7 +147,18 @@ void JcWorkflowScreen::draw_setup() {
         ui::text(sv.display, r.x + r.w - 8 - text_width(FontId::Body16, value), r.y + 7, value, FontId::Body16,
                  unset ? RED : WHITE, ui::kPanelLight);
     }
-    ui::button(sv.display, kBackList, "LIST");
+    if (_kind == JcWfKind::ToolReference || _kind == JcWfKind::ToolMeasure || _kind == JcWfKind::ToolChange) {
+        char hint[260];
+        if (_kind == JcWfKind::ToolReference) {
+            snprintf(hint, sizeof(hint), "Fit the REFERENCE tool and place the touch plate (or fixed surface) under it. The direction and plate thickness are stored with the reference. You touch the tool to the plate by hand first: the probe pin must react before any probing move.");
+        } else {
+            snprintf(hint, sizeof(hint), "Reference: machine Z %.3f, plate %.3f, probing %s. %sThe difference to the reference is PROPOSED as the tool length offset; you apply it separately and it is read back.",
+                     static_cast<double>(_p.ref_mz), static_cast<double>(_p.plate_thickness), _p.tool_dir < 0 ? "down" : "up",
+                     _kind == JcWfKind::ToolChange ? "Z rises to the clearance, then YOU change the tool by hand. " : "");
+        }
+        ui::wrap(sv.display, { 16, 290, 768, 76 }, hint, FontId::Body16, ui::kMuted, ui::kBg);
+    }
+    ui::button(sv.display, kBackList, _kind == JcWfKind::ToolReference || _kind == JcWfKind::ToolMeasure || _kind == JcWfKind::ToolChange ? "BACK" : "LIST");
     ui::button(sv.display, kPrepare, "PREPARE  (reads the active WCS and offsets)", ui::Btn::Selected);
     draw_live_lines();
 }
@@ -147,7 +176,7 @@ void JcWorkflowScreen::draw_live_lines() {
 void JcWorkflowScreen::draw_active() {
     const JcWorkflow& w = sv.wf;
     char line[140];
-    ui::text(sv.display, 16, 68, jc_wf_title(w.kind()), FontId::Button20, CYAN, ui::kBg);
+    ui::text(sv.display, 16, 68, w.title(), FontId::Button20, CYAN, ui::kBg);
     ui::panel(sv.display, { 16, 98, 768, 296 });
     _lines[0].invalidate(); _lines[1].invalidate(); _lines[2].invalidate(); _lines[3].invalidate(); _lines[4].invalidate(); _lines[5].invalidate();
     snprintf(line, sizeof(line), "STATE: %s", state_word(w.state()));
@@ -200,6 +229,20 @@ void JcWorkflowScreen::draw_active() {
             put("A-axis calibration is NOT modified.", ui::kMuted);
         }
         if (r.x.suspect) put(r.x.why, ui::kWarn);
+        if (k == JcWfKind::ToolReference && r.tool_contact_ok) {
+            snprintf(line, sizeof(line), "Reference tool touched at machine Z %.3f  (stored; no offset written)", static_cast<double>(r.tool_contact_mz));
+            put(line, ui::kGood);
+            put("Plate thickness cancels in later measurements; it is not an offset.", ui::kMuted);
+        }
+        if ((k == JcWfKind::ToolMeasure || k == JcWfKind::ToolChange) && r.tlo_ok) {
+            put(r.summary[0], WHITE);
+            put(r.summary[1], ui::kInfo);
+            if (!r.tlo_readback_done) put("NOT applied yet. APPLY sends G43.1 and reads [TLO:] back.", ui::kWarn);
+        }
+        if (r.tlo_readback_done) {
+            snprintf(line, sizeof(line), "[TLO:] read back from FluidNC: %+.3f mm  %s", static_cast<double>(r.tlo_read), r.tlo_readback_ok ? "MATCH" : "MISMATCH");
+            put(line, r.tlo_readback_ok ? ui::kGood : RED);
+        }
         if (r.readback_done) put(r.readback_ok ? "Offsets read back from FluidNC: MATCH" : "Offsets read back: MISMATCH", r.readback_ok ? ui::kGood : RED);
     }
     // Buttons.
@@ -215,6 +258,10 @@ void JcWorkflowScreen::draw_active() {
         if (w.state() == JcWfState::Done && w.result().valid) {
             const JcWfKind k = w.kind();
             const bool measured = k == JcWfKind::FindX || k == JcWfKind::FindY || k == JcWfKind::FindXY;
+            if ((k == JcWfKind::ToolMeasure || k == JcWfKind::ToolChange) && w.result().tlo_ok) {
+                ui::button(sv.display, kMoveCentre, "APPLY TOOL OFFSET (G43.1)", ui::Btn::Normal);
+                ui::button(sv.display, kSetOrigin, "CLEAR TOOL OFFSET (G49)", ui::Btn::Danger);
+            }
             if (measured) {
                 ui::button(sv.display, kMoveCentre, "MOVE TO CENTRE", ui::Btn::Normal);
                 ui::button(sv.display, kSetOrigin, k == JcWfKind::FindX ? "SET WORK X0 HERE" : (k == JcWfKind::FindY ? "SET WORK Y0 HERE" : "SET WORK X0 Y0 HERE"), ui::Btn::Danger);
@@ -252,6 +299,8 @@ void JcWorkflowScreen::param_done(uint8_t index, bool ok, const char* text) {
         case P::EstWidth: _p.est_width = v; break;
         case P::CylDia: _p.cylinder_diameter = v; break;
         case P::Spacing: _p.station_spacing = v; break;
+        case P::PlateThick: _p.plate_thickness = v; break;
+        case P::ToolNum: _p.tool_number = static_cast<int>(v); break;
         default: break;
     }
     draw();
@@ -263,6 +312,7 @@ void JcWorkflowScreen::edit_param(uint8_t i) {
     if (i >= n) return;
     if (ids[i] == P::Feature) { _p.feature = _p.feature == JcFeatureKind::Inside ? JcFeatureKind::Outside : JcFeatureKind::Inside; draw(); return; }
     if (ids[i] == P::Slow) { _p.slow_second = !_p.slow_second; draw(); return; }
+    if (ids[i] == P::ToolDir) { _p.tool_dir = -_p.tool_dir; draw(); return; }
     char label[40], value[24];
     param_label(i, label, value, sizeof(label));
     JcInputRequest r {};
@@ -288,13 +338,23 @@ void JcWorkflowScreen::prepare() {
     draw();
 }
 
-void JcWorkflowScreen::request_action(bool set_origin) {
+void JcWorkflowScreen::request_action(uint8_t which) {
     const JcWfResult& r = sv.wf.result();
     char l1[100], l2[100], l3[100];
     const JcWfKind k = sv.wf.kind();
     const bool x = (k == JcWfKind::FindX || k == JcWfKind::FindXY) && r.x.ok;
     const bool y = (k == JcWfKind::FindY || k == JcWfKind::FindXY) && r.y.ok;
-    if (set_origin) {
+    if (which == 3) {
+        snprintf(l1, sizeof(l1), "Sends G43.1 Z%+.3f (dynamic tool length offset).", static_cast<double>(r.tlo_proposed));
+        snprintf(l2, sizeof(l2), "[TLO:] is read back from FluidNC and compared.");
+        snprintf(l3, sizeof(l3), "Work offsets (G54..G59) and G92 are NOT touched.");
+        open_custom_confirm("APPLY THE TOOL LENGTH OFFSET?", "APPLY");
+    } else if (which == 4) {
+        snprintf(l1, sizeof(l1), "Sends G49 (cancel the tool length offset).");
+        snprintf(l2, sizeof(l2), "[TLO:] is read back and must read 0.");
+        snprintf(l3, sizeof(l3), "Work offsets (G54..G59) and G92 are NOT touched.");
+        open_custom_confirm("CLEAR THE TOOL LENGTH OFFSET?", "SEND G49");
+    } else if (which == 2) {
         snprintf(l1, sizeof(l1), "Writes G10 L2 P%d for the ACTIVE WCS (G%d). Never G92.", r.wcs + 1, 54 + r.wcs);
         snprintf(l2, sizeof(l2), "New origin (machine): %s%.3f %s%.3f", x ? "X" : "", x ? static_cast<double>(r.x.centre - r.g92[0]) : 0.0,
                  y ? "Y" : "", y ? static_cast<double>(r.y.centre - r.g92[1]) : 0.0);
@@ -319,12 +379,16 @@ void JcWorkflowScreen::on_custom_confirm() {
     // The operator's confirmation arms command sending for this routine only (15 minutes at most); it is dropped
     // when the routine ends, when the page is left and on any loss of the connection.
     sv.dispatcher.arm_for(now, 15u * 60u * 1000u, 0x0F);
-    if (_action_pending == 1) {
-        _action_pending = 0;
+    const uint8_t pending = _action_pending;
+    _action_pending = 0;
+    if (pending == 1) {
         sv.wf.request_move_to_centre(now);
-    } else if (_action_pending == 2) {
-        _action_pending = 0;
+    } else if (pending == 2) {
         sv.wf.request_set_origin(now);
+    } else if (pending == 3) {
+        sv.wf.request_apply_tlo(now);
+    } else if (pending == 4) {
+        sv.wf.request_clear_tlo(now);
     } else {
         sv.wf.start(now);   // START
         Serial.printf(JC_JOG_TAG ": routine started: %s\n", jc_wf_title(sv.wf.kind()));
@@ -360,9 +424,22 @@ void JcWorkflowScreen::on_touch(uint16_t x, uint16_t y) {
             _action_pending = 0;
             const JcWfResult& r = sv.wf.result();
             char l1[100], l2[100], l3[100];
-            snprintf(l1, sizeof(l1), "%s in the ACTIVE WCS G%d (read from FluidNC).", jc_wf_title(sv.wf.kind()), 54 + r.wcs);
+            const JcWfKind sk = sv.wf.kind();
+            const bool tool = sk == JcWfKind::ToolReference || sk == JcWfKind::ToolMeasure || sk == JcWfKind::ToolChange;
+            if (tool) {
+                snprintf(l1, sizeof(l1), "%s: probe %s up to %.1f mm at %.0f /min.", jc_wf_title(sk), sv.wf.params().tool_dir < 0 ? "DOWN" : "UP",
+                         static_cast<double>(sv.wf.params().search), static_cast<double>(sv.wf.params().feed));
+            } else {
+                snprintf(l1, sizeof(l1), "%s in the ACTIVE WCS G%d (read from FluidNC).", jc_wf_title(sk), 54 + r.wcs);
+            }
             snprintf(l2, sizeof(l2), "%u steps, sent ONE at a time; FluidNC executes each.", static_cast<unsigned>(sv.wf.step_count()));
-            snprintf(l3, sizeof(l3), "Safe Z clearance %.3f (work).  Spindle stays stopped.", static_cast<double>(sv.wf.params().clearance_z));
+            if (sk == JcWfKind::ToolChange) {
+                snprintf(l3, sizeof(l3), "Z rises to %.3f (work), then WAITS for you to change the tool by hand.", static_cast<double>(sv.wf.params().clearance_z));
+            } else if (tool) {
+                snprintf(l3, sizeof(l3), "You touch the tool to the plate by hand first: the probe must react.");
+            } else {
+                snprintf(l3, sizeof(l3), "Safe Z clearance %.3f (work).  Spindle stays stopped.", static_cast<double>(sv.wf.params().clearance_z));
+            }
             open_custom_confirm("START THIS ROUTINE?", "START");
             dialog.add_line(l1);
             dialog.add_line(l2);
@@ -379,8 +456,13 @@ void JcWorkflowScreen::on_touch(uint16_t x, uint16_t y) {
         return;
     }
     if (st == JcWfState::Done && sv.wf.result().valid) {
-        if (ui::hit(kMoveCentre, x, y)) { _action_pending = 1; request_action(false); return; }
-        if (ui::hit(kSetOrigin, x, y)) { _action_pending = 2; request_action(true); return; }
+        const JcWfKind k = sv.wf.kind();
+        const bool measured = k == JcWfKind::FindX || k == JcWfKind::FindY || k == JcWfKind::FindXY;
+        const bool tool_apply = (k == JcWfKind::ToolMeasure || k == JcWfKind::ToolChange) && sv.wf.result().tlo_ok;
+        if (measured && ui::hit(kMoveCentre, x, y)) { _action_pending = 1; request_action(1); return; }
+        if (measured && ui::hit(kSetOrigin, x, y)) { _action_pending = 2; request_action(2); return; }
+        if (tool_apply && ui::hit(kMoveCentre, x, y)) { _action_pending = 3; request_action(3); return; }
+        if (tool_apply && ui::hit(kSetOrigin, x, y)) { _action_pending = 4; request_action(4); return; }
     }
     if (ui::hit(kDone, x, y)) { _mode = Mode::List; draw(); }
 }
@@ -394,6 +476,13 @@ void JcWorkflowScreen::on_tick(uint32_t now) {
     }
     if (_mode == Mode::Active) {
         if (_drawn_state != static_cast<uint8_t>(sv.wf.state()) || _drawn_step != sv.wf.step_index()) draw();
+        if (st == JcWfState::Running || st == JcWfState::WaitOperator) {   // the probe pin, live: contact verification is by hand
+            const JcLiveMachineStatus& ms = sv.model.status();
+            const bool trig = ms.has_data && strchr(ms.pins, 'P') != nullptr;
+            char l[90];
+            snprintf(l, sizeof(l), "Probe pin: %s     Machine: %s", trig ? "TRIGGERED" : "clear", sv.model.has_status() ? sv.model.state() : "no data");
+            _lines[3].draw(sv.display, { 28, 192, 744, 24 }, l, FontId::Body16, trig ? ui::kWarn : ui::kMuted, ui::kPanel);
+        }
     } else if (_mode == Mode::Setup) {
         draw_live_lines();
     }

@@ -83,6 +83,23 @@ inline bool jc_parse_coords(const char* text, float out[4], uint8_t& count) {
     return count >= 3;
 }
 
+// "[TLO:0.000,0.000,6.500,0.000]" (FluidNC v4 prints one value per axis) or the older single value: the Z offset.
+inline bool jc_parse_tlo_z(const char* text, float* z) {
+    float v[4];
+    uint8_t n = 0;
+    if (jc_parse_coords(text, v, n)) {
+        *z = v[2];
+        return true;
+    }
+    char* end = nullptr;
+    const float one = strtof(text, &end);
+    if (end != text && *end == '\0' && isfinite(one)) {
+        *z = one;
+        return true;
+    }
+    return false;
+}
+
 // Active WCS from a "[GC:G0 G54 G17 ...]" payload: 0..5, or -1.
 inline int jc_wcs_from_gc(const char* gc) {
     if (gc == nullptr) return -1;

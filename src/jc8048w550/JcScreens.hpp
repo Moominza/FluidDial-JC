@@ -145,22 +145,35 @@ private:
     ui::Slot _machine[4], _work[4], _wco;
 };
 
+// The CONTROLLER's SD card (read-only $SD/Status, $SD/List), file selection and the job controls.
 class JcFilesScreen : public JcScreen {
 public:
     using JcScreen::JcScreen;
     JcPage page() const override { return JcPage::Files; }
-    void edit_done(bool ok, const char* text);
 
 protected:
+    void on_enter() override;
     void on_draw() override;
     void on_touch(uint16_t x, uint16_t y) override;
     void on_tick(uint32_t now) override;
+    void on_custom_confirm() override;
 
 private:
+    void draw_status();
+    void draw_list();
+    void draw_detail();
+    void draw_buttons();
     void draw_job();
-    char _path[64] {};
+    void ask(uint8_t what);          // 1 start, 2 cycle start, 3 reset
+    const char* start_blocker() const;
+    uint32_t list_key() const;
+    uint16_t _scroll = 0;
+    uint8_t _pending = 0;
     uint32_t _last_tick = 0;
-    ui::Slot _job, _path_slot;
+    uint32_t _drawn_key = 0xFFFFFFFFu;
+    uint32_t _drawn_btn = 0xFFFFFFFFu;
+    uint32_t _job_started_ms = 0;
+    ui::Slot _status, _job;
     int16_t _last_bar = -1;
 };
 
@@ -190,6 +203,9 @@ public:
     using JcScreen::JcScreen;
     JcPage page() const override { return JcPage::Workflow; }
     void param_done(uint8_t index, bool ok, const char* text);
+    // Opens the setup of a routine directly (the tool routines are launched from the Tools page).
+    void preselect(JcWfKind kind, const JcToolStore& store);
+    void show_active() { _mode = Mode::Active; }
 
 protected:
     void on_enter() override;
@@ -208,7 +224,7 @@ private:
     void param_label(uint8_t i, char* label, char* value, size_t size) const;
     void edit_param(uint8_t i);
     void prepare();
-    void request_action(bool set_origin);
+    void request_action(uint8_t which);   // 1 move to centre, 2 set work origin, 3 apply tool offset, 4 clear tool offset
     Mode _mode = Mode::List;
     JcWfKind _kind = JcWfKind::GoToXY;
     JcWfParams _p;
@@ -221,6 +237,8 @@ private:
 };
 #endif
 
+// Tools: what the controller reports (T word, tool length offset), the reference contact, and the guided manual
+// tool-change / tool-length routines. No automatic tool changer is assumed; M6 and T are never sent.
 class JcToolsScreen : public JcScreen {
 public:
     using JcScreen::JcScreen;
@@ -230,12 +248,39 @@ protected:
     void on_enter() override;
     void on_draw() override;
     void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+    void on_custom_confirm() override;
 
 private:
-    void draw_steps();
-    void draw_detail();
-    uint8_t _step = 0;
-    bool _done[6] {};
+    void draw_info();
+    void draw_buttons();
+    bool state_known() const;
+    uint32_t key() const;
+    uint32_t _last_tick = 0;
+    uint32_t _drawn_key = 0xFFFFFFFFu;
+    ui::Slot _lines[6];
+};
+
+// Bluetooth LE UART: scan list, connect, saved device, diagnostics.
+class JcBleScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::Ble; }
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+
+private:
+    void draw_list();
+    void draw_diag();
+    uint32_t list_key() const;
+    uint8_t _scroll = 0;
+    uint32_t _last_tick = 0;
+    uint32_t _drawn_key = 0xFFFFFFFFu;
+    ui::Slot _lines[6];
 };
 
 class JcSettingsScreen : public JcScreen {
@@ -265,7 +310,7 @@ private:
     JcUartLink& _uart;
     uint8_t _edit_pin = 0;  // 0 rx, 1 tx
     uint32_t _last_tick = 0;
-    ui::Slot _wifi, _uart_state;
+    ui::Slot _wifi, _uart_state, _ble_state;
 };
 
 class JcDisplaySettingsScreen : public JcScreen {

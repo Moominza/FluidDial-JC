@@ -512,6 +512,244 @@ static void test_calc_functions() {
     CHECK(jc_offset_tag_index("G54") == 0 && jc_offset_tag_index("G59") == 5 && jc_offset_tag_index("G92") == 8 && jc_offset_tag_index("G53") == -1);
 }
 
+
+// ---- tool length (Instruction 010) ------------------------------------------------------------------------------
+
+static JcWfParams tool_params() {
+    JcWfParams p;
+    p.search = 40.0f; p.feed = 200.0f; p.retract = 2.0f;
+    p.plate_thickness = 5.0f;
+    return p;
+}
+
+// The operator touches the tool to the plate by hand: the controller's own Pn:P appears, then clears.
+static void hand_touch(Rig& r) {
+    r.run(300);
+    strcpy(r.nc.pins, "P");
+    r.run(300);
+    r.nc.pins[0] = '\0';
+    r.run(300);
+}
+
+static void test_tool_reference_and_measure() {
+    Rig r;
+    r.nc.feat = Feature::Plate; r.nc.plate_z = -40.0f; r.nc.tool_len = 20.0f;
+    JcWfParams p = tool_params();
+    CHECK(r.prepare(JcWfKind::ToolReference, p));
+    CHECK(r.wf.state() == JcWfState::Planned);
+    CHECK(r.wf.start(r.nc.now));
+    r.run(1000);
+    CHECK(r.wf.state() == JcWfState::Running);
+    CHECK(r.count("G21 G91 G38.2") == 0);              // NOTHING probes until the contact has been verified by hand
+    hand_touch(r);
+    r.go();
+    CHECK(r.wf.state() == JcWfState::Done);
+    CHECK(r.wf.result().tool_contact_ok);
+    NEAR(r.wf.result().tool_contact_mz, -20.0f, 0.001f);    // plate -40 + tool 20
+    CHECK(r.count("G21 G91 G38.2 F200 Z-40.000") == 1);
+    CHECK(r.count("G10") == 0 && r.count("G43") == 0 && r.count("G49") == 0 && r.count("G92") == 0);   // measuring changes nothing
+    CHECK(!r.nc.tlo_active);
+
+    // a longer tool (+6.5 mm) touches 6.5 mm higher; the plate thickness cancels
+    Rig m;
+    m.nc.feat = Feature::Plate; m.nc.plate_z = -40.0f; m.nc.tool_len = 26.5f;
+    m.nc.off[0][2] = -3.0f;                              // an unrelated work offset must stay exactly as it is
+    JcWfParams q = tool_params();
+    q.has_ref = true; q.ref_mz = -20.0f;
+    CHECK(m.prepare(JcWfKind::ToolMeasure, q));
+    m.wf.start(m.nc.now); m.run(1000); hand_touch(m); m.go();
+    CHECK(m.wf.state() == JcWfState::Done && m.wf.result().tlo_ok);
+    NEAR(m.wf.result().tool_contact_mz, -13.5f, 0.001f);
+    NEAR(m.wf.result().tlo_proposed, 6.5f, 0.001f);
+    CHECK(m.count("G43") == 0);                          // the offset is only PROPOSED until the operator applies it
+    CHECK(!m.nc.tlo_active);
+    const float z_before = m.nc.work(2);
+    CHECK(m.wf.request_apply_tlo(m.nc.now));
+    m.go();
+    CHECK(m.wf.state() == JcWfState::Done && m.wf.result().tlo_readback_done && m.wf.result().tlo_readback_ok);
+    CHECK(m.count("G43.1 Z6.500") == 1);
+    NEAR(m.nc.tlo, 6.5f, 0.0001f);
+    NEAR(m.wf.result().tlo_read, 6.5f, 0.0001f);
+    NEAR(m.nc.work(2), z_before - 6.5f, 0.001f);         // the displayed work Z now accounts for the longer tool
+    // tool length compensation is not the work zero: no work offset moved, none written
+    NEAR(m.nc.off[0][2], -3.0f, 0.0001f);
+    CHECK(m.count("G10") == 0 && m.count("G92") == 0 && m.count("G54") == 0);
+    // clear it again
+    CHECK(m.wf.request_clear_tlo(m.nc.now));
+    m.go();
+    CHECK(m.wf.state() == JcWfState::Done && m.wf.result().tlo_readback_ok);
+    CHECK(m.count("G49") == 1 && !m.nc.tlo_active);
+    NEAR(m.wf.tlo(), 0.0f, 0.0001f);
+}
+
+static void test_tool_direction_and_thickness() {
+    Rig r;                                               // a fixed sensor ABOVE the tool, probing up
+    r.nc.feat = Feature::Plate; r.nc.plate_z = 7.0f; r.nc.tool_len = 0.0f;
+    JcWfParams p = tool_params(); p.tool_dir = +1; p.has_ref = true; p.ref_mz = 10.0f; p.plate_thickness = 0.0f;
+    CHECK(r.prepare(JcWfKind::ToolMeasure, p));
+    r.wf.start(r.nc.now); r.run(1000); hand_touch(r); r.go();
+    CHECK(r.wf.state() == JcWfState::Done);
+    CHECK(r.count("G21 G91 G38.2 F200 Z40.000") == 1);
+    NEAR(r.wf.result().tlo_proposed, 3.0f, 0.001f);       // contact 3 mm lower than the reference: a 3 mm longer tool
+    // the plate thickness is a different number and does not enter the offset
+    Rig t;
+    t.nc.feat = Feature::Plate; t.nc.plate_z = -40.0f; t.nc.tool_len = 26.5f;
+    JcWfParams q = tool_params(); q.has_ref = true; q.ref_mz = -20.0f; q.plate_thickness = 33.3f;
+    CHECK(t.prepare(JcWfKind::ToolMeasure, q));
+    t.wf.start(t.nc.now); t.run(1000); hand_touch(t); t.go();
+    NEAR(t.wf.result().tlo_proposed, 6.5f, 0.001f);
+}
+
+static void test_tool_failures() {
+    {   JcWfParams p = tool_params(); char why[96];
+        CHECK(!jc_wf_validate(JcWfKind::ToolMeasure, p, why, sizeof(why)) && strstr(why, "REFERENCE") != nullptr);   // no reference stored
+        p.has_ref = true; p.ref_mz = 0;
+        CHECK(jc_wf_validate(JcWfKind::ToolMeasure, p, why, sizeof(why)));
+        p.tool_dir = 0; CHECK(!jc_wf_validate(JcWfKind::ToolMeasure, p, why, sizeof(why)));
+        p.tool_dir = -1; p.plate_thickness = -1; CHECK(!jc_wf_validate(JcWfKind::ToolMeasure, p, why, sizeof(why)));
+        p.plate_thickness = 5; p.search = 0; CHECK(!jc_wf_validate(JcWfKind::ToolMeasure, p, why, sizeof(why)));
+        p.search = 40; p.feed = 0; CHECK(!jc_wf_validate(JcWfKind::ToolMeasure, p, why, sizeof(why)));
+        JcWfParams c = tool_params(); c.has_ref = true;
+        CHECK(!jc_wf_validate(JcWfKind::ToolChange, c, why, sizeof(why)) && strstr(why, "clearance") != nullptr);   // Z0 is not assumed safe
+    }
+    {   // no contact when touching by hand: waits, then fails; no probing move was ever sent
+        Rig r; r.nc.feat = Feature::Plate;
+        JcWfParams p = tool_params();
+        CHECK(r.prepare(JcWfKind::ToolReference, p));
+        r.wf.start(r.nc.now); r.run(65000);
+        CHECK(r.wf.state() == JcWfState::Failed && strstr(r.wf.reason(), "NO PROBE CONTACT") != nullptr);
+        CHECK(r.count("G21 G91 G38.2") == 0);
+    }
+    {   // probe input not verified / already triggered
+        Rig r; r.probe_cfg = JcTri::Unknown;
+        CHECK(r.prepare(JcWfKind::ToolReference, tool_params()));
+        r.wf.start(r.nc.now); r.run(500);
+        CHECK(r.wf.state() == JcWfState::Failed && strstr(r.wf.reason(), "probe input") != nullptr);
+        Rig t; strcpy(t.nc.pins, "P");
+        CHECK(t.prepare(JcWfKind::ToolReference, tool_params()));
+        t.wf.start(t.nc.now); t.run(500);
+        CHECK(t.wf.state() == JcWfState::Failed && strstr(t.wf.reason(), "ALREADY TRIGGERED") != nullptr && t.count("G21 G91 G38.2") == 0);
+    }
+    {   // the plate is out of reach: ALARM:4, no offset is computed
+        Rig r; r.nc.feat = Feature::Plate; r.nc.plate_z = -200.0f;
+        CHECK(r.prepare(JcWfKind::ToolReference, tool_params()));
+        r.wf.start(r.nc.now); r.run(1000); hand_touch(r); r.go(); r.run(2000);
+        CHECK(r.wf.state() == JcWfState::Failed && !r.wf.result().tool_contact_ok && !r.wf.result().tlo_ok);
+    }
+    {   // implausible difference: refused, not applied
+        Rig r; r.nc.feat = Feature::Plate; r.nc.plate_z = -40.0f; r.nc.tool_len = 20.0f;
+        JcWfParams p = tool_params(); p.has_ref = true; p.ref_mz = 900.0f;
+        CHECK(r.prepare(JcWfKind::ToolMeasure, p));
+        r.wf.start(r.nc.now); r.run(1000); hand_touch(r); r.go();
+        CHECK(r.wf.state() == JcWfState::Failed && strstr(r.wf.reason(), "implausible") != nullptr);
+        CHECK(!r.wf.request_apply_tlo(r.nc.now) && r.count("G43") == 0);
+    }
+    {   // disconnect while waiting for the touch: ends, nothing resumes
+        Rig r; r.nc.feat = Feature::Plate;
+        CHECK(r.prepare(JcWfKind::ToolReference, tool_params()));
+        r.wf.start(r.nc.now); r.run(600);
+        r.wf.on_link_lost();
+        r.run(3000);
+        CHECK(r.wf.state() == JcWfState::Failed && r.count("G21 G91 G38.2") == 0);
+        strcpy(r.nc.pins, "P"); r.run(1000);                  // a later touch does not revive it
+        CHECK(r.wf.state() == JcWfState::Failed && r.count("G21 G91 G38.2") == 0);
+    }
+    {   // the controller acknowledges but does not apply the offset: the readback catches it
+        Rig r; r.nc.feat = Feature::Plate; r.nc.plate_z = -40.0f; r.nc.tool_len = 26.5f; r.nc.ignore_tlo = true;
+        JcWfParams p = tool_params(); p.has_ref = true; p.ref_mz = -20.0f;
+        CHECK(r.prepare(JcWfKind::ToolMeasure, p));
+        r.wf.start(r.nc.now); r.run(1000); hand_touch(r); r.go();
+        CHECK(r.wf.request_apply_tlo(r.nc.now)); r.go();
+        CHECK(r.wf.state() == JcWfState::Failed && strstr(r.wf.reason(), "TLO READBACK MISMATCH") != nullptr);
+    }
+    {   // the controller rejects G43.1: reported, no further step
+        Rig r; r.nc.feat = Feature::Plate; r.nc.plate_z = -40.0f; r.nc.tool_len = 26.5f;
+        JcWfParams p = tool_params(); p.has_ref = true; p.ref_mz = -20.0f;
+        CHECK(r.prepare(JcWfKind::ToolMeasure, p));
+        r.wf.start(r.nc.now); r.run(1000); hand_touch(r); r.go();
+        r.nc.error_on_cmd = r.nc.cmds + 1;
+        CHECK(r.wf.request_apply_tlo(r.nc.now)); r.go();
+        CHECK(r.wf.state() == JcWfState::Failed && !r.nc.tlo_active && r.count("$#") >= 1);
+    }
+    {   // apply is never offered before a measurement and never for the reference tool
+        Rig r; r.nc.feat = Feature::Plate;
+        CHECK(!r.wf.request_apply_tlo(r.nc.now));
+        CHECK(r.prepare(JcWfKind::ToolReference, tool_params()));
+        r.wf.start(r.nc.now); r.run(1000); hand_touch(r); r.go();
+        CHECK(r.wf.state() == JcWfState::Done && !r.wf.request_apply_tlo(r.nc.now));
+    }
+}
+
+static void test_manual_tool_change() {
+    Rig r;
+    r.nc.feat = Feature::Plate; r.nc.plate_z = -40.0f; r.nc.tool_len = 26.5f;
+    r.nc.m[2] = -5.0f;                                   // work Z -5
+    JcWfParams p = tool_params(); p.has_ref = true; p.ref_mz = -20.0f; p.clearance_set = true; p.clearance_z = 30.0f; p.tool_number = 3;
+    CHECK(r.prepare(JcWfKind::ToolChange, p));
+    CHECK(r.wf.start(r.nc.now));
+    r.go();
+    CHECK(r.wf.state() == JcWfState::WaitOperator);        // raised, waiting for the operator to change the tool
+    CHECK(r.count("G21 G90 G0 Z30.000") == 1);
+    NEAR(r.nc.work(2), 30.0f, 0.06f);
+    r.run(5000);
+    CHECK(r.wf.state() == JcWfState::WaitOperator && r.count("G21 G91 G38.2") == 0);   // nothing happens by itself
+    r.wf.continue_after_pause(r.nc.now);
+    r.run(1000);
+    CHECK(r.wf.state() == JcWfState::Running && r.count("G21 G91 G38.2") == 0);        // contact is still to be verified
+    // the machine (not the plan) provides the tool position: put it where the probe can reach the plate
+    r.nc.m[2] = -5.0f;
+    hand_touch(r);
+    r.go();
+    CHECK(r.wf.state() == JcWfState::Done && r.wf.result().tlo_ok);
+    NEAR(r.wf.result().tlo_proposed, 6.5f, 0.001f);
+    // an automatic tool change is never assumed: no M6, no T word, no macro call, anywhere
+    for (const std::string& s : r.sent_log) {
+        CHECK(s.find("M6") == std::string::npos && s[0] != 'T' && s.find("Macro") == std::string::npos && s.find("Run=") == std::string::npos);
+    }
+    CHECK(r.wf.request_apply_tlo(r.nc.now)); r.go();
+    CHECK(r.wf.state() == JcWfState::Done && r.wf.result().tlo_readback_ok);
+    CHECK(r.nc.tool == 0);                                // the controller's own T word is untouched
+
+    // refusals before anything moves
+    Rig a; a.nc.feat = Feature::Plate;
+    JcWfParams q = p; q.clearance_z = -10.0f;             // below the current work Z (-5): it would move down
+    CHECK(a.prepare(JcWfKind::ToolChange, q)); a.wf.start(a.nc.now); a.go();
+    CHECK(a.wf.state() == JcWfState::Failed && strstr(a.wf.reason(), "BELOW") != nullptr && a.moves_sent() == 0);
+    Rig b; b.nc.feat = Feature::Plate; b.nc.spindle = 12000;
+    CHECK(b.prepare(JcWfKind::ToolChange, p)); b.wf.start(b.nc.now); b.go();
+    CHECK(b.wf.state() == JcWfState::Failed && strstr(b.wf.reason(), "spindle") != nullptr);
+    // a spindle started during the change is caught before the probe
+    Rig c; c.nc.feat = Feature::Plate; c.nc.m[2] = -5.0f;
+    CHECK(c.prepare(JcWfKind::ToolChange, p)); c.wf.start(c.nc.now); c.go();
+    c.nc.spindle = 8000;
+    c.wf.continue_after_pause(c.nc.now); c.run(1000);
+    CHECK(c.wf.state() == JcWfState::Failed && c.count("G21 G91 G38.2") == 0);
+}
+
+static void test_tlo_policy_and_gate() {
+    CHECK(jc_set_tlo(6.5f).ok && strcmp(jc_set_tlo(6.5f).text, "G43.1 Z6.500") == 0 && jc_set_tlo(6.5f).cls == JcCommandClass::WorkOffset);
+    CHECK(!jc_set_tlo(2000.0f).ok && !jc_set_tlo(NAN).ok);
+    CHECK(strcmp(jc_clear_tlo().text, "G49") == 0);
+    CHECK(jc_command_line_allowed(JcCommandClass::WorkOffset, "G43.1 Z6.500") && jc_command_line_allowed(JcCommandClass::WorkOffset, "G49"));
+    CHECK(jc_command_line_allowed(JcCommandClass::WorkOffset, "G43.1 Z-12.250"));
+    CHECK(!jc_command_line_allowed(JcCommandClass::WorkOffset, "G43.1 Z6.5"));          // exact builder grammar only
+    CHECK(!jc_command_line_allowed(JcCommandClass::WorkOffset, "G43.1 X1.000"));
+    CHECK(!jc_command_line_allowed(JcCommandClass::WorkOffset, "G43 H1"));
+    CHECK(!jc_command_line_allowed(JcCommandClass::WorkOffset, "G43.1 Z2000.000"));
+    CHECK(!jc_command_line_allowed(JcCommandClass::WorkOffset, "G43.1 Z1.000 G0 X0.000"));
+    CHECK(!jc_command_line_allowed(JcCommandClass::WorkOffset, "G49 "));
+    CHECK(!jc_command_line_allowed(JcCommandClass::Macro, "M6") && !jc_command_line_allowed(JcCommandClass::Other, "M6 T3") && !jc_command_line_allowed(JcCommandClass::Other, "T3"));
+    CHECK(!jc_command_line_allowed(JcCommandClass::Probe, "G43.1 Z6.500") && !jc_command_line_allowed(JcCommandClass::Jog, "G49"));
+    CHECK(jc_command_bytes_allowed("G43.1 Z6.500\n", 13) && jc_command_bytes_allowed("G49\n", 4) && !jc_command_bytes_allowed("M6\n", 3));
+    // through the gate: needs the operator's confirmation and an idle machine
+    Rig r;
+    JcDispatchContext x; x.live = true; x.link_fresh = true; x.machine_state = "Idle"; x.operator_confirmed = false; x.now_ms = r.nc.now;
+    CHECK(r.disp.submit(jc_set_tlo(1.0f), x) == JcAuthDecision::BlockedUnconfirmed);
+    x.operator_confirmed = true; x.machine_state = "Run";
+    CHECK(r.disp.submit(jc_set_tlo(1.0f), x) == JcAuthDecision::BlockedBadState);
+    CHECK(r.count("G43") == 0);
+}
+
 int main() {
     test_calc_functions();
     test_goto();
@@ -523,6 +761,11 @@ int main() {
     test_radius_and_parameters();
     test_origin_writes();
     test_rotary_centreline();
+    test_tool_reference_and_measure();
+    test_tool_direction_and_thickness();
+    test_tool_failures();
+    test_manual_tool_change();
+    test_tlo_policy_and_gate();
     printf("%d checks, %d failed (positioning and probing routines)\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

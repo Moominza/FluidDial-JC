@@ -96,6 +96,9 @@ constexpr const char* kJcQueryToolsetterPin = "$/probe/toolsetter_pin";
 constexpr const char* kJcQueryMustHome = "$/start/must_home";
 // Read-only: prints [G54:..] .. [G59:..], [G28:..], [G30:..], [G92:..], [TLO:..] and [PRB:..]. Used to read work offsets back.
 constexpr const char* kJcQueryOffsets = "$#";
+// Read-only listing of the CONTROLLER's SD card (Instruction 010). Never $LocalFS (that is the controller's flash).
+constexpr const char* kJcQuerySdStatusLine = "$SD/Status";
+constexpr const char* kJcQuerySdListLine = "$SD/List";
 
 // True only for the exact lines the application may send as read-only queries.
 inline bool jc_query_allowed(const char* line) {
@@ -104,7 +107,8 @@ inline bool jc_query_allowed(const char* line) {
     }
     if (strcmp(line, kJcQueryBuildInfo) == 0 || strcmp(line, kJcQueryModalState) == 0
         || strcmp(line, kJcQueryProbePin) == 0 || strcmp(line, kJcQueryToolsetterPin) == 0
-        || strcmp(line, kJcQueryMustHome) == 0 || strcmp(line, kJcQueryOffsets) == 0) {
+        || strcmp(line, kJcQueryMustHome) == 0 || strcmp(line, kJcQueryOffsets) == 0
+        || strcmp(line, kJcQuerySdStatusLine) == 0 || strcmp(line, kJcQuerySdListLine) == 0) {
         return true;
     }
     char candidate[72];

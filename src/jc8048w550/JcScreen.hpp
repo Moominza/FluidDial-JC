@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 
+#include "JcBleUart.hpp"
 #include "JcCapsLoader.hpp"
 #include "JcCapsWorkflow.hpp"
 #include "JcCommandSystem.hpp"
@@ -24,11 +25,15 @@
 #include "JcDryRun.hpp"
 #include "JcDispatch.hpp"
 #include "JcJogPreview.hpp"
+#include "JcJobState.hpp"
 #include "JcJogTest.hpp"
 #include "JcMachineModel.hpp"
 #include "JcNav.hpp"
 #include "JcReadOnlyFluidNc.hpp"
+#include "JcSdBrowser.hpp"
 #include "JcSettings.hpp"
+#include "JcToolInfo.hpp"
+#include "JcTransportManager.hpp"
 #include "JcUiKit.hpp"
 
 namespace jc8048w550 {
@@ -63,9 +68,25 @@ public:
     // the reason it cannot start. Transmits only allowlisted queries.
     virtual const char* start_caps_read() = 0;
     virtual void cancel_caps_read() = 0;
+    // Read-only SD listing / tool state reads (allowlisted queries). nullptr = started, else why not.
+    virtual const char* sd_refresh() = 0;
+    virtual const char* tool_read() = 0;
+    // Control transport selection through the transport manager (stops the others, invalidates stale state).
+    // nullptr = selected, else why it was refused.
+    virtual const char* select_transport(uint8_t transport) = 0;
+    // BLE UART operator actions.
+    virtual bool ble_scan() = 0;
+    virtual bool ble_connect(const char* addr, const char* name) = 0;
+    virtual void ble_disconnect() = 0;
+    virtual void ble_forget() = 0;
+    virtual bool job_simulated() const = 0;   // the job on screen is a rehearsal on the SIMULATED controller
 #if JC_AUTHORITY
     // Prepares a positioning / probing routine (reads $G and $# first). See JcApp::workflow_prepare.
     virtual bool workflow_prepare(JcWfKind kind, const JcWfParams& params) = 0;
+    // Opens the routines page on `kind` (tool routines are launched from the Tools page).
+    virtual void workflow_open(JcWfKind kind) = 0;
+    // Starts the CLEAR TOOL OFFSET (G49) action and shows its progress.
+    virtual bool workflow_clear_tlo() = 0;
 #endif
 };
 
@@ -80,6 +101,13 @@ struct JcAppServices {
     JcJogSession&      jogs;   // inert (no transport) in the ordinary firmware
     const bool&        live_mode;
     JcAppHost&         host;
+    JcSdBrowser&       sd;           // the CONTROLLER's SD card (read-only $SD/Status, $SD/List)
+    JcJobTracker&      job;          // SD job state from the controller's own status report
+    JcToolReader&      tool_reader;  // $G / $# tool state
+    JcToolStore&       tool_store;   // reference contact
+    JcBleUart&         ble;
+    JcBleSaved&        ble_saved;
+    JcTransportManager& transports;
 #if JC_JOG_PREVIEW
     JcPreviewBridge&   preview;   // the SIMULATED controller: the only jog transport in the ordinary firmware
 #endif
@@ -110,9 +138,10 @@ struct JcAppServices {
         // A configuration read or an unresolved jog is an operation in flight.
 #if JC_AUTHORITY
         // One operation at a time: a command awaiting its reply, a read, or another routine in progress.
-        c.operation_pending = jogs.unresolved() || loader.running() || cmd.busy() || (wf.running() && !from_workflow);
+        c.operation_pending = jogs.unresolved() || loader.running() || cmd.busy() || (wf.running() && !from_workflow)
+                              || sd.busy() || tool_reader.reading();
 #else
-        c.operation_pending = jogs.unresolved() || loader.running();
+        c.operation_pending = jogs.unresolved() || loader.running() || sd.busy() || tool_reader.reading();
 #endif
         return c;
     }

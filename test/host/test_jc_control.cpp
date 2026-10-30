@@ -172,6 +172,8 @@ static void test_query_allowlist() {
     CHECK(jc_query_allowed("$/probe/pin"));
     CHECK(jc_query_allowed("$/probe/toolsetter_pin"));
     CHECK(jc_query_allowed("$/start/must_home"));
+    CHECK(jc_query_allowed("$SD/Status") && jc_query_allowed("$SD/List"));
+    CHECK(!jc_query_allowed("$LocalFS/List") && !jc_query_allowed("$SD/Run=/a.nc") && !jc_query_allowed("$SD/Delete=/a.nc") && !jc_query_allowed("$SD/List "));
     CHECK(jc_query_allowed("$#"));   // read-only offset table (work-offset readback)
     int axis_lines = 0;
     for (uint8_t a = 0; a < 4; ++a) {

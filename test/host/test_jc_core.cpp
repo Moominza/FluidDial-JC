@@ -133,7 +133,8 @@ static void test_probe_and_paths() {
     CHECK_STR(s.steps[3].text, "G90");  // always restores absolute mode
     CHECK(!jc_probe_z_sequence(p, 0.0f, 100.0f, 5.0f, 1.0f).ok);
 
-    CHECK_STR(jc_run_sd_file("/job one.nc").text, "$SD/Run=/job one.nc");
+    CHECK_STR(jc_run_sd_file("/job_one.nc").text, "$SD/Run=/job_one.nc");
+    CHECK(!jc_run_sd_file("/job one.nc").ok);   // one policy for every transport: no spaces
     CHECK_STR(jc_run_macro_file("/macro0.nc").text, "$Localfs/Run=/macro0.nc");
     const char* badp[] = { "job.nc", "/../etc", "/a\nG0X1", "/a;b", "/a$b", "/a=b", "/a&b", "", nullptr };
     for (const char* b : badp) {

@@ -746,3 +746,62 @@ The full-control image was **not** flashed and no machine-changing command was t
   limitations. FluidNC itself supports them.
 - Probe offsets / tool length offset handling (TLO from a Z tool probe) is not yet part of the new routines.
 - The independent emergency stop is **not installed or tested**; machine position is not established.
+
+## 15. Complete pendant functionality (Instruction 010)
+
+Built on the 009 command interface; nothing was restarted. FluidNC remains the authority; the ordinary firmware stays
+motion-disabled; `env:jc8048w550_fullcontrol_test` was built but **not flashed**; no machine-changing command was sent.
+
+### 15.1 What exists
+
+| Area | Implementation | Where |
+|---|---|---|
+| SD browser | `$SD/Status` + `$SD/List` read-only queries (allowlisted), tolerant parser, folders inferred from paths, sizes, selection, scrolling, refresh, empty / missing-card (`error:60`) / error states, bounded to 160 entries with a visible TRUNCATED flag, long names ellipsized; the controller's own words are shown; lines are adopted only while the browser's own request is outstanding, so local flash entries can never appear | `JcSdBrowser.hpp`, `JcScreenFiles.cpp` |
+| Job management | Percent, name and feed-hold are the controller's `SD:` status field only; phases Running / Paused / Complete / Ended / Alarm / Unknown; FEED HOLD (`!`, immediate), CYCLE START (`~`, confirmed), RESET (Ctrl-X, confirmed) are three labelled controls; START needs one confirmation, arms exactly one submission and disarms; a lost connection makes the job UNKNOWN and nothing is restarted or resumed | `JcJobState.hpp`, `JcScreenFiles.cpp` |
+| Tool state | `$G` T word and `$#` `[TLO:]`; routines stay disabled until the controller reports `[TLO:]`; the reference contact is discarded on any link loss or transport switch | `JcToolInfo.hpp`, `JcScreenTools.cpp` |
+| Tool routines | MEASURE REFERENCE TOOL, CHANGE TOOL BY HAND + MEASURE (Z to your clearance, then waits for you), MEASURE ONLY; probe direction down or up, search, feed, retract, plate thickness; **contact is verified by hand first** (Pn:P must appear and clear) before any probing move; the result is a PROPOSED offset (`new - reference`, sign reversed when probing up) applied only on a separate confirmation with `G43.1 Z<x>` and read back; CLEAR with `G49`, the readback must be 0 | `JcWorkflow.hpp`, `JcWorkflowPlans.hpp`, `JcScreenWorkflow.cpp` |
+| Not conflated | Tool length compensation never writes G54..G59, G10 or G92; the plate thickness is displayed but cancels out of the offset; no M6 / T word is generated (guard-enforced) | `JcCommandBuilder.hpp`, `check_no_sink.py` |
+| BLE UART | BLE central core: HM-10 / CC2541 FFE0/FFE1 and Nordic UART, scan list (16, sorted, sanitized), GATT property validation (a service that cannot notify or be written is refused with the reason), notifications of any fragmentation through the shared stream splitter, bounded 256-byte transmit queue of whole lines, real-time bytes ahead of text, paced writes with ATT-sized pieces, write-failure and disconnect handling, bounded-backoff reconnection to the saved device only, saved device in NVS, diagnostics page | `JcBleUart.hpp`, `JcBleLink.cpp`, `JcScreenBle.cpp` |
+| One policy | BLE has no authorization of its own: queries pass `jc_query_allowed()`, commands pass `jc_command_bytes_allowed()` and arrive only through the gate's sink; the ordinary image contains no BLE command function (compile-time and guard-checked) | `JcBleUart.hpp`, `test_jc_ble_policy.cpp` |
+| Transport management | Exactly one control transport; switching stops the others, invalidates machine status, pending operations, SD listing, tool state, reference and job state, and is refused while the machine reports motion; queries and commands route only to the active transport (a stopped UART no longer falls through to Wi-Fi); no assumption of a fixed controller IP | `JcTransportManager.hpp`, `JcApp.cpp` |
+| Review of 009A | Contact geometry, tip radius and approach direction are shown in the preview; the planning page shows the clearance Z and the XY move as separate steps; the page does not claim the clearance is safe | `JcScreenWorkflow.cpp` |
+
+### 15.2 FluidNC command coverage
+
+Read-only (ordinary firmware, live): `?`, `$I`, `$G`, `$#`, `$SD/Status`, `$SD/List`, `$/...` capability reads, `$/probe/pin`.
+Machine-changing (full-control build, or rehearsed on the simulator in the ordinary build): `$J=`, `$H[axis]`, `$X`, G54..G59,
+`G10 L2` / `L20`, `G38.2` probing with `G91 G0` retract and `G90`, `G21 G90 G0` positioning, `M5`, `$SD/Run=<path>`, `$Localfs/Run=<path>`,
+`G43.1 Z<x>`, `G49`, and the real-time bytes `!`, `~`, Ctrl-X, 0x85.
+
+**Checked against the real controller (read-only, 2026-10-30, FluidNC v4.1.1 at the saved endpoint, over its HTTP command endpoint, nothing changed):**
+`$SD/Status` answers the plain text `SD card detected`; `$SD/List` prints **relative** names with the folder depth as leading spaces
+(`[DIR:SIMATIC.S7S]`, then `[FILE:  S001|SIZE:23473]` inside it, `[FILE: Test.nc|SIZE:43039]` at the root) and ends with a summary line
+`[/sd Free:14.57 GB Used:25.72 MB Total:14.59 GB]`; `$#` prints G54..G59, G59.1..G59.3, G28, G30, G92 and **`[TLO:0.000,0.000,0.000,0.000]`, one value per axis**
+(the pendant uses the Z value); `$G` prints `[GC:... T0 F0 S0]`. The real card (59 files, 2 folders) was run through the pendant's parser on the PC:
+all 59 files and both folders were reconstructed with their paths and sizes and the summary was read. 12 of the 52 root files have a space in the
+name and therefore **cannot be started from the pendant** (the one command policy accepts only `A-Z a-z 0-9 / . _ -`); relaxing that is an owner decision and
+needs a read-only test of how FluidNC parses `$SD/Run=` with a space.
+
+**Still unverified against the real controller:** the text of `$SD/Status` / `$SD/List` replies when the card is missing, the FluidNC filesystem error numbers
+60..67 (shown together with the raw number), acceptance of `G43.1` / `G49` by v4.1.1 (nothing was sent), and the `$G` modal text while a tool offset is active.
+The parser and the screens show the raw controller text and never invent a listing.
+
+### 15.3 Remaining unsupported controller functions
+
+SD file upload / delete / rename (deliberately not offered), file names with spaces or characters outside `A-Z a-z 0-9 / . _ -`, automatic tool change
+and M6 / macro tool change (not assumed), tool-length probing of the rotary axis, outside-feature XY centre in a single routine, job resume after a
+controller reset, any BLE hardware verification.
+
+### 15.4 Verification (development PC, 2026-10-30)
+
+| Check | Result |
+|---|---|
+| Existing host suites (core, app, control, conn, capability workflow, jog x3, preview x2, commands 767, positioning / probing / tool routines 289) | PASS |
+| New `test_jc_sdjob.cpp` (the real controller's listing transcript, tolerant full-path format, folders, sizes, long / odd names, missing card, empty, error, large (bounded), timeouts, link loss, isolation from unrelated lines, job run / hold / resume / reset / complete, file errors 60 / 65 / 66 / 67, alarm, disconnect with no replay, tool state reader incl. the four-value `[TLO:]`, reference discard) | 176 checks PASS |
+| New `test_jc_ble.cpp` (GATT validation, scan list, connect + save, unusable peers, 20 seeds of random notification fragmentation, oversize notification, queue bound, policy refusal, real-time priority, loss + reconnect with no replay, end-to-end through the command system and the simulated FluidNC, transport manager) with a **MOCK** radio | 327 checks PASS |
+| BLE policy compile checks (ordinary: no BLE command function; full-control: present) | PASS |
+| Static guard (adds: one BLE write site, no BLE write outside the core, enqueue / priority callers, read-only allowlist without write verbs, no M6 / T word, `$SD/Run` only in the builder) | PASS |
+| Mutation checks: 29 deliberate defects (SD isolation, size trust, no-card, timeouts, odd paths, job completion / unknown / double start, TLO reader, reference survival, G43.1 range, M6, probe-up sign, contact verification, readback, reference required, tool-change wait, BLE policy skip / queue survival / priority / notify property / allowlist, transport invalidate / motion refusal, BLE command path in the ordinary build, second BLE write, SD write verb, arming left on, hitbox drift) | all caught (one mutant was equivalent and was replaced) |
+| Host UI renderer (ordinary 42 / preview 83 / live 66 frames): Files (idle, reading, root, folder, selected, paging, not runnable, start / resume / reset confirmations, every job phase including SIMULATED and UNKNOWN, no card, empty, error, 210-file card), Tools, tool routines, BLE page; hitboxes checked inside 800x480, at least 38 px, non-overlapping and equal to the rectangles actually drawn | 0 problems |
+
+The renderer output is a rendering of the page code, not a photograph. The BLE firmware radio is compile-checked only.
