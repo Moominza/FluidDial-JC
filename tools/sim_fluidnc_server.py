@@ -15,7 +15,7 @@ Everything the device sends is audited:
     reported as a VIOLATION and makes the process exit non-zero.
   * ONLY in the jog-* scenarios (first-live-jog tests, Instruction 006) the audit also
     permits the jog-cancel byte 0x85 and ONE strictly formatted incremental jog line
-    inside the test limits (X/Y 1 mm @ 100 mm/min, Z 0.5 mm @ 50 mm/min; A never). The
+    inside the test limits (X/Y 1 mm @ 100 mm/min; Z is on hold and A is disabled, so neither ever matches). The
     check is a deliberately independent re-implementation of the C++ rule: an oversized,
     rotary, malformed or extra-word jog line is still a VIOLATION, and so is every
     other real-time byte.
@@ -100,8 +100,8 @@ ALLOWED = [re.compile(p) for p in (
 REALTIME_BYTES = {0x18, 0x85, ord("!"), ord("~")}
 
 # ---- jog scenarios: an INDEPENDENT re-implementation of the strict test-jog rule -------------
-JOG_RE = re.compile(r"^\$J=G91G21F(\d{1,5})([XYZ])(-?\d{1,4}\.\d{3})$")
-JOG_LIMITS = {"X": (1.0, 100.0), "Y": (1.0, 100.0), "Z": (0.5, 50.0)}   # max step mm, max feed mm/min
+JOG_RE = re.compile(r"^\$J=G91G21F(\d{1,5})([XY])(-?\d{1,4}\.\d{3})$")   # Z is ON HOLD, A is disabled
+JOG_LIMITS = {"X": (1.0, 100.0), "Y": (1.0, 100.0)}   # max step mm, max feed mm/min
 JOG_CANCEL = 0x85
 
 
@@ -115,7 +115,7 @@ def jog_allowed(line):
     step_max, feed_max = JOG_LIMITS[axis]
     if dist == 0.0 or abs(dist) > step_max + 0.0005 or feed < 1 or feed > feed_max + 0.5:
         return None
-    return "XYZ".index(axis), dist, feed
+    return "XY".index(axis), dist, feed
 
 
 JOG_SCENARIOS = {

@@ -1,12 +1,14 @@
 // Copyright (c) 2026 FluidDial-JC contributors
 // Use of this source code is governed by a GPLv3 license in the project root.
 
-// First-live-jog TEST support (Instruction 006). Pure logic shared by the
+// First-live-jog TEST support (Instructions 006 / 006A). Pure logic shared by the
 // experimental live-jog build and the host tests; nothing here transmits by
 // itself. It provides:
 //
-//   * the restricted test limits (X/Y 1 mm @ 100 mm/min, Z 0.5 mm @ 50 mm/min,
-//     A disabled) and jc_profile_apply_test_limits();
+//   * the restricted test limits (X/Y 1 mm @ 100 mm/min only; Z on hold, A disabled)
+//     and jc_profile_apply_test_limits();
+//   * jc_jog_gate(): per-axis PROTECTED / UNPROTECTED MICRO-JOG / BLOCKED, from a
+//     current capability read, with no assumption that the machine position is valid;
 //   * jc_jog_line_allowed(): a strict, independent check of the one jog line
 //     the transport may ever carry in the live-jog build (defence in depth: the
 //     transport re-validates what the builder generated);
@@ -29,6 +31,7 @@
 
 #include "JcCommandBuilder.hpp"
 #include "JcCommandExec.hpp"
+#include "JcMachineCaps.hpp"
 #include "JcResponse.hpp"
 
 namespace jc8048w550 {
@@ -40,12 +43,16 @@ struct JcJogTestLimits {
     float max_feed[4];  // mm/min
 };
 
+// First live motion is X and Y only, 1 mm at 100 mm/min at most.
+//   Z: ON HOLD. Its homing direction (positive) and limit-pin side (negative only)
+//      need owner / physical verification, and a Z fault has higher consequence.
+//   A: disabled pending rotary calibration.
 inline JcJogTestLimits jc_test_jog_limits() {
     JcJogTestLimits l;
     l.max_step[0] = 1.0f;  l.max_feed[0] = 100.0f;  // X
     l.max_step[1] = 1.0f;  l.max_feed[1] = 100.0f;  // Y
-    l.max_step[2] = 0.5f;  l.max_feed[2] = 50.0f;   // Z
-    l.max_step[3] = 0.0f;  l.max_feed[3] = 0.0f;    // A: disabled pending rotary calibration
+    l.max_step[2] = 0.0f;  l.max_feed[2] = 0.0f;    // Z: HOLD
+    l.max_step[3] = 0.0f;  l.max_feed[3] = 0.0f;    // A: disabled
     return l;
 }
 
@@ -60,6 +67,177 @@ inline void jc_profile_apply_test_limits(JcMachineProfile& p) {
         if (l.max_feed[i] < a.max_feed || l.max_feed[i] <= 0.0f) a.max_feed = l.max_feed[i];
     }
     p.test_mode = true;
+}
+
+// ---- jog gate: what the controller does and does not protect ---------------------------
+//
+// Real controller (read 2026-10-30): soft limits OFF, hard limits OFF, start/must_home
+// false. A configured travel, a configured limit input and a configured homing cycle
+// are NOT protection and NOT proof of a valid position:
+//
+//   * max_travel_mm is a configuration value, not a measured remaining path;
+//   * a limit input that is configured is not hard-limit protection unless
+//     hard_limits is ON, and even then it only helps if the position is valid;
+//   * a homing cycle that is configured does not mean the machine has homed;
+//   * start/must_home is NOT used as a jog gate (jogging is not governed by it).
+//
+// Modes, per axis:
+//   Protected         travel protection AND a valid position are both established.
+//                     Not reachable in this firmware: nothing it can read says that the
+//                     machine is homed, so position trust is never Established.
+//   UnprotectedMicro  the capability values are known and current but no trusted travel
+//                     protection exists. Only the tightly bounded test jog is possible,
+//                     after a deliberate operator acknowledgement.
+//   Blocked           anything unknown, refused, stale, not read, or an excluded axis.
+
+enum class JcJogGateMode : uint8_t { Blocked, UnprotectedMicro, Protected };
+
+enum class JcJogGateReason : uint8_t {
+    None,
+    AxisExcluded,   // Z on hold, A disabled: not part of the first-motion policy
+    NotRead,        // no completed capability read in this LIVE session
+    Stale,          // the read is older than kJcCapsMaxAgeMs
+    SoftUnknown,    // soft-limit state not known (not read, refused or unreadable)
+    HardUnknown,    // hard-limit state not known
+    PinUnknown,     // a limit-pin setting for the axis is not known
+};
+
+struct JcJogGate {
+    JcJogGateMode   mode;
+    JcJogGateReason reason;
+};
+
+// The capability read must be recent. A reconnect also discards it (JcApp), so a new
+// read is needed in every LIVE session.
+constexpr uint32_t kJcCapsMaxAgeMs = 5u * 60u * 1000u;
+
+enum class JcPositionTrust : uint8_t { Untrusted, Established };
+
+// Nothing the pendant can read establishes that the machine position is valid:
+// must_home=false does not imply it, a homing cycle being configured does not imply it,
+// and numeric MPos values after boot are not a reference. So this is always Untrusted.
+// It is a function (not a constant) so the policy has one place to change and one place
+// to test, and so the tests can show that no combination of values changes it.
+inline JcPositionTrust jc_position_trust(const JcMachineCaps&) { return JcPositionTrust::Untrusted; }
+
+// Whether the UI may assert anything about remaining path from MPos / max_travel_mm /
+// home MPOS. Only with an established position. Today: never.
+enum class JcPathClaim : uint8_t { None, Assessed };
+
+inline JcPathClaim jc_path_claim(const JcMachineCaps&, uint8_t, JcPositionTrust trust) {
+    return trust == JcPositionTrust::Established ? JcPathClaim::Assessed : JcPathClaim::None;
+}
+
+inline JcJogGate jc_jog_gate(const JcMachineCaps& caps, bool read_complete, uint32_t now_ms, uint8_t axis,
+                             JcPositionTrust trust) {
+    JcJogGate g;
+    g.mode = JcJogGateMode::Blocked;
+    g.reason = JcJogGateReason::None;
+    const JcJogTestLimits lim = jc_test_jog_limits();
+    if (axis >= 4 || lim.max_step[axis] <= 0.0f) {
+        g.reason = JcJogGateReason::AxisExcluded;
+        return g;
+    }
+    if (!read_complete || !caps.complete) {
+        g.reason = JcJogGateReason::NotRead;
+        return g;
+    }
+    if (static_cast<uint32_t>(now_ms - caps.completed_ms) > kJcCapsMaxAgeMs) {
+        g.reason = JcJogGateReason::Stale;
+        return g;
+    }
+    const JcAxisCaps& a = caps.axes[axis];
+    const JcTri soft = a.soft_limits();
+    if (soft == JcTri::Unknown) {
+        g.reason = JcJogGateReason::SoftUnknown;
+        return g;
+    }
+    if (a.hard_limits() == JcTri::Unknown) {
+        g.reason = JcJogGateReason::HardUnknown;
+        return g;
+    }
+    const JcQueryField pins[3] = { JcQueryField::LimitNegPin, JcQueryField::LimitPosPin, JcQueryField::LimitAllPin };
+    for (const JcQueryField f : pins) {
+        if (!a.valid(f)) {
+            g.reason = JcJogGateReason::PinUnknown;
+            return g;
+        }
+    }
+    // Everything needed is known and current. Protected needs travel protection AND a valid
+    // position; soft limits being ON without a valid position protect nothing trustworthy.
+    if (trust == JcPositionTrust::Established && soft == JcTri::Yes) {
+        g.mode = JcJogGateMode::Protected;
+    } else {
+        g.mode = JcJogGateMode::UnprotectedMicro;
+    }
+    return g;
+}
+
+// The two masks the authorization context carries: axes whose limit settings are known from a
+// CURRENT read (mode is not Blocked), and axes with trusted travel protection (Protected).
+// Used by the firmware's dispatch context and by the host tests, so they cannot disagree.
+inline void jc_jog_gate_masks(const JcMachineCaps& caps, bool read_complete, uint32_t now_ms, uint8_t& envelope_mask,
+                              uint8_t& protected_mask) {
+    envelope_mask = 0;
+    protected_mask = 0;
+    const JcPositionTrust trust = jc_position_trust(caps);
+    for (uint8_t axis = 0; axis < 4; ++axis) {
+        const JcJogGate g = jc_jog_gate(caps, read_complete, now_ms, axis, trust);
+        if (g.mode != JcJogGateMode::Blocked) envelope_mask |= static_cast<uint8_t>(1u << axis);
+        if (g.mode == JcJogGateMode::Protected) protected_mask |= static_cast<uint8_t>(1u << axis);
+    }
+}
+
+inline const char* jc_jog_gate_mode_name(JcJogGateMode m) {
+    switch (m) {
+        case JcJogGateMode::Blocked: return "BLOCKED";
+        case JcJogGateMode::UnprotectedMicro: return "UNPROTECTED MICRO-JOG";
+        case JcJogGateMode::Protected: return "PROTECTED";
+    }
+    return "?";
+}
+
+inline const char* jc_jog_gate_reason_text(JcJogGateReason r) {
+    switch (r) {
+        case JcJogGateReason::None: return "ok";
+        case JcJogGateReason::AxisExcluded: return "axis not part of the first-motion test (Z on hold, A disabled)";
+        case JcJogGateReason::NotRead: return "no capability read in this LIVE session";
+        case JcJogGateReason::Stale: return "the capability read is too old; read again";
+        case JcJogGateReason::SoftUnknown: return "soft-limit state is UNKNOWN";
+        case JcJogGateReason::HardUnknown: return "hard-limit state is UNKNOWN";
+        case JcJogGateReason::PinUnknown: return "a limit-pin setting is UNKNOWN";
+    }
+    return "?";
+}
+
+// The two facts that must never be merged on screen: is a limit INPUT configured, and
+// is HARD LIMIT PROTECTION enabled. A configured input with protection OFF does not stop
+// an ordinary jog.
+inline void jc_limit_wording(const JcAxisCaps& a, char* input, size_t input_size, char* protection,
+                             size_t protection_size) {
+    static const char* const kSide[3] = { "neg", "pos", "all" };
+    const JcQueryField pins[3] = { JcQueryField::LimitNegPin, JcQueryField::LimitPosPin, JcQueryField::LimitAllPin };
+    int unknown = 0, assigned = 0;
+    char list[64] = "";
+    for (uint8_t s = 0; s < 3; ++s) {
+        if (!a.valid(pins[s])) {
+            ++unknown;
+        } else if (a.get(pins[s]) != 0.0f) {
+            ++assigned;
+            const size_t used = strlen(list);
+            snprintf(list + used, sizeof(list) - used, "%s%s %s", used ? ", " : "", kSide[s], a.pin[s]);
+        }
+    }
+    if (unknown > 0) {
+        snprintf(input, input_size, "LIMIT INPUT UNKNOWN");
+    } else if (assigned > 0) {
+        snprintf(input, input_size, "LIMIT INPUT CONFIGURED (%s)", list);
+    } else {
+        snprintf(input, input_size, "NO LIMIT INPUT ASSIGNED");
+    }
+    const JcTri hard = a.hard_limits();
+    snprintf(protection, protection_size, "HARD LIMIT PROTECTION %s",
+             hard == JcTri::Yes ? "ON" : (hard == JcTri::No ? "OFF" : "UNKNOWN"));
 }
 
 // ---- strict jog line ---------------------------------------------------------

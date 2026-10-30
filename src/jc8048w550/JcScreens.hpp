@@ -60,6 +60,7 @@ private:
     const char* arm_blocker() const;
 
     uint8_t _axis = 0;
+    uint8_t _arm_axis = 0;   // axis the arming dialog was opened for
     uint8_t _step = 1;
     uint8_t _feed = 0;
     bool _continuous = false;

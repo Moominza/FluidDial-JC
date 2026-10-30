@@ -27,7 +27,7 @@ Build: `pio run -e jc8048w550` (also `m5dial`, `cyddial`). Host unit tests:
 `python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`).
 
 **Experimental, never flashed by default:** `pio run -e jc8048w550_livejog_test` builds a
-separate image that can send one restricted incremental jog (X/Y 1 mm, Z 0.5 mm, A disabled)
+separate image that can send one restricted incremental jog (X/Y 1 mm only; Z on hold, A disabled)
 and the jog-cancel byte, and nothing else. It is not a default environment and must not be
 flashed to a machine-connected device without the owner's written approval; see the
 [first-live-jog readiness report](docs/development/jc-live-jog-readiness.md).

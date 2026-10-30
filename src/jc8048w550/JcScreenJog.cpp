@@ -25,6 +25,14 @@ constexpr ui::Rect kAck { 28, 432, 744, 36 };
 
 #if JC_LIVE_JOG_TEST
 const char* tri_text(JcTri t) { return t == JcTri::Yes ? "ON" : (t == JcTri::No ? "OFF" : "UNKNOWN"); }
+
+// Z is on hold and A is disabled in the first-motion policy; only X and Y can jog.
+bool live_axis_allowed(uint8_t axis) { return axis < 2; }
+const char* live_jog_label(uint8_t axis, bool negative) {
+    if (axis == 2) return "Z  ON HOLD";
+    if (axis == 3) return "A  DISABLED";
+    return negative ? "JOG  -" : "JOG  +";
+}
 #endif
 
 }  // namespace
@@ -90,7 +98,9 @@ void JcJogScreen::draw_mode() {
     ui::button(sv.display, kIncremental, "INCREMENTAL", _continuous ? ui::Btn::Normal : ui::Btn::Selected);
 #if JC_LIVE_JOG_TEST
     const uint32_t now = millis();
-    if (sv.dispatcher.armed_at(now)) {
+    if (!live_axis_allowed(_axis)) {
+        ui::button(sv.display, kContinuous, "NOT AVAILABLE", ui::Btn::Disabled);
+    } else if (sv.dispatcher.armed_at(now) && ((sv.dispatcher.unprotected_ack_mask() >> _axis) & 1u) != 0) {
         char label[24];
         snprintf(label, sizeof(label), "ARMED %us", static_cast<unsigned>(sv.dispatcher.arm_remaining_ms(now) / 1000u));
         ui::button(sv.display, kContinuous, label, ui::Btn::Good);
@@ -125,8 +135,8 @@ void JcJogScreen::on_draw() {
     draw_feeds();
     draw_mode();
 #if JC_LIVE_JOG_TEST
-    ui::button(sv.display, kJogNeg, _axis == 3 ? "A  DISABLED" : "JOG  -", _axis == 3 ? ui::Btn::Disabled : ui::Btn::Normal);
-    ui::button(sv.display, kJogPos, _axis == 3 ? "A  DISABLED" : "JOG  +", _axis == 3 ? ui::Btn::Disabled : ui::Btn::Normal);
+    ui::button(sv.display, kJogNeg, live_jog_label(_axis, true), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
+    ui::button(sv.display, kJogPos, live_jog_label(_axis, false), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
 #else
     ui::button(sv.display, kJogNeg, _axis == 3 ? "A -  (deg)" : "JOG  -", ui::Btn::Normal);
     ui::button(sv.display, kJogPos, _axis == 3 ? "A +  (deg)" : "JOG  +", ui::Btn::Normal);
@@ -165,7 +175,12 @@ void JcJogScreen::draw_live() {
                        : sv.model.in_motion() ? "ACTIVE" : (sv.model.alarm() ? "ALARM" : "IDLE");
     char text[64];
 #if JC_LIVE_JOG_TEST
-    snprintf(text, sizeof(text), "%s [%s]  jog: %s", motion, sv.model.state(), jc_jog_phase_name(sv.jogs.phase()));
+    {
+        const JcJogGate g = jc_jog_gate(sv.loader.caps(), sv.loader.state() == JcLoadState::Complete, millis(), _axis,
+                                        jc_position_trust(sv.loader.caps()));
+        snprintf(text, sizeof(text), "%s [%s] jog: %s | gate: %s", motion, sv.model.state(),
+                 jc_jog_phase_name(sv.jogs.phase()), jc_jog_gate_mode_name(g.mode));
+    }
 #else
     snprintf(text, sizeof(text), "%s  [%s]", motion, sv.model.state());
 #endif
@@ -209,40 +224,64 @@ void JcJogScreen::draw_live() {
 
 #if JC_LIVE_JOG_TEST
 
+// Why the selected axis cannot be armed now (nullptr = it may). Uses the same gate the
+// authorization context uses, so the page and the gate cannot disagree.
 const char* JcJogScreen::arm_blocker() const {
+    if (!live_axis_allowed(_axis)) {
+        return _axis == 2 ? "Z is ON HOLD: homing direction / limit side need owner verification"
+                          : "A is disabled pending rotary calibration";
+    }
     if (!sv.live_mode) return "DEMO mode: connect LIVE first";
     if (!sv.model.fresh()) return "no fresh controller status";
     if (strcmp(sv.model.state(), "Idle") != 0) return "the machine must be Idle";
-    if (sv.loader.state() != JcLoadState::Complete) return "read the controller configuration first (Settings > Machine)";
-    if (sv.loader.caps().envelope_axis_mask() == 0) return "soft / hard limit settings were not read";
     if (sv.jogs.unresolved()) return "a previous operation is unresolved";
+    const JcJogGate g = jc_jog_gate(sv.loader.caps(), sv.loader.state() == JcLoadState::Complete, millis(), _axis,
+                                    jc_position_trust(sv.loader.caps()));
+    if (g.mode == JcJogGateMode::Blocked) return jc_jog_gate_reason_text(g.reason);
     return nullptr;
 }
 
 void JcJogScreen::request_arm() {
-    if (sv.dispatcher.armed_at(millis())) {
-        sv.dispatcher.disarm();
+    const uint32_t now = millis();
+    if (sv.dispatcher.armed_at(now) && ((sv.dispatcher.unprotected_ack_mask() >> _axis) & 1u) != 0) {
+        sv.dispatcher.disarm();  // tapping an armed button disarms everything
         Serial.println("jogtest: disarmed by the operator");
         draw();
         return;
     }
     if (const char* blocker = arm_blocker()) {
+        Serial.printf("jogtest: arm refused (%s): %s\n", jc_axis_name(_axis), blocker);
         show_message("CANNOT ARM THE JOG TEST", blocker, "Nothing was sent.");
         return;
     }
-    open_custom_confirm("ARM THE LIVE JOG TEST?", "ARM");
-    dialog.add_line("Only a restricted incremental jog can be sent:", ui::kWarn);
-    dialog.add_line("X/Y 1 mm @ 100/min, Z 0.5 mm @ 50/min, A disabled.", ui::kWarn);
-    dialog.add_line("Each jog needs its own confirmation.");
-    dialog.add_line("Arming lapses after 120 s, on leaving this page,");
-    dialog.add_line("and on any loss of the connection.");
-    dialog.add_line("Software cancel is NOT an emergency stop.", RED);
+    _arm_axis = _axis;
+    const JcAxisCaps& ax = sv.loader.caps().axes[_axis];
+    const bool both_off = ax.soft_limits() == JcTri::No && ax.hard_limits() == JcTri::No;
+    char l2[80], l4[80];
+    snprintf(l2, sizeof(l2), "%s: soft limits %s, hard limits %s.", jc_axis_name(_axis), tri_text(ax.soft_limits()),
+             tri_text(ax.hard_limits()));
+    snprintf(l4, sizeof(l4), "%s", ax.hard_limits() == JcTri::No ? "Limit switches will not stop an ordinary jog."
+                                                               : "Limit switches may not stop a jog: position is not trusted.");
+    open_custom_confirm("ARM UNPROTECTED MICRO-JOG?", "I ACKNOWLEDGE");
+    dialog.add_line(both_off ? "NO CONTROLLER TRAVEL PROTECTION" : "NO TRUSTED CONTROLLER TRAVEL PROTECTION", RED);
+    dialog.add_line(l2, ui::kWarn);
+    dialog.add_line("Machine position may not match the physical position.", ui::kWarn);
+    dialog.add_line(l4, ui::kWarn);
+    dialog.add_line("Check: machine still, Idle, spindle cannot start, no job.");
+    dialog.add_line("Check clear space in the commanded direction.");
+    dialog.add_line("Keep E-stop / power removal in reach. Not 'safe': 1 mm only.", RED);
     draw();
 }
 
 void JcJogScreen::on_custom_confirm() {
-    sv.dispatcher.arm_for(millis(), kJcJogArmTtlMs);
-    Serial.println("jogtest: ARMED for 120 s");
+    // The acknowledgement covers this axis in this arming only. Axes acknowledged earlier in
+    // the same, still-valid arming are kept; a lapsed or disarmed arming starts from nothing.
+    const uint32_t now = millis();
+    uint8_t mask = sv.dispatcher.armed_at(now) ? sv.dispatcher.unprotected_ack_mask() : 0;
+    mask = static_cast<uint8_t>(mask | (1u << _arm_axis));
+    sv.dispatcher.arm_for(now, kJcJogArmTtlMs, mask);
+    Serial.printf("jogtest: ARMED for 120 s; unprotected-micro-jog acknowledged for %s (mask 0x%02X)\n",
+                  jc_axis_name(_arm_axis), static_cast<unsigned>(mask));
 }
 
 void JcJogScreen::jog_live(int direction) {
@@ -256,8 +295,14 @@ void JcJogScreen::jog_live(int direction) {
         Serial.printf("jogtest: refused axis=%s step=%g feed=%g: %s\n", jc_axis_name(_axis),
                       static_cast<double>(direction * step_value()), static_cast<double>(feed_value()),
                       jc_cmd_error_name(command.error));
-        show_message("JOG REFUSED", reason, "Test limits: X/Y 1 mm @ 100/min, Z 0.5 mm @ 50/min.",
-                     "A is disabled (rotary calibration pending). No continuous jog.");
+        if (_axis == 2) {
+            show_message("Z JOG ON HOLD", "Z is not part of the first-motion test.",
+                         "Its homing direction (positive) and limit pin (negative side only)",
+                         "need owner / physical verification first.");
+        } else {
+            show_message("JOG REFUSED", reason, "Test limits: X/Y 1 mm @ 100/min only.",
+                         "Z is on hold, A is disabled. No continuous jog.");
+        }
         return;
     }
     _preview.draw(sv.display, { 110, 354, 650, 26 }, command.text, FontId::Body16, CYAN, ui::kPanel);
@@ -269,7 +314,11 @@ void JcJogScreen::jog_live(int direction) {
     // Everything except the operator's confirmation is checked BEFORE the dialog opens.
     const JcAuthDecision pre = sv.dispatcher.evaluate(command, sv.dispatch_context(true));
     if (pre != JcAuthDecision::Allowed) {
-        show_message("JOG BLOCKED", jc_auth_name(pre), "Nothing was sent.");
+        const bool rearm = pre == JcAuthDecision::BlockedUnprotectedNotAcknowledged
+                           || pre == JcAuthDecision::BlockedNotArmed;
+        show_message("JOG BLOCKED", jc_auth_name(pre),
+                     rearm ? "Tap ARM TEST for this axis and acknowledge." : "Nothing was sent.",
+                     "Nothing was sent.");
         return;
     }
     const JcJogReject why = sv.jogs.can_begin(now);
@@ -277,26 +326,18 @@ void JcJogScreen::jog_live(int direction) {
         show_message("JOG REFUSED", jc_jog_reject_name(why), "Nothing was sent.");
         return;
     }
-    // What the controller itself enforces. A configured travel is NOT proof the path is clear.
+    // What the controller does and does not protect. A configured limit INPUT is shown apart
+    // from HARD LIMIT PROTECTION, and nothing here claims a safe path or remaining travel.
     const JcMachineCaps& caps = sv.loader.caps();
     const JcAxisCaps& ax = caps.axes[_axis];
-    char l1[80], l2[80], l3[80];
-    const int pins = ax.limit_pins_assigned();
-    char pin_text[8];
-    if (pins < 0) snprintf(pin_text, sizeof(pin_text), "?");
-    else snprintf(pin_text, sizeof(pin_text), "%d", pins);
-    snprintf(l1, sizeof(l1), "%s: soft limits %s, hard limits %s, limit pins %s", jc_axis_name(_axis),
-             tri_text(ax.soft_limits()), tri_text(ax.hard_limits()), pin_text);
-    if (ax.homing_known()) {
-        snprintf(l2, sizeof(l2), "Homing cycle %g, must_home %s", static_cast<double>(ax.get(JcQueryField::HomingCycle)),
-                 tri_text(caps.must_home_tri()));
-    } else {
-        snprintf(l2, sizeof(l2), "Homing UNKNOWN, must_home %s", tri_text(caps.must_home_tri()));
-    }
-    snprintf(l3, sizeof(l3), "Travel %g mm is NOT proof the path is clear.", static_cast<double>(ax.get(JcQueryField::MaxTravelMm)));
-    const char* notes[3] = { l1, l2, l3 };
-    Serial.printf("jogtest: staged [%s] soft=%s hard=%s pins=%s\n", command.text, tri_text(ax.soft_limits()),
-                  tri_text(ax.hard_limits()), pin_text);
+    char input[72], protection[48], l1[80], l2[100];
+    jc_limit_wording(ax, input, sizeof(input), protection, sizeof(protection));
+    snprintf(l1, sizeof(l1), "NO TRUSTED TRAVEL PROTECTION: %s soft %s, hard %s", jc_axis_name(_axis),
+             tri_text(ax.soft_limits()), tri_text(ax.hard_limits()));
+    snprintf(l2, sizeof(l2), "%s; %s", input, protection);
+    const char* notes[3] = { l1, l2, "Check clear space in THIS direction. Position is not trusted." };
+    Serial.printf("jogtest: staged [%s] soft=%s hard=%s | %s | %s\n", command.text, tri_text(ax.soft_limits()),
+                  tri_text(ax.hard_limits()), input, protection);
     stage(command, "CONFIRM LIVE JOG", notes, 3);
 }
 
@@ -362,8 +403,8 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             draw_feeds();
             draw_mode();
 #if JC_LIVE_JOG_TEST
-            ui::button(sv.display, kJogNeg, _axis == 3 ? "A  DISABLED" : "JOG  -", _axis == 3 ? ui::Btn::Disabled : ui::Btn::Normal);
-            ui::button(sv.display, kJogPos, _axis == 3 ? "A  DISABLED" : "JOG  +", _axis == 3 ? ui::Btn::Disabled : ui::Btn::Normal);
+            ui::button(sv.display, kJogNeg, live_jog_label(_axis, true), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
+            ui::button(sv.display, kJogPos, live_jog_label(_axis, false), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
 #else
             ui::button(sv.display, kJogNeg, _axis == 3 ? "A -  (deg)" : "JOG  -", ui::Btn::Normal);
             ui::button(sv.display, kJogPos, _axis == 3 ? "A +  (deg)" : "JOG  +", ui::Btn::Normal);

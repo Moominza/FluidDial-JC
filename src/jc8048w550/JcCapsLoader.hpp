@@ -297,6 +297,7 @@ private:
         if (_step >= kSteps) {
             _caps.complete = true;
             _caps.read_ms = now - _started_ms;
+            _caps.completed_ms = now;
             _state = JcLoadState::Complete;
         }
     }

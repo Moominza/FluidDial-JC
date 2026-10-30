@@ -43,7 +43,7 @@ it has not been flashed to any device.
 | Dispatcher: sequences step only after acknowledgement | Host-tested (fake transport) | No sink exists in the firmware |
 | Dry-run page | Uploaded | Evaluates only; records/sends nothing |
 | Soft / hard limit, limit-pin, homing, must_home read-only queries (25 added) and Limits / Homing page | Host-tested + Host-integrated; Uploaded; real read operator-confirmed 2026-10-30 (photo + COM3 capture) | 50 answered, 3 refused (A homing). Soft and hard limits OFF on all axes, `must_home` false. UNKNOWN / `error:3` is never shown as OFF. Evidence: [evidence/2026-10-30-controller-read-capture.md](evidence/2026-10-30-controller-read-capture.md) |
-| First-live-jog test configuration (`env:jc8048w550_livejog_test`): test limits, jog session, cancel, arming | Host-tested + Host-integrated; **built, NOT flashed, never run** | See [jc-live-jog-readiness.md](jc-live-jog-readiness.md). No jog or cancel byte has been sent to any controller |
+| First-live-jog test configuration (`env:jc8048w550_livejog_test`): X/Y 1 mm only (Z on hold, A disabled), jog session, cancel, per-axis gate (PROTECTED / UNPROTECTED MICRO-JOG / BLOCKED) with operator acknowledgement | Host-tested + Host-integrated; **built, NOT flashed, never run** | See [jc-live-jog-readiness.md](jc-live-jog-readiness.md). Real controller: no travel protection, position not established. No jog or cancel byte has been sent to any controller. Owner review required before flashing |
 | Physical CNC command transmission | Disabled by design | Needs a separate safety review and owner approval |
 
 ## Instruction 003B physical acceptance log

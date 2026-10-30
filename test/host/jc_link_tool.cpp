@@ -26,7 +26,9 @@
 // blocks every one of them. The tool never touches a socket: bytes the session wants
 // to transmit are collected and printed by JTX, and the Python harness forwards them
 // to the simulator.
-//   JARM              operator arms the jog test (lapses by itself)
+//   JARM              operator arms the jog test and acknowledges "no controller travel
+//                     protection" for X and Y (lapses by itself)
+//   JARMX             armed WITHOUT that acknowledgement
 //   JOG <a> <d> <f>   request an incremental jog (axis 0..3, signed distance, feed)
 //   JCANCEL           request the jog-cancel byte
 //   JTX               print (and clear) the hex bytes the session transmitted, or '-'
@@ -120,8 +122,10 @@ int main() {
         if (line[0] == 'T' && line[1] == ' ') {
             now = static_cast<uint32_t>(strtoul(line + 2, nullptr, 10));
             session.set_clock(now);
+        } else if (strncmp(line, "JARMX", 5) == 0) {
+            dispatcher.arm_for(now, kJcJogArmTtlMs, 0);   // armed, but "no travel protection" NOT acknowledged
         } else if (strncmp(line, "JARM", 4) == 0) {
-            dispatcher.arm_for(now, kJcJogArmTtlMs);
+            dispatcher.arm_for(now, kJcJogArmTtlMs, 0x03);   // armed + acknowledged for X and Y (never Z or A)
         } else if (strncmp(line, "JOG ", 4) == 0) {
             unsigned axis = 0;
             float dist = 0.0f, feed = 0.0f;

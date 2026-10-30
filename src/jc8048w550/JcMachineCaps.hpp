@@ -105,6 +105,7 @@ struct JcMachineCaps {
     uint8_t     queries_ok = 0;
     uint8_t     queries_error = 0;
     uint32_t    read_ms = 0;
+    uint32_t    completed_ms = 0;       // pendant clock when the read finished (freshness check)
 
     bool any_data() const {
         if (firmware[0] != '\0' || wcs[0] != '\0') return true;

@@ -136,7 +136,7 @@ void JcLimitsScreen::draw_values(bool full) {
             for (auto& s : row) s.invalidate();
         }
         for (auto& s : _lines) s.invalidate();
-        static const char* const heads[6] = { "AXIS", "SOFT", "HARD", "LIMIT PINS  - / + / ALL", "HOMING", "HOME MPOS" };
+        static const char* const heads[6] = { "AXIS", "SOFT", "HARD", "LIMIT INPUT  - / + / ALL", "HOMING", "HOME MPOS" };
         for (uint8_t c = 0; c < 6; ++c) {
             ui::text(sv.display, kColX[c], 74, heads[c], FontId::Body16, ui::kMuted, ui::kBg);
         }
@@ -171,7 +171,8 @@ void JcLimitsScreen::draw_values(bool full) {
                    caps.must_home_state == JcFieldState::Unqueried ? ui::kMuted : WHITE, ui::kBg);
     _lines[1].draw(sv.display, { 22, 264, 760, 24 }, "Soft limits only mean something if the machine position is valid (homed).",
                    FontId::Body16, ui::kMuted, ui::kBg);
-    _lines[2].draw(sv.display, { 22, 288, 760, 24 }, "A configured travel is NOT proof the path is clear. Check by eye.",
+    _lines[2].draw(sv.display, { 22, 288, 760, 24 },
+                   "A limit INPUT is not protection unless HARD is ON. Travel is not a safe path.",
                    FontId::Body16, ui::kWarn, ui::kBg);
 
     uint16_t status_color = ui::kMuted;

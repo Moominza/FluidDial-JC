@@ -71,7 +71,8 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
     // EXPERIMENTAL live-jog test build: the ONLY place a command sink is installed.
     _dispatcher.set_sink_ex(&JcJogSession::sink, &_jogs);
     Serial.println("*** LIVE JOG TEST BUILD: restricted incremental jog + jog cancel are ENABLED ***");
-    Serial.println("*** X/Y 1 mm @100, Z 0.5 mm @50, A disabled; continuous/home/probe/macro/file/spindle blocked ***");
+    Serial.println("*** X/Y 1 mm @100 only; Z on hold, A disabled; continuous/home/probe/macro/file/spindle blocked ***");
+    Serial.println("*** UNPROTECTED MICRO-JOG: no controller travel protection is assumed; operator acknowledgement required ***");
 #else
     Serial.println("app: motion commands disabled");
 #endif

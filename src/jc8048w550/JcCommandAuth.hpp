@@ -57,7 +57,8 @@ enum class JcAuthDecision : uint8_t {
     BlockedBadState,       // machine state does not permit this command class
     BlockedLimitsUnconfirmed,  // axis limits are still placeholders, not controller values
     BlockedOperationPending,   // a previous motion operation is not yet resolved
-    BlockedEnvelopeUnread,     // soft / hard limit settings were not read for this axis
+    BlockedEnvelopeUnread,     // soft/hard-limit and limit-pin settings are not known from a current read
+    BlockedUnprotectedNotAcknowledged,  // no trusted travel protection and the operator has not acknowledged that
 };
 
 struct JcAuthContext {
@@ -74,6 +75,11 @@ struct JcAuthContext {
     // distance is NOT a proof of a safe movement envelope.
     bool        envelope_required = false;
     bool        envelope_confirmed = false;
+    // Live-jog test policy only: when the axis has no TRUSTED controller travel protection
+    // (soft/hard limits OFF, or a position that is not established) the operator must have
+    // acknowledged exactly that, for this axis, in this arming. Cleared on any link loss.
+    bool        unprotected_required = false;
+    bool        unprotected_acked = false;
     // A previous jog / motion operation has not been resolved (acknowledged,
     // completed and verified): no new motion may start.
     bool        operation_pending = false;
@@ -97,7 +103,9 @@ inline const char* jc_auth_name(JcAuthDecision d) {
         case JcAuthDecision::BlockedBadState: return "blocked: machine state does not permit command";
         case JcAuthDecision::BlockedLimitsUnconfirmed: return "blocked: axis limits not confirmed by the controller";
         case JcAuthDecision::BlockedOperationPending: return "blocked: a previous operation is unresolved";
-        case JcAuthDecision::BlockedEnvelopeUnread: return "blocked: soft/hard limit settings not read from the controller";
+        case JcAuthDecision::BlockedEnvelopeUnread: return "blocked: limit settings not known from a current read";
+        case JcAuthDecision::BlockedUnprotectedNotAcknowledged:
+            return "blocked: no controller travel protection; not acknowledged";
     }
     return "blocked";
 }
@@ -179,6 +187,11 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     if (ctx.envelope_required && !ctx.envelope_confirmed) {
         return JcAuthDecision::BlockedEnvelopeUnread;
     }
+#if JC_LIVE_JOG_TEST
+    if (ctx.unprotected_required && !ctx.unprotected_acked) {
+        return JcAuthDecision::BlockedUnprotectedNotAcknowledged;
+    }
+#endif
     const bool motion_idle_only = cls == JcCommandClass::Home || cls == JcCommandClass::Probe
                                   || cls == JcCommandClass::WorkOffset || cls == JcCommandClass::Macro
                                   || cls == JcCommandClass::Other || cls == JcCommandClass::Spindle;

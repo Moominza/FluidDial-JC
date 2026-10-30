@@ -171,8 +171,11 @@ def run_all(exe, check, Sim, Tool, port):
     check(tool.cmd("JTX", reply=True) == "-", "...and nothing was queued for transmission")
     for args, want in (("0 10 100", "rejected:TestLimit"), ("1 50 100", "rejected:TestLimit"),
                        ("0 100 100", "rejected:TestLimit"), ("0 1.001 100", "rejected:TestLimit"),
-                       ("2 0.6 50", "rejected:TestLimit"), ("0 1 101", "rejected:TestLimit"),
-                       ("2 0.5 51", "rejected:TestLimit"), ("0 1 3000", "rejected:TestLimit"),
+                       ("0 1 101", "rejected:TestLimit"), ("1 1 101", "rejected:TestLimit"),
+                       ("0 1 3000", "rejected:TestLimit"),
+                       # Z is ON HOLD: nothing, however small or slow, is ever built
+                       ("2 0.5 50", "rejected:JogDisabled"), ("2 -0.5 50", "rejected:JogDisabled"),
+                       ("2 0.001 1", "rejected:JogDisabled"), ("2 10 50", "rejected:JogDisabled"),
                        ("3 1 100", "rejected:JogDisabled"), ("3 -45 3600", "rejected:JogDisabled"),
                        ("3 0.001 1", "rejected:JogDisabled"), ("0 0 100", "rejected:BadValue"),
                        ("7 1 100", "rejected:BadAxis")):
@@ -188,9 +191,13 @@ def run_all(exe, check, Sim, Tool, port):
     check(run.summary()["jogs"] == "0", "no jog sent yet")
     r = run.jog(0, 1.0, 100)
     check(r.startswith("decision=blocked:_machine_control_not_armed") and r.endswith("sent=0"), "not armed: the first request is refused by the gate")
+    tool.cmd("JARMX")
+    r = run.jog(0, 1.0, 100)
+    check(r.startswith("decision=blocked:_no_controller_travel_protection") and r.endswith("sent=0"),
+          "armed but 'no controller travel protection' NOT acknowledged: refused by the gate")
     tool.cmd("JARM")
     r = run.jog(0, 1.0, 100)
-    check(r == "decision=allowed sent=1", "armed, fresh, Idle: the jog is authorized and transmitted")
+    check(r == "decision=allowed sent=1", "armed, acknowledged, fresh, Idle: the jog is authorized and transmitted")
     s = run.run_until(lambda s: s["result"] == "COMPLETED", 8.0)
     check(s["result"] == "COMPLETED", "controller ok, motion, then Idle: COMPLETED")
     check(any("moving" in p or "accepted" in p for p in run.phases), "acknowledgement / motion were observed as separate phases before completion")
@@ -364,6 +371,7 @@ def run_all(exe, check, Sim, Tool, port):
     s = socket.create_connection(("127.0.0.1", port), timeout=1)
     for payload in (b"$J=G91G21F100X10.000\n",     # oversized step
                     b"$J=G91G21F100A1.000\n",      # rotary axis
+                    b"$J=G91G21F50Z0.500\n",       # Z is on hold: a well-formed, tiny Z jog is still a violation
                     b"$J=G91G21F100X1.000 Y1.000\n",  # extra word
                     b"$J=G91G21F101X1.000\n",      # feed above the limit
                     b"$H\n", b"G0 X1\n",
@@ -378,5 +386,5 @@ def run_all(exe, check, Sim, Tool, port):
     time.sleep(0.2)
     s.close()
     out = sim.stop()
-    check(out.count("VIOLATION") == 10, "audit flags oversize, rotary, extra word, feed, $H, G-code, ! ~ 0x18 and a jog while unresolved (%d)" % out.count("VIOLATION"))
+    check(out.count("VIOLATION") == 11, "audit flags oversize, rotary, Z, extra word, feed, $H, G-code, ! ~ 0x18 and a jog while unresolved (%d)" % out.count("VIOLATION"))
     check(out.count(": JOG $J=") == 1 and out.count("CANCEL 0x85") == 1, "the one legitimate jog and the cancel were accepted")

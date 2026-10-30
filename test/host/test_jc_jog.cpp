@@ -175,8 +175,9 @@ struct World {
 
 static void test_limits_and_builder() {
     const JcJogTestLimits l = jc_test_jog_limits();
-    CHECK(l.max_step[0] == 1.0f && l.max_step[1] == 1.0f && l.max_step[2] == 0.5f && l.max_step[3] == 0.0f);
-    CHECK(l.max_feed[0] == 100.0f && l.max_feed[1] == 100.0f && l.max_feed[2] == 50.0f);
+    // First motion: X and Y only, 1 mm @ 100 mm/min. Z is ON HOLD, A is disabled.
+    CHECK(l.max_step[0] == 1.0f && l.max_step[1] == 1.0f && l.max_step[2] == 0.0f && l.max_step[3] == 0.0f);
+    CHECK(l.max_feed[0] == 100.0f && l.max_feed[1] == 100.0f && l.max_feed[2] == 0.0f && l.max_feed[3] == 0.0f);
 
     JcMachineProfile open = jc_default_profile();
     CHECK(!open.test_mode);
@@ -185,15 +186,23 @@ static void test_limits_and_builder() {
     JcMachineProfile p = jc_default_profile();
     jc_profile_apply_test_limits(p);
     CHECK(p.test_mode);
-    CHECK(p.axes[0].max_step == 1.0f && p.axes[2].max_step == 0.5f && p.axes[3].max_step == 0.0f);
+    CHECK(p.axes[0].max_step == 1.0f && p.axes[1].max_step == 1.0f && p.axes[2].max_step == 0.0f && p.axes[3].max_step == 0.0f);
 
     JcCommand c = jc_jog_incremental(p, 0, 1.0f, 100.0f);
     CHECK(c.ok && c.axis == 0);
     CHECK_STR(c.text, "$J=G91G21F100X1.000");
-    c = jc_jog_incremental(p, 2, -0.5f, 50.0f);
+    c = jc_jog_incremental(p, 1, -1.0f, 100.0f);
     CHECK(c.ok);
-    CHECK_STR(c.text, "$J=G91G21F50Z-0.500");
-    CHECK(jc_jog_incremental(p, 1, -1.0f, 100.0f).ok);
+    CHECK_STR(c.text, "$J=G91G21F100Y-1.000");
+
+    // Z is on hold: no step, no feed, either direction, however small.
+    const float z_steps[] = { 0.001f, 0.25f, 0.5f, -0.5f, 1.0f, 10.0f, 150.0f };
+    for (float step : z_steps) {
+        c = jc_jog_incremental(p, 2, step, 50.0f);
+        CHECK(!c.ok && c.error == JcCmdError::JogDisabled);
+        c = jc_jog_incremental(p, 2, step, 1.0f);
+        CHECK(!c.ok && c.error == JcCmdError::JogDisabled);
+    }
 
     // Larger steps are refused even when the UI offers 10 / 50 / 100 mm presets.
     const float presets[] = { 1.001f, 2.0f, 10.0f, 50.0f, 100.0f };
@@ -203,13 +212,9 @@ static void test_limits_and_builder() {
         c = jc_jog_incremental(p, 1, -step, 100.0f);
         CHECK(!c.ok && c.error == JcCmdError::TestLimit);
     }
-    c = jc_jog_incremental(p, 2, 0.6f, 50.0f);
-    CHECK(!c.ok && c.error == JcCmdError::TestLimit);
-    c = jc_jog_incremental(p, 2, 1.0f, 50.0f);
-    CHECK(!c.ok && c.error == JcCmdError::TestLimit);
     // Feeds
     CHECK(jc_jog_incremental(p, 0, 1.0f, 101.0f).error == JcCmdError::TestLimit);
-    CHECK(jc_jog_incremental(p, 2, 0.5f, 51.0f).error == JcCmdError::TestLimit);
+    CHECK(jc_jog_incremental(p, 1, 1.0f, 101.0f).error == JcCmdError::TestLimit);
     CHECK(jc_jog_incremental(p, 0, 1.0f, 3000.0f).error == JcCmdError::TestLimit);
     CHECK(jc_jog_incremental(p, 0, 1.0f, 0.0f).error == JcCmdError::BadFeed);
     CHECK(jc_jog_incremental(p, 0, 0.0f, 100.0f).error == JcCmdError::BadValue);
@@ -244,8 +249,8 @@ static void test_limits_and_builder() {
     jc_profile_apply_caps(q, caps);
     CHECK(q.axes[1].max_step == 2300.0f);                  // a travel of 2300 mm is NOT a safe step
     jc_profile_apply_test_limits(q);
-    CHECK(q.axes[0].max_step == 1.0f && q.axes[1].max_step == 1.0f && q.axes[2].max_step == 0.5f);
-    CHECK(q.axes[0].max_feed == 100.0f && q.axes[2].max_feed == 50.0f && q.axes[3].max_step == 0.0f);
+    CHECK(q.axes[0].max_step == 1.0f && q.axes[1].max_step == 1.0f && q.axes[2].max_step == 0.0f);
+    CHECK(q.axes[0].max_feed == 100.0f && q.axes[2].max_feed == 0.0f && q.axes[3].max_step == 0.0f);
     CHECK(q.axes[0].limits_confirmed && q.axes[0].travel_mm == 2300.0f);
 
     // A controller with SMALLER limits keeps its smaller values.
@@ -281,8 +286,12 @@ static void test_strict_line() {
     // Allowed: inside the limits, any direction.
     CHECK(jc_jog_line_allowed("$J=G91G21F100X1.000", l));
     CHECK(jc_jog_line_allowed("$J=G91G21F100Y-1.000", l));
-    CHECK(jc_jog_line_allowed("$J=G91G21F50Z0.500", l));
     CHECK(jc_jog_line_allowed("$J=G91G21F1X0.001", l));
+    // Z is on hold: a perfectly formed Z line never passes the transport check.
+    CHECK(!jc_jog_line_allowed("$J=G91G21F50Z0.500", l));
+    CHECK(!jc_jog_line_allowed("$J=G91G21F50Z-0.500", l));
+    CHECK(!jc_jog_line_allowed("$J=G91G21F1Z0.001", l));
+    CHECK(!jc_jog_line_allowed("$J=G91G21F100Z1.000", l));
     // Parsable but outside the test limits: never allowed on the transport.
     CHECK(!jc_jog_line_allowed("$J=G91G21F100X1.001", l));
     CHECK(!jc_jog_line_allowed("$J=G91G21F100X10.000", l));
@@ -301,7 +310,7 @@ static void test_strict_line() {
     // Every line the builder can produce at the limit round-trips through the strict check.
     JcMachineProfile p = jc_default_profile();
     jc_profile_apply_test_limits(p);
-    for (uint8_t a = 0; a < 3; ++a) {
+    for (uint8_t a = 0; a < 2; ++a) {   // X and Y only
         for (int dir = -1; dir <= 1; dir += 2) {
             const JcCommand c = jc_jog_incremental(p, a, dir * p.axes[a].max_step, p.axes[a].max_feed);
             CHECK(c.ok && jc_jog_line_allowed(c.text, l));
@@ -812,7 +821,7 @@ static void test_position_reporting() {
     World w;
     w.settle();
     const struct { uint8_t axis; float dist; float feed; } steps[] = {
-        { 0, 1.0f, 100.0f }, { 0, -1.0f, 100.0f }, { 1, -0.5f, 100.0f }, { 2, 0.5f, 50.0f }, { 2, -0.25f, 50.0f },
+        { 0, 1.0f, 100.0f }, { 0, -1.0f, 100.0f }, { 1, -0.5f, 100.0f }, { 1, 0.5f, 50.0f }, { 0, -0.25f, 50.0f },
         { 1, 0.001f, 100.0f },
     };
     float expect[4] = { w.pos[0], w.pos[1], w.pos[2], w.pos[3] };
@@ -827,8 +836,8 @@ static void test_position_reporting() {
         CHECK(fabsf(w.session.pos_delta() - s.dist) < 0.01f);
     }
     CHECK(w.session.completed() == 6 && w.lines.size() == 6);
-    // the A axis never moved
-    CHECK(w.pos[3] == 0.0f);
+    // Z and A never moved
+    CHECK(w.pos[2] == 5.0f && w.pos[3] == 0.0f);
 
     // a controller that stops short is flagged and blocks further jogs
     World m;
@@ -1029,8 +1038,9 @@ static void test_dispatcher_end_to_end() {
     CHECK(d.submit(jc_jog_cancel(), ready_context(w, false)) == JcAuthDecision::Allowed);
     CHECK(w.cancels == 1 && d.sent() == 1);
 
-    // armed + confirmed: exactly one jog is transmitted and a second is refused while unresolved
-    d.arm_for(w.now, kJcJogArmTtlMs);
+    // armed + unprotected-micro-jog acknowledged for X and Y + confirmed: exactly one jog is
+    // transmitted and a second is refused while unresolved
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);
     w.run(400);
     w.session.set_clock(w.now);
     JcAuthDecision r = d.submit(jc_jog_incremental(p, 0, 1.0f, 100.0f), ready_context(w, true));
@@ -1078,7 +1088,7 @@ static void test_no_replay_after_reconnect() {
     d.set_sink_ex(&JcJogSession::sink, &w.session);
     JcMachineProfile p = jc_default_profile();
     jc_profile_apply_test_limits(p);
-    d.arm_for(w.now, kJcJogArmTtlMs);
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);
     w.session.set_clock(w.now);
     w.silent = true;
     const JcAuthDecision first = d.submit(jc_jog_incremental(p, 0, 1.0f, 100.0f), ready_context(w, true));
@@ -1089,17 +1099,21 @@ static void test_no_replay_after_reconnect() {
     d.on_link_lost();
     w.session.on_link_lost(w.now, false);
     CHECK(!d.armed());
+    CHECK(d.unprotected_ack_mask() == 0);   // the acknowledgement died with the arming
     w.silent = false;
     w.run(3000);
     CHECK(w.lines.size() == 1 && w.session.jogs_sent() == 1 && d.sent() == 1);
-    // new jog needs re-arming, acknowledgement and fresh status
+    // new jog needs re-arming, a NEW unprotected acknowledgement, an acknowledged failure and fresh status
     JcAuthDecision r = d.submit(jc_jog_incremental(p, 0, 1.0f, 100.0f), ready_context(w, true));
     CHECK(r == JcAuthDecision::BlockedNotArmed);
-    d.arm_for(w.now, kJcJogArmTtlMs);
+    d.arm_for(w.now, kJcJogArmTtlMs);   // armed again, but nothing acknowledged
     r = d.submit(jc_jog_incremental(p, 0, 1.0f, 100.0f), ready_context(w, true));
     CHECK(r == JcAuthDecision::BlockedOperationPending && w.lines.size() == 1);
     CHECK(w.session.acknowledge());
     w.session.set_clock(w.now);
+    r = d.submit(jc_jog_incremental(p, 0, 1.0f, 100.0f), ready_context(w, true));
+    CHECK(r == JcAuthDecision::BlockedUnprotectedNotAcknowledged && w.lines.size() == 1);   // no persistence
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);   // the operator deliberately acknowledges again
     r = d.submit(jc_jog_incremental(p, 0, 1.0f, 100.0f), ready_context(w, true));
     CHECK(r == JcAuthDecision::Allowed && w.lines.size() == 2);
 #else
@@ -1290,7 +1304,309 @@ static void test_envelope_rules() {
     CHECK(d.history_count() == 0 && d.sent() == 0 && d.blocked() == 0);
 }
 
+// ---- Instruction 006A: the jog gate against the REAL controller state -------------------------
+
+static void set_value(JcAxisCaps& a, JcQueryField f, float v) {
+    a.state[static_cast<uint8_t>(f)] = JcFieldState::Valid;
+    a.value[static_cast<uint8_t>(f)] = v;
+}
+static void set_pin(JcAxisCaps& a, JcQueryField f, const char* text) {
+    const uint8_t slot = static_cast<uint8_t>(f) - static_cast<uint8_t>(JcQueryField::LimitNegPin);
+    a.state[static_cast<uint8_t>(f)] = JcFieldState::Valid;
+    a.value[static_cast<uint8_t>(f)] = strcmp(text, "NO_PIN") == 0 ? 0.0f : 1.0f;
+    snprintf(a.pin[slot], sizeof(a.pin[slot]), "%s", text);
+}
+static void set_refused(JcAxisCaps& a, JcQueryField f, int code) {
+    a.state[static_cast<uint8_t>(f)] = JcFieldState::CtrlError;
+    a.error_code[static_cast<uint8_t>(f)] = code;
+}
+
+// The accepted baseline: 50 answered / 3 refused, read 2026-10-30.
+static JcMachineCaps real_baseline(uint32_t completed_ms) {
+    JcMachineCaps c;
+    c.complete = true;
+    c.completed_ms = completed_ms;
+    snprintf(c.firmware, sizeof(c.firmware), "4.1 FluidNC v4.1.1 (esp32s3-wifi)");
+    c.must_home_state = JcFieldState::Valid;
+    c.must_home = false;
+    struct Row { float steps, travel, rate, accel, cycle, dir; const char* neg; };
+    const Row rows[3] = { { 40, 1000, 6000, 250, 1, 0, "gpio.41:low" }, { 40, 2300, 6000, 250, 1, 0, "gpio.40:low" },
+                          { 200, 150, 1500, 100, 1, 1, "gpio.39:low" } };
+    for (uint8_t i = 0; i < 3; ++i) {
+        JcAxisCaps& a = c.axes[i];
+        set_value(a, JcQueryField::StepsPerMm, rows[i].steps);
+        set_value(a, JcQueryField::MaxTravelMm, rows[i].travel);
+        set_value(a, JcQueryField::MaxRate, rows[i].rate);
+        set_value(a, JcQueryField::Accel, rows[i].accel);
+        set_value(a, JcQueryField::HomingCycle, rows[i].cycle);
+        set_value(a, JcQueryField::HomingPositiveDir, rows[i].dir);
+        set_value(a, JcQueryField::SoftLimits, 0.0f);
+        set_value(a, JcQueryField::HardLimits, 0.0f);
+        set_pin(a, JcQueryField::LimitNegPin, rows[i].neg);
+        set_pin(a, JcQueryField::LimitPosPin, "NO_PIN");
+        set_pin(a, JcQueryField::LimitAllPin, "NO_PIN");
+        set_value(a, JcQueryField::HomingMpos, 0.0f);
+    }
+    JcAxisCaps& a = c.axes[3];
+    set_value(a, JcQueryField::StepsPerMm, 1000);
+    set_value(a, JcQueryField::MaxTravelMm, 3000);
+    set_value(a, JcQueryField::MaxRate, 1000);
+    set_value(a, JcQueryField::Accel, 25);
+    set_refused(a, JcQueryField::HomingCycle, 3);
+    set_refused(a, JcQueryField::HomingPositiveDir, 3);
+    set_value(a, JcQueryField::SoftLimits, 0.0f);
+    set_value(a, JcQueryField::HardLimits, 0.0f);
+    set_pin(a, JcQueryField::LimitNegPin, "NO_PIN");
+    set_pin(a, JcQueryField::LimitPosPin, "NO_PIN");
+    set_pin(a, JcQueryField::LimitAllPin, "NO_PIN");
+    set_refused(a, JcQueryField::HomingMpos, 3);
+    return c;
+}
+
+static JcJogGate gate_for(const JcMachineCaps& c, uint8_t axis, uint32_t now = 10000) {
+    return jc_jog_gate(c, true, now, axis, jc_position_trust(c));
+}
+
+static void test_jog_gate_modes() {
+    const JcMachineCaps c = real_baseline(10000);
+
+    // soft OFF + hard OFF + fresh read -> UNPROTECTED MICRO-JOG, for X and Y.
+    for (uint8_t axis = 0; axis < 2; ++axis) {
+        const JcJogGate g = gate_for(c, axis);
+        CHECK(g.mode == JcJogGateMode::UnprotectedMicro && g.reason == JcJogGateReason::None);
+    }
+    // Z is excluded from the first-motion policy whatever the controller says; A stays disabled.
+    CHECK(gate_for(c, 2).mode == JcJogGateMode::Blocked && gate_for(c, 2).reason == JcJogGateReason::AxisExcluded);
+    CHECK(gate_for(c, 3).mode == JcJogGateMode::Blocked && gate_for(c, 3).reason == JcJogGateReason::AxisExcluded);
+    CHECK(gate_for(c, 7).reason == JcJogGateReason::AxisExcluded);
+    uint8_t env = 0, prot = 0;
+    jc_jog_gate_masks(c, true, 10000, env, prot);
+    CHECK(env == 0x03 && prot == 0x00);   // X and Y known, nothing protected
+
+    // UNKNOWN is BLOCKED, never treated as OFF: refused, unreadable, not queried.
+    for (JcFieldState bad : { JcFieldState::CtrlError, JcFieldState::BadValue, JcFieldState::NoValue, JcFieldState::Unqueried }) {
+        JcMachineCaps u = real_baseline(10000);
+        u.axes[0].state[static_cast<uint8_t>(JcQueryField::SoftLimits)] = bad;
+        CHECK(gate_for(u, 0).mode == JcJogGateMode::Blocked && gate_for(u, 0).reason == JcJogGateReason::SoftUnknown);
+        CHECK(gate_for(u, 1).mode == JcJogGateMode::UnprotectedMicro);   // another axis is unaffected
+        u = real_baseline(10000);
+        u.axes[1].state[static_cast<uint8_t>(JcQueryField::HardLimits)] = bad;
+        CHECK(gate_for(u, 1).mode == JcJogGateMode::Blocked && gate_for(u, 1).reason == JcJogGateReason::HardUnknown);
+        for (JcQueryField pin : { JcQueryField::LimitNegPin, JcQueryField::LimitPosPin, JcQueryField::LimitAllPin }) {
+            u = real_baseline(10000);
+            u.axes[0].state[static_cast<uint8_t>(pin)] = bad;
+            CHECK(gate_for(u, 0).mode == JcJogGateMode::Blocked && gate_for(u, 0).reason == JcJogGateReason::PinUnknown);
+        }
+    }
+    // error:3 on A's homing items does not matter for X/Y and is never converted to OFF.
+    CHECK(!c.axes[3].homing_known());
+    CHECK(c.axes[3].state[static_cast<uint8_t>(JcQueryField::HomingCycle)] == JcFieldState::CtrlError);
+
+    // Not read / incomplete / stale.
+    CHECK(jc_jog_gate(c, false, 10000, 0, JcPositionTrust::Untrusted).reason == JcJogGateReason::NotRead);
+    JcMachineCaps partial = real_baseline(10000);
+    partial.complete = false;
+    CHECK(gate_for(partial, 0).reason == JcJogGateReason::NotRead);
+    CHECK(gate_for(c, 0, 10000 + kJcCapsMaxAgeMs).mode == JcJogGateMode::UnprotectedMicro);        // exactly at the limit
+    CHECK(gate_for(c, 0, 10000 + kJcCapsMaxAgeMs + 1).reason == JcJogGateReason::Stale);           // one ms over
+    CHECK(gate_for(c, 1, 10000 + 10u * kJcCapsMaxAgeMs).mode == JcJogGateMode::Blocked);
+    jc_jog_gate_masks(c, true, 10000 + kJcCapsMaxAgeMs + 1, env, prot);
+    CHECK(env == 0 && prot == 0);
+
+    // Protected needs trusted protection AND an established position. Neither is reachable
+    // from anything the firmware can read; the branch exists so that it is deliberate.
+    JcMachineCaps on = real_baseline(10000);
+    set_value(on.axes[0], JcQueryField::SoftLimits, 1.0f);
+    set_value(on.axes[0], JcQueryField::HardLimits, 1.0f);
+    CHECK(jc_jog_gate(on, true, 10000, 0, JcPositionTrust::Untrusted).mode == JcJogGateMode::UnprotectedMicro);
+    CHECK(jc_jog_gate(on, true, 10000, 0, JcPositionTrust::Established).mode == JcJogGateMode::Protected);
+    CHECK(jc_jog_gate(c, true, 10000, 0, JcPositionTrust::Established).mode == JcJogGateMode::UnprotectedMicro);   // soft OFF
+    CHECK(jc_jog_gate(c, true, 10000, 2, JcPositionTrust::Established).mode == JcJogGateMode::Blocked);            // Z still excluded
+    JcMachineCaps unk = real_baseline(10000);
+    unk.axes[0].state[static_cast<uint8_t>(JcQueryField::SoftLimits)] = JcFieldState::CtrlError;
+    CHECK(jc_jog_gate(unk, true, 10000, 0, JcPositionTrust::Established).mode == JcJogGateMode::Blocked);
+}
+
+static void test_position_trust_and_wording() {
+    // must_home, homing configuration and travel values never establish a position or a path.
+    for (int must_home : { -1, 0, 1 }) {
+        for (float cycle : { 0.0f, 1.0f, 3.0f }) {
+            for (float travel : { 1.0f, 150.0f, 1000.0f, 100000.0f }) {
+                JcMachineCaps c = real_baseline(0);
+                c.must_home_state = must_home < 0 ? JcFieldState::CtrlError : JcFieldState::Valid;
+                c.must_home = must_home == 1;
+                for (uint8_t a = 0; a < 3; ++a) {
+                    set_value(c.axes[a], JcQueryField::HomingCycle, cycle);
+                    set_value(c.axes[a], JcQueryField::MaxTravelMm, travel);
+                    set_value(c.axes[a], JcQueryField::HomingMpos, 0.0f);
+                }
+                CHECK(jc_position_trust(c) == JcPositionTrust::Untrusted);
+                for (uint8_t a = 0; a < 4; ++a) CHECK(jc_path_claim(c, a, jc_position_trust(c)) == JcPathClaim::None);
+                // must_home plays no part in the jog gate: the mode is the same for every value.
+                CHECK(jc_jog_gate(c, true, 0, 0, jc_position_trust(c)).mode == JcJogGateMode::UnprotectedMicro);
+            }
+        }
+    }
+    CHECK(jc_path_claim(real_baseline(0), 0, JcPositionTrust::Established) == JcPathClaim::Assessed);
+
+    // A configured limit INPUT is not hard-limit PROTECTION: the two are worded apart.
+    const JcMachineCaps c = real_baseline(0);
+    char input[80], protection[64];
+    jc_limit_wording(c.axes[0], input, sizeof(input), protection, sizeof(protection));
+    CHECK_STR(input, "LIMIT INPUT CONFIGURED (neg gpio.41:low)");
+    CHECK_STR(protection, "HARD LIMIT PROTECTION OFF");
+    CHECK(strstr(input, "PROTECT") == nullptr && strstr(protection, "CONFIGURED") == nullptr);
+    jc_limit_wording(c.axes[1], input, sizeof(input), protection, sizeof(protection));
+    CHECK_STR(input, "LIMIT INPUT CONFIGURED (neg gpio.40:low)");
+    jc_limit_wording(c.axes[2], input, sizeof(input), protection, sizeof(protection));
+    CHECK_STR(input, "LIMIT INPUT CONFIGURED (neg gpio.39:low)");
+    CHECK_STR(protection, "HARD LIMIT PROTECTION OFF");
+    jc_limit_wording(c.axes[3], input, sizeof(input), protection, sizeof(protection));
+    CHECK_STR(input, "NO LIMIT INPUT ASSIGNED");
+    CHECK_STR(protection, "HARD LIMIT PROTECTION OFF");
+    JcMachineCaps u = real_baseline(0);
+    u.axes[0].state[static_cast<uint8_t>(JcQueryField::HardLimits)] = JcFieldState::CtrlError;
+    set_refused(u.axes[0], JcQueryField::LimitAllPin, 3);
+    jc_limit_wording(u.axes[0], input, sizeof(input), protection, sizeof(protection));
+    CHECK_STR(input, "LIMIT INPUT UNKNOWN");
+    CHECK_STR(protection, "HARD LIMIT PROTECTION UNKNOWN");   // never "OFF"
+    JcMachineCaps on = real_baseline(0);
+    set_value(on.axes[0], JcQueryField::HardLimits, 1.0f);
+    jc_limit_wording(on.axes[0], input, sizeof(input), protection, sizeof(protection));
+    CHECK_STR(protection, "HARD LIMIT PROTECTION ON");
+    // With hard limits OFF a configured switch is still only an input, and the gate agrees.
+    CHECK(gate_for(c, 0).mode == JcJogGateMode::UnprotectedMicro);
+
+    // No wording the gate can show claims a safe path or remaining travel.
+    const char* const forbidden[] = { "safe path", "SAFE PATH", "within travel", "WITHIN TRAVEL", "remaining travel",
+                                      "REMAINING TRAVEL", "enough travel", "ENOUGH TRAVEL", "path is clear", "PATH IS CLEAR" };
+    for (int r = 0; r <= static_cast<int>(JcJogGateReason::PinUnknown); ++r) {
+        const char* t = jc_jog_gate_reason_text(static_cast<JcJogGateReason>(r));
+        for (const char* f : forbidden) CHECK(strstr(t, f) == nullptr);
+    }
+    for (int m = 0; m <= static_cast<int>(JcJogGateMode::Protected); ++m) {
+        const char* t = jc_jog_gate_mode_name(static_cast<JcJogGateMode>(m));
+        for (const char* f : forbidden) CHECK(strstr(t, f) == nullptr);
+    }
+    for (int d = 0; d <= static_cast<int>(JcAuthDecision::BlockedUnprotectedNotAcknowledged); ++d) {
+        const char* t = jc_auth_name(static_cast<JcAuthDecision>(d));
+        for (const char* f : forbidden) CHECK(strstr(t, f) == nullptr);
+    }
+}
+
+static JcDispatchContext gate_context(const World& w, const JcMachineCaps& caps, bool complete, bool confirmed) {
+    JcDispatchContext c = ready_context(w, confirmed);
+    jc_jog_gate_masks(caps, complete, w.now, c.envelope_mask, c.protected_mask);
+    return c;
+}
+
+static void test_gate_authorization() {
+    World w;
+    w.settle();
+    const JcMachineCaps caps = real_baseline(w.now);
+    JcMachineProfile p = jc_default_profile();
+    jc_profile_apply_test_limits(p);
+    const JcCommand x = jc_jog_incremental(p, 0, 1.0f, 100.0f);
+    const JcCommand y = jc_jog_incremental(p, 1, -1.0f, 100.0f);
+    CHECK(x.ok && y.ok);
+    CHECK(!jc_jog_incremental(p, 2, 0.5f, 50.0f).ok && !jc_jog_incremental(p, 3, 1.0f, 100.0f).ok);   // Z hold, A disabled
+
+    JcDispatcher d;
+    d.set_sink_ex(&JcJogSession::sink, &w.session);
+    d.arm_for(w.now, kJcJogArmTtlMs, 0);   // armed, but NOTHING acknowledged
+    JcDispatchContext ctx = gate_context(w, caps, true, true);
+    CHECK(ctx.envelope_mask == 0x03 && ctx.protected_mask == 0);
+#if !JC_MACHINE_CONTROL_ENABLED
+    CHECK(d.evaluate(x, ctx) == JcAuthDecision::BlockedBuildPolicy);
+    CHECK(d.evaluate(jc_jog_cancel(), ctx) == JcAuthDecision::BlockedBuildPolicy);
+#else
+    CHECK(d.evaluate(jc_jog_cancel(), ctx) == JcAuthDecision::Allowed);   // cancel is independent of everything below
+#if JC_LIVE_JOG_TEST
+    // The operator has not acknowledged "no controller travel protection": blocked.
+    CHECK(d.evaluate(x, ctx) == JcAuthDecision::BlockedUnprotectedNotAcknowledged);
+    CHECK(d.evaluate(y, ctx) == JcAuthDecision::BlockedUnprotectedNotAcknowledged);
+    // The acknowledgement is per axis: X only.
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x01);
+    CHECK(d.evaluate(x, ctx) == JcAuthDecision::Allowed);
+    CHECK(d.evaluate(y, ctx) == JcAuthDecision::BlockedUnprotectedNotAcknowledged);
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);
+    CHECK(d.evaluate(y, ctx) == JcAuthDecision::Allowed);
+    // Without the per-jog operator confirmation nothing is allowed either.
+    CHECK(d.evaluate(x, gate_context(w, caps, true, false)) == JcAuthDecision::BlockedUnconfirmed);
+    // Protected mode (when it can ever exist) needs no unprotected acknowledgement; unprotected mode never gets one for free.
+    JcDispatchContext prot = ctx;
+    prot.protected_mask = 0x01;
+    d.arm_for(w.now, kJcJogArmTtlMs, 0);
+    CHECK(d.evaluate(x, prot) == JcAuthDecision::Allowed);
+    CHECK(d.evaluate(y, prot) == JcAuthDecision::BlockedUnprotectedNotAcknowledged);
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);
+    // Unknown / stale / not-read capabilities block even an acknowledged, armed, confirmed jog.
+    CHECK(d.evaluate(x, gate_context(w, caps, false, true)) == JcAuthDecision::BlockedEnvelopeUnread);
+    JcMachineCaps stale = caps;
+    stale.completed_ms = w.now - kJcCapsMaxAgeMs - 1;
+    CHECK(d.evaluate(x, gate_context(w, stale, true, true)) == JcAuthDecision::BlockedEnvelopeUnread);
+    JcMachineCaps unknown = caps;
+    unknown.axes[0].state[static_cast<uint8_t>(JcQueryField::HardLimits)] = JcFieldState::CtrlError;
+    CHECK(d.evaluate(x, gate_context(w, unknown, true, true)) == JcAuthDecision::BlockedEnvelopeUnread);
+    CHECK(d.evaluate(y, gate_context(w, unknown, true, true)) == JcAuthDecision::Allowed);
+    // Cancel stays available in every one of those situations, armed or not.
+    d.disarm();
+    CHECK(d.evaluate(jc_jog_cancel(), gate_context(w, unknown, false, false)) == JcAuthDecision::Allowed);
+    CHECK(d.evaluate(jc_jog_cancel(), gate_context(w, stale, true, false)) == JcAuthDecision::Allowed);
+    JcDispatchContext dead = gate_context(w, caps, true, false);
+    dead.link_fresh = false;
+    dead.operation_pending = true;
+    CHECK(d.evaluate(jc_jog_cancel(), dead) == JcAuthDecision::Allowed);
+    dead.live = false;
+    CHECK(d.evaluate(jc_jog_cancel(), dead) == JcAuthDecision::BlockedNotLive);
+#endif
+#endif
+    CHECK(d.history_count() == 0);   // evaluating never records anything
+}
+
+static void test_reconnect_clears_authorization() {
+    // A complete read, an arming with acknowledgement, then the connection is lost.
+    ConfigController ctl;
+    JcCapsLoader loader;
+    uint32_t now = 1000;
+    CHECK(loader.start(now, nullptr));
+    run_read(loader, ctl, now);
+    CHECK(loader.state() == JcLoadState::Complete);
+    uint8_t env = 0, prot = 0;
+    jc_jog_gate_masks(loader.caps(), true, now, env, prot);
+    CHECK(env == 0x03 && prot == 0);
+
+    JcDispatcher d;
+    d.arm_for(now, kJcJogArmTtlMs, 0x03);
+    CHECK(d.armed() && d.unprotected_ack_mask() == 0x03);
+
+    // Link lost: exactly what JcApp::note_link_fresh() does.
+    d.on_link_lost();
+    loader.on_link_lost(now);
+    loader.invalidate(now);
+    CHECK(!d.armed() && d.unprotected_ack_mask() == 0);
+    CHECK(loader.state() == JcLoadState::Idle && !loader.caps().any_data());
+    jc_jog_gate_masks(loader.caps(), loader.state() == JcLoadState::Complete, now + 1, env, prot);
+    CHECK(env == 0 && prot == 0);   // the old read is gone: a new read is required
+
+    // Reconnected and re-armed WITHOUT a new read: still blocked, and the old acknowledgement is gone.
+    d.arm_for(now + 2, kJcJogArmTtlMs, 0);
+    CHECK(d.unprotected_ack_mask() == 0);
+    CHECK(loader.caps().axes[0].soft_limits() == JcTri::Unknown);
+    CHECK(jc_jog_gate(loader.caps(), false, now + 2, 0, jc_position_trust(loader.caps())).reason == JcJogGateReason::NotRead);
+
+    // Disarm / lapse also drop the acknowledgement.
+    d.arm_for(now, 1000, 0x03);
+    CHECK(!d.armed_at(now + 1001));   // lapsed as far as the gate is concerned
+    d.disarm();
+    CHECK(d.unprotected_ack_mask() == 0);
+}
+
 int main() {
+    test_jog_gate_modes();
+    test_position_trust_and_wording();
+    test_gate_authorization();
+    test_reconnect_clears_authorization();
     test_limits_and_builder();
     test_strict_line();
     test_first_jog();

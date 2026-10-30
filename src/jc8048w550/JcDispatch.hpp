@@ -24,7 +24,8 @@ struct JcDispatchContext {
     bool        operator_confirmed = false;
     uint32_t    now_ms = 0;
     uint8_t     limits_mask = 0;  // bit i set: axis i limits confirmed by the controller
-    uint8_t     envelope_mask = 0;  // bit i set: axis i soft / hard limit settings were read
+    uint8_t     envelope_mask = 0;  // bit i set: axis i limit settings are known from a CURRENT read
+    uint8_t     protected_mask = 0; // bit i set: axis i has trusted travel protection (JcJogGateMode::Protected)
     bool        operation_pending = false;  // a previous motion operation is unresolved
 };
 
@@ -59,6 +60,11 @@ public:
         auth.limits_confirmed = moves_axis && command.axis < 4 && ((ctx.limits_mask >> command.axis) & 1u) != 0;
         auth.envelope_required = moves_axis;
         auth.envelope_confirmed = moves_axis && command.axis < 4 && ((ctx.envelope_mask >> command.axis) & 1u) != 0;
+        // Without trusted protection the operator must have acknowledged that, for this axis.
+        const bool protected_axis = moves_axis && command.axis < 4 && ((ctx.protected_mask >> command.axis) & 1u) != 0;
+        auth.unprotected_required = moves_axis && !protected_axis;
+        auth.unprotected_acked = moves_axis && command.axis < 4 && auth.armed
+                                 && ((_unprotected_ack_mask >> command.axis) & 1u) != 0;
         strncpy(auth.machine_state, ctx.machine_state ? ctx.machine_state : "", sizeof(auth.machine_state) - 1);
         return auth;
     }
@@ -145,17 +151,23 @@ public:
     void arm() {
         _armed = true;
         _arm_expires_ms = 0;
+        _unprotected_ack_mask = 0;
     }
     // Arming that lapses by itself after ttl_ms (used by the live-jog test build).
-    void arm_for(uint32_t now_ms, uint32_t ttl_ms) {
+    // unprotected_ack_mask: axes for which the operator deliberately acknowledged that
+    // there is no trusted controller travel protection. It belongs to this arming only.
+    void arm_for(uint32_t now_ms, uint32_t ttl_ms, uint8_t unprotected_ack_mask = 0) {
         _armed = true;
         _arm_expires_ms = now_ms + ttl_ms;
         if (_arm_expires_ms == 0) _arm_expires_ms = 1;
+        _unprotected_ack_mask = unprotected_ack_mask;
     }
     void disarm() {
         _armed = false;
         _arm_expires_ms = 0;
+        _unprotected_ack_mask = 0;  // an acknowledgement never outlives its arming
     }
+    uint8_t unprotected_ack_mask() const { return _unprotected_ack_mask; }
     bool armed() const { return _armed; }
     bool armed_at(uint32_t now_ms) const {
         return _armed && (_arm_expires_ms == 0 || static_cast<int32_t>(now_ms - _arm_expires_ms) < 0);
@@ -212,6 +224,7 @@ private:
     uint8_t          _pending_next = 0;
     bool             _armed = false;
     uint32_t         _arm_expires_ms = 0;  // 0 = no expiry
+    uint8_t          _unprotected_ack_mask = 0;
     JcDispatchRecord _history[kHistory] {};
     uint8_t          _next = 0;
     uint8_t          _count = 0;

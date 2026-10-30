@@ -83,8 +83,14 @@ struct JcAppServices {
         c.operator_confirmed = confirmed;
         c.now_ms = millis();
         c.limits_mask = jc_profile_limits_mask(profile);
+#if JC_LIVE_JOG_TEST
+        // Experimental jog gate: per-axis mode from the CURRENT read (discarded on link loss).
+        jc_jog_gate_masks(loader.caps(), loader.state() == JcLoadState::Complete, c.now_ms, c.envelope_mask,
+                          c.protected_mask);
+#else
         // The soft / hard limit settings only count once a complete read is held.
         c.envelope_mask = loader.state() == JcLoadState::Complete ? loader.caps().envelope_axis_mask() : 0;
+#endif
         // A configuration read or an unresolved jog is an operation in flight.
         c.operation_pending = jogs.unresolved() || loader.running();
         return c;

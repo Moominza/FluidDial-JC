@@ -1,9 +1,23 @@
-# JC first-live-jog readiness report (Instruction 006)
+# JC first-live-jog readiness report (Instructions 006 and 006A)
 
 Status: **experimental. Nothing was flashed that can move the machine, and no jog or
 cancel byte was transmitted to any controller during this work.**
-Baseline `3e29251`, branch `feature/jc8048w550`. Hardware: Guition JC8048W550C_I (COM3).
+Branch `feature/jc8048w550`. Hardware: Guition JC8048W550C_I (COM3).
 Controller: MKS DLC32 MAX V1.2, FluidNC v4.1.1, `192.168.0.134:23`.
+
+## Current state (after Instruction 006A)
+
+| | |
+| --- | --- |
+| Instruction 006 read-only capability discovery | **COMPLETE.** Accepted by the owner. |
+| Real controller read | 50 answered / 3 refused, **identical on three reads** |
+| Travel protection | **NONE ACTIVE** (soft limits OFF, hard limits OFF on every axis) |
+| Machine-position validity | **NOT ESTABLISHED** (`must_home` is false and nothing read says the machine is homed) |
+| First motion policy | **UNPROTECTED MICRO-JOG TEST MODE**: X and Y only, 1 mm maximum, 100 mm/min maximum, one bounded jog at a time, operator physical-clearance acknowledgement required |
+| Z | **HOLD**: homing direction / limit-side verification required (section 2.4). No Z jog, no Z homing test. |
+| A | **DISABLED** |
+| Experimental build | built and tested, **NOT flashed**. Owner review is required before it is flashed. |
+| First real motion | **NOT AUTHORIZED** |
 
 The device on COM3 runs the **ordinary** firmware (`env:jc8048w550`,
 `JC_MACHINE_CONTROL_ENABLED=0`). The live-jog build exists only as a compiled image
@@ -21,7 +35,7 @@ This report separates what was **measured on the real controller**, what was
 | `JC_LIVE_JOG_TEST` | 0 | 1 |
 | Command sink | none | `JcJogSession::sink`, installed in one place (`JcApp.cpp`) |
 | Bytes it can transmit | `?` and the read-only queries | the same, plus one restricted `$J=` line and the jog-cancel byte `0x85` |
-| Classes the gate can authorize | none | `Jog` and `JogCancel` only. Home, probe, work offset, spindle, job, macro, unlock, reset, hold and unclassified commands return `BlockedBuildPolicy` |
+| Classes the gate can authorize | none | `Jog` and `JogCancel` only, and `Jog` only for X and Y. Home, probe, work offset, spindle, job, macro, unlock, reset, hold and unclassified commands return `BlockedBuildPolicy` |
 | Continuous jog | never generated | never generated (builder refuses it in test mode) |
 | Transport | Wi-Fi (`?`, queries) | Wi-Fi only; the wired UART link has no jog path |
 | Boot / UI text | "motion commands disabled" | "LIVE JOG TEST BUILD" on boot, menu and settings; the "disabled" claim is removed |
@@ -108,12 +122,43 @@ How to read it:
    this report draws no conclusion from it.
 5. **A has no homing configuration and no limit pins** (as read), and stays disabled.
 
-The software already shows these facts in the jog confirmation dialog (soft limits OFF,
-hard limits OFF, limit pins, homing, `must_home`, "Travel N mm is NOT proof the path is
-clear"). **Open design decision for the owner:** today the gate only requires that the
-settings were *read*, and relies on the operator's confirmation when they are OFF. A stricter
-rule (for example, refusing a jog while soft limits are OFF, or requiring a second explicit
-acknowledgement) is not implemented and would be a change for the owner to approve.
+**Resolved by Instruction 006A** (section 4a): the gate now represents this case explicitly as
+UNPROTECTED MICRO-JOG TEST MODE and requires a deliberate operator acknowledgement of exactly
+these facts before any jog.
+
+### 2.4 Accepted real-controller baseline (owner-accepted, Instruction 006A)
+
+| | Soft | Hard | Limit pin | Homing cycle | Homing direction | Home MPOS |
+| --- | --- | --- | --- | --- | --- | --- |
+| X | OFF | OFF | negative: `gpio.41:low` | 1 | negative | 0 |
+| Y | OFF | OFF | negative: `gpio.40:low` | 1 | negative | 0 |
+| Z | OFF | OFF | negative: `gpio.39:low` | 1 | positive | 0 |
+| A | OFF | OFF | unassigned | UNKNOWN (`error:3`) | UNKNOWN (`error:3`) | UNKNOWN (`error:3`) |
+
+`start.must_home = false`. `error:3` is UNKNOWN and is never reinterpreted as OFF, false, zero
+or unsupported.
+
+Interpretation fixed by the owner and implemented in the gate:
+
+* `max_travel_mm` is **not** a safe remaining path. MPos is **not** a trustworthy position
+  reference after boot just because it reports numbers. A configured homing cycle is **not**
+  proof that homing has occurred.
+* With `hard_limits` OFF, a configured limit **input** is not protection against an ordinary
+  jog (it may still be used by homing). The jog screen words these separately: LIMIT INPUT
+  CONFIGURED versus HARD LIMIT PROTECTION OFF.
+* `start.must_home` is **not** used as a jog gate. The owner states that FluidNC's
+  documentation says it governs ordinary motion acceptance while jogging and settings can still
+  operate unhomed; this project has not checked that against FluidNC's source. Either way the
+  application-level jog gate does not depend on it.
+
+**Z HOMING CONFIGURATION: OWNER / PHYSICAL VERIFICATION REQUIRED.** The controller reports Z
+homing direction positive with only a negative-side limit input (`gpio.39:low`) configured.
+FluidNC defines `positive_direction=true` as homing toward the positive end and `limit_neg_pin`
+as the negative-end switch. This combination needs physical and configuration verification:
+whether GPIO39 is the negative-end switch, a positive-end switch labelled incorrectly, a
+shared / all-limit input, a wiring or configuration mismatch, or another deliberate
+arrangement; and which Z homing direction is intended. This report does not conclude it is
+wrong, does not change the FluidNC configuration, and does not run `$H` / `$HZ`. Z stays on hold.
 
 ## 3. Jog restrictions (test mode)
 
@@ -121,9 +166,9 @@ Proposed conservative test limits, **not values established as safe for every se
 
 | Axis | Max increment | Max feed | Notes |
 | --- | --- | --- | --- |
-| X | 1 mm | 100 mm/min | |
-| Y | 1 mm | 100 mm/min | |
-| Z | 0.5 mm | 50 mm/min | |
+| X | 1 mm | 100 mm/min | first live motion |
+| Y | 1 mm | 100 mm/min | after X, only if the X test passed |
+| Z | **none (HOLD)** | none | removed by Instruction 006A (was 0.5 mm / 50 mm/min). Refused by the builder and by the transport at every size and feed. |
 | A | disabled | n/a | pending rotary calibration; refused by the builder and by the transport |
 
 * The limits are applied to the machine profile **after** the controller's values, so a
@@ -178,11 +223,57 @@ One jog at a time. Acknowledgement, motion and completion are separate states.
   re-arms, acknowledges the failure, status is fresh and Idle, and confirms the new jog.
 * **Arming** lapses after 120 s, on leaving the jog page, in DEMO mode and on any loss of
   fresh data. Every test jog also needs its own confirmation dialog.
-* **Envelope**: a configured travel is never treated as a safe movement envelope. A jog is
-  refused until the soft / hard limit settings were read (`BlockedEnvelopeUnread`) and the
-  confirmation dialog shows soft limits, hard limits, limit pins, homing and `must_home` as
-  the controller reported them, plus "Travel N mm is NOT proof the path is clear". The
-  operator still has to look.
+* **Envelope**: see the gate in section 4a. A configured travel is never treated as a safe
+  movement envelope and nothing on screen claims one.
+
+## 4a. The jog gate (Instruction 006A)
+
+Computed per axis by `jc_jog_gate()` (pure, `JcJogTest.hpp`), from the capability read of the
+**current** LIVE session.
+
+| Mode | Meaning | On this controller |
+| --- | --- | --- |
+| **PROTECTED** | travel protection AND a valid position are both established | **Not reachable.** Nothing the firmware can read establishes that the machine is homed, so position trust is never "established". The branch exists so the policy has one deliberate place to change. |
+| **UNPROTECTED MICRO-JOG** | every needed value is known and current, but there is no trusted travel protection | X and Y |
+| **BLOCKED** | anything unknown, refused, stale or not read, or an excluded axis | Z (on hold), A (disabled), and any axis whose values are not all known |
+
+An axis is BLOCKED when: it is excluded (Z, A); there is no completed read in this session; the
+read is older than 5 minutes; the soft-limit state, the hard-limit state or any of the three
+limit-pin settings is not known (refused, unreadable, not queried). **UNKNOWN is never treated
+as OFF.** `error:3` on A's homing items does not affect X or Y.
+
+For UNPROTECTED MICRO-JOG the gate additionally requires, for the selected axis:
+
+1. **A deliberate operator acknowledgement** of the warning below, recorded per axis for
+   this arming only (`BlockedUnprotectedNotAcknowledged` otherwise). It is cleared by a disarm,
+   by arming lapsing (120 s), by leaving the jog page and by any loss of the connection. It is
+   never restored after a reconnect. The acknowledgement authorizes only the tightly bounded
+   test move; the text does not call the machine safe.
+2. A confirmation of every individual jog, with a shorter version of the same warning.
+3. The existing conditions: LIVE, fresh Idle status, no unresolved operation, X/Y 1 mm /
+   100 mm/min maximum through the three-layer check.
+
+Warning shown before arming (values filled from the real read):
+
+> NO CONTROLLER TRAVEL PROTECTION
+> X: soft limits OFF, hard limits OFF.
+> Machine position may not match the physical position.
+> Limit switches will not stop an ordinary jog.
+> Check: machine still, Idle, spindle cannot start, no job.
+> Check clear space in the commanded direction.
+> Keep E-stop / power removal in reach. Not 'safe': 1 mm only.
+
+Reconnect: the link loss discards the capability read and the arming. A new read, a new arming
+and a new acknowledgement are required. Nothing is replayed.
+
+Not used for safety, on purpose: `max_travel_mm`, MPos, home MPOS, `must_home`, and a configured
+homing cycle. They may be displayed informationally; the gate never turns them into "safe path",
+"within travel" or "enough remaining travel". `jc_position_trust()` is always Untrusted and
+`jc_path_claim()` is always None, and the tests show that no combination of `must_home`, homing
+cycle or travel changes that.
+
+**Cancel is independent of all of this.** `JogCancel` needs only LIVE mode: not arming, not the
+acknowledgement, not a current capability read, not a fresh link, not a free executor.
 
 ## 5. Requirement to evidence map
 
@@ -191,7 +282,8 @@ One jog at a time. Acknowledgement, motion and completion are separate states.
 | 1 baseline preserved | ordinary env unchanged and still the default | HEAD `3e29251` before work; guard; image scan |
 | 2, 3 jog restrictions, larger steps rejected | `jc_profile_apply_test_limits`, builder `TestLimit` / `JogDisabled`, transport check | host tests, simulator, guard |
 | 4 limit / homing configuration | 25 added read-only queries, LIMITS / HOMING page | host tests + simulator; **real read done 2026-10-30** (section 2.2) |
-| 5 travel is not an envelope | `BlockedEnvelopeUnread`, dialog text | host tests |
+| 5 travel is not an envelope | gate modes (section 4a), `BlockedEnvelopeUnread`, `BlockedUnprotectedNotAcknowledged`, dialog text | host tests + simulator |
+| 006A gate modes, UNKNOWN blocked, stale read blocked, reconnect clears, Z excluded | `jc_jog_gate`, `jc_jog_gate_masks`, dispatcher acknowledgement mask | host tests (mutation-checked), simulator |
 | 6 ack, error, alarm, timeout, completion distinct | `JcJogSession` phases and results | host tests + simulator |
 | 7 cancellation | `0x85`, always attempted | host tests + simulator, incl. late start and ignored cancel |
 | 8 reject while unresolved | session + gate | host tests + simulator audit (independent) |
@@ -214,9 +306,23 @@ FluidNC.
 | Core (policy 0 / rules compiled in) | 111 / 125 pass |
 | App | 169 / 166 pass |
 | Control (replies, exec, loader, dispatcher, dry run) | 832 / 888 pass |
-| **Jog** (policy 0 / rules in / live-jog policy) | **587 / 595 / 641 pass** |
+| **Jog** (policy 0 / rules in / live-jog policy) | **1172 / 1179 / 1243 pass** (was 587 / 595 / 641 before 006A) |
 | Static guard (`tools/check_no_sink.py`) | PASS |
-| Simulator integration (`tools/run_sim_integration.py`) | PASS, 225 checks (was 119) |
+| Simulator integration (`tools/run_sim_integration.py`) | PASS, 229 checks (was 225) |
+
+Instruction 006A coverage, all in `test/host/test_jc_jog.cpp` against a fixture that mirrors the
+real controller baseline: soft OFF + hard OFF + current read gives UNPROTECTED MICRO-JOG for X and
+Y; UNKNOWN soft, hard or any limit pin (refused, unreadable, not queried) blocks; not read,
+incomplete and stale (exactly at the limit passes, one ms over blocks) block; Z and A are
+excluded; Protected needs both trusted protection and an established position; `must_home`
+true / false / unknown, homing cycle and travel never change position trust or produce a path
+claim, and never change the mode; a configured limit input with hard limits OFF is worded as
+input-configured / protection-OFF, an unknown hard limit is never worded OFF; no gate wording
+claims a safe path; unacknowledged unprotected jogs are blocked, per axis; the acknowledgement,
+the arming and the capability read all die on link loss and are not restored; cancel stays
+available with no arming, no acknowledgement, no current read, a stale link or a pending
+operation; the 1 mm X/Y cap, the 10 / 50 / 100 mm presets, Z and A are refused at the builder,
+at the transport and by the simulator's independent audit.
 
 Jog test coverage (item 12): first jog; acceptance and rejection (`error:15`); cancellation
 while moving, before the `ok`, with nothing in flight, with a failing transport, and when the
@@ -228,10 +334,12 @@ blocking; position mismatch and unavailable position; send failure; reconnect wi
 
 Checks that the tests can fail:
 
-* Jog unit tests: 19 deliberate faults injected into the session, gate and builder. **18 were
-  caught.** The one survivor is an equivalent mutant (an explicit zero-limit check that the
-  following magnitude check makes redundant). One earlier survivor revealed a real gap
-  (the late-start case) that is now handled and tested.
+* Jog unit tests: 35 deliberate faults injected into the session, gate, dispatcher and
+  builder (including 16 aimed at the 006A gate: UNKNOWN treated as OK, stale read accepted,
+  `must_home=false` taken as a valid position, Z re-enabled, the acknowledgement surviving a
+  disarm, a safe-path claim without a valid position, ...). **34 were caught.** The one survivor
+  is an equivalent mutant (an explicit zero-limit check that the following magnitude check makes
+  redundant). An earlier survivor revealed a real gap (the late-start case), now handled.
 * Static guard: 13 deliberate violations (control enabled in the wrong env, flag in another
   env, sink installed outside a live block, an extra `::send`, a missing strict-line check,
   a jog path in the wired link, ...). **All 13 caught.**
@@ -245,14 +353,16 @@ everything else, including a jog line sent while a previous jog is unresolved.
 
 | Target | Result | Flash | RAM |
 | --- | --- | --- | --- |
-| `jc8048w550` (ordinary) | SUCCESS | 1,034,293 B (30.9%) | 94,904 B (29.0%) |
-| `jc8048w550_livejog_test` (experimental, **not flashed**) | SUCCESS | 1,042,061 B (31.2%) | 94,912 B (29.0%) |
+| `jc8048w550` (ordinary) | SUCCESS | 1,034,401 B (30.9%) | not re-measured after 006A (was 94,904 B) |
+| `jc8048w550_livejog_test` (experimental, **not flashed**) | SUCCESS | 1,044,505 B (31.3%) | not re-measured after 006A (was 94,912 B) |
 | `m5dial` | SUCCESS | 1,262,241 B (unchanged) | |
 | `cyddial` | SUCCESS | 1,185,829 B (unchanged) | |
 
 The only compiler warnings are two pre-existing narrowing warnings in `JcScreenOffsets.cpp`,
-a file this work did not touch. The ordinary firmware was uploaded to COM3 (hashes verified)
-and boots with "motion commands disabled".
+a file this work did not touch. The ordinary firmware on COM3 was uploaded during Instruction 006
+(hashes verified, boots with "motion commands disabled"); it was **not** re-flashed for 006A, so
+the device runs the 006 ordinary build, not the 006A one. The 006A ordinary image has no
+motion-transmit strings (binary scan) and differs only by a few shared-code bytes.
 
 ## 8. Assumptions not verified on a real controller
 
@@ -277,61 +387,87 @@ None of these has been exercised on FluidNC, because no jog or cancel was sent:
 
 ## 9. Remaining prerequisites before a real jog
 
-1. **Owner approval, in writing, to flash the live-jog build and to send the first jog**, and
-   a separate safety review of this design. Not given.
-2. ~~Complete the real configuration read.~~ **Done 2026-10-30** (section 2.2). **Owner review
-   of the findings in section 2.3 is still required**: soft and hard limits are OFF on every
-   axis, `must_home` is false, whether the machine is homed is unknown, and Z homes positive
-   with only a negative-side limit pin assigned.
-3. **Decide the machine state for the test**: homed or not, whether to turn soft limits on
-   (a controller configuration change, which this project does not make and which needs the
-   owner), and where the carriage must be so that a 1 mm move in either direction cannot reach
-   an end stop, a clamp or the workpiece. With the controller enforcing no limits, this
-   position check is the only travel safeguard.
-3a. **Decide whether the gate should be stricter** when soft limits are OFF (section 2.3).
-4. **A physical emergency stop within reach**, tested, and a clear workspace. The software
-   cancel is not an emergency stop.
-5. **Verify the assumptions in section 8** on the real controller without motion where
-   possible (for example `$J=` rejection behaviour is unknown until a first jog is sent).
-6. **A written test procedure** with abort criteria, agreed by the owner (a draft is in section 10).
-7. **Decide the A axis**: rotary calibration (degrees per step, direction, wrap-around) and
-   feed units. Until then A stays disabled.
-8. **Operator visual check** of the Jog, Capabilities and Limits / Homing pages in the live-jog
-   build (laid out without a photo review so far) and of the arming and confirmation dialogs.
-9. **Review the experimental flash procedure**: how to return to the ordinary firmware
-   afterwards (flash `env:jc8048w550`) and how to confirm it from the boot log.
-10. **Wi-Fi behaviour during motion**: loss and stale status are handled in the software
-    (cancel attempted, failure latched, nothing replayed) and simulated, but how the real link
-    and controller behave when the connection drops mid-jog has never been observed.
-11. **Separate approval for anything beyond a single restricted jog**: continuous jogging,
-    larger steps, homing, probing, macros, spindle, files, the A axis. None is implemented
-    for transmission.
-12. No merge into `main` and no release without separate approval.
+1. **Owner review of this corrected gate (Instruction 006A checkpoint), then owner approval to
+   flash the experimental build and to send the first X jog.** Not given. This checkpoint
+   stops before flashing.
+2. ~~Real configuration read.~~ **Done and accepted** (sections 2.2 and 2.4).
+3. ~~Decide whether the gate should be stricter when soft limits are OFF.~~ **Done in 006A**:
+   UNPROTECTED MICRO-JOG mode with a per-axis, per-arming operator acknowledgement (section 4a).
+4. **Physical conditions before the first jog** (the operator establishes these; the software
+   cannot): machine stationary and reporting Idle; spindle / router / laser cannot start; no
+   macro or job running; workpiece and tooling clear of the tested axis movement; the carriage
+   visibly not against the end of travel in the commanded direction; an immediate stop /
+   power-removal method within reach. Homing is **not** required, and FluidNC's configuration is
+   **not** to be altered for this test.
+5. **Z validation, a separate later gate.** Before any Z jog or any homing test: establish what
+   GPIO39 physically is (negative-end switch, a positive-end switch labelled incorrectly, a
+   shared / all-limit input, a wiring or configuration mismatch, or another deliberate
+   arrangement), and the intended physical Z homing direction. Only then may a separate Z test
+   be authorized. Z configuration is not altered by this project.
+6. **Optional, recommended before homing is ever authorized:** verify the physical X / Y / Z
+   switch inputs with FluidNC's own read / test mechanism (for example `$limits`) without
+   commanding movement: actuate each switch by hand, record the reported input changes, exit the
+   test mode normally. This is **not** required to prove the first X / Y micro-jog command path,
+   and the pendant does not send it (it is not in the read-only allowlist).
+7. **Verify the assumptions in section 8** on the real controller. Items 1 to 5 can only be
+   confirmed by the first jog itself, which is why that jog is so tightly bounded.
+8. **A written, owner-agreed test procedure** (the draft is in section 10).
+9. **A axis:** rotary calibration (degrees per step, direction, wrap-around) and feed units
+   before it is ever enabled. It stays disabled.
+10. **Operator visual check** of the Jog, Capabilities and Limits / Homing pages in the
+    experimental build and of the arming and confirmation dialogs. They were laid out without a
+    photo review. The arming dialog uses seven lines, which is the most the dialog can show
+    without touching its buttons.
+11. **Review the experimental flash procedure**: how to return to the ordinary firmware afterwards
+    (flash `env:jc8048w550`) and how to confirm it from the boot log.
+12. **Wi-Fi behaviour during motion**: loss and stale status are handled in the software and
+    simulated, but how the real link and controller behave when the connection drops mid-jog has
+    never been observed.
+13. **Separate approval for anything beyond one restricted X / Y jog at a time**: Z, A, larger
+    steps, continuous jogging, homing, probing, macros, spindle, laser, files.
+14. No merge into `main` and no release without separate approval.
 
-## 10. DRAFT first-jog procedure (not approved, not executed)
+## 10. DRAFT first-motion procedure (not approved, not executed)
 
-This is a starting point for the owner's review. It must not be followed until section 9 is
-complete and the owner has approved it.
+A starting point for the owner's review. It must not be followed until section 9 item 1 is
+satisfied and the owner has approved it. **X first, then Y. Z is not tested.**
 
-1. Machine powered, E-stop within reach, workspace clear, nothing mounted that a 1 mm move
-   could damage. Carriage position noted.
-2. With the **ordinary** firmware: connect LIVE, wait for Idle, read the controller
-   configuration, and review LIMITS / HOMING with the owner (the 2026-10-30 read found soft
-   and hard limits OFF and `must_home` false; confirm the machine is in the intended state).
-3. Flash `env:jc8048w550_livejog_test`. Confirm the boot log says "LIVE JOG TEST BUILD" and the
-   Settings page shows the red banner.
-4. Connect LIVE, wait for Idle with fresh status, read the controller configuration again
-   (values are discarded on every connection loss and on reboot).
-5. Open Jogging, select **Z, 0.5 mm, 50 mm/min**, tap ARM TEST and confirm.
-6. Jog +0.5 mm. Read the confirmation (soft / hard limits, "Travel is not proof"), confirm.
-7. Expected: "sent", then "ACCEPTED ... not finished", then "COMPLETED: moved +0.500". The DRO
-   changes by 0.500 mm and the machine is physically seen to move that amount.
-8. **Abort at once (E-stop, then CANCEL JOG)** on: any unexpected direction or distance, any
-   alarm, "NO REPLY", "POSITION MISMATCH", "CANCEL NOT CONFIRMED", "UNEXPECTED MOTION", a
-   frozen DRO, or any doubt.
-9. Repeat -0.5 mm, then X and Y at 1 mm / 100 mm/min only after the owner agrees.
-10. Test CANCEL JOG once on a deliberately longer-running move only if the owner approves
-    raising the test limit for that purpose; otherwise cancellation stays host-tested.
-11. Reflash `env:jc8048w550` and confirm "motion commands disabled" in the boot log.
+**Conditions** (section 9 item 4) are established and nothing is changed in FluidNC.
+
+**First test: X only, one ordinary 1 mm jog.**
+
+1. With the experimental build flashed (after owner approval): confirm the boot log says
+   "LIVE JOG TEST BUILD" and the Settings page shows the red banner.
+2. LIVE connected. Wait for Idle.
+3. READ CONTROLLER. Confirm X: soft OFF, hard OFF, and that the read is current (a new read is
+   needed after every connection loss or reboot).
+4. Open Jogging, select X, 1 mm, 100 mm/min. The page shows `gate: UNPROTECTED MICRO-JOG`.
+5. Tap ARM TEST. Read the NO CONTROLLER TRAVEL PROTECTION warning and tap I ACKNOWLEDGE.
+6. Confirm physical clearance, and choose the physically clearer direction.
+7. Jog **X +1.0 mm or X -1.0 mm at 100 mm/min**. Read the per-jog confirmation, confirm.
+8. Observe the actual movement. Require all of: command acknowledged ("ACCEPTED"); movement
+   observed; a post-acknowledgement Idle; the position change consistent with the requested
+   magnitude and sign ("COMPLETED: moved ..."). **No further jog is sent automatically.**
+9. If successful: repeat the equivalent bounded test on Y. **Do not test Z.**
+
+**Separate cancel test** (only after one ordinary 1 mm X or Y jog succeeded; same axis and rate,
+no raised limit; not part of the first transmitted motion):
+
+10. Jog 1 mm and press CANCEL JOG. Verify: `0x85` reached the controller; movement stopped; no
+    queued jog started after the cancel; the final state is shown correctly; any failure result
+    stays latched until acknowledged; nothing is replayed. The overtaken-cancel protection
+    (a jog that starts after a cancel is detected, cancelled again and latched) stays in force.
+    A 1 mm move at 100 mm/min lasts about 0.6 s, so a cancel race may be hard to hit; if the move
+    finishes first, that is a valid "completed" result and nothing is raised to make it longer.
+
+**Stop at once (E-stop / power removal first, then CANCEL JOG) and return to investigation on:**
+movement direction differing from the command; movement distance materially wrong; the machine
+not returning to Idle as expected; acknowledgement semantics differing from section 8; a cancel
+that does not stop motion; queued motion appearing; a reconnect causing a replay; an unexpected
+Alarm; inconsistent position reporting; any axis approaching an obstruction or end stop; the UI
+state differing from the controller state. **Never compensate by increasing the movement
+distance.**
+
+11. Afterwards, reflash `env:jc8048w550` and confirm "motion commands disabled" in the boot log.
 
 **Stop point:** real motion is not enabled and this report does not request it.

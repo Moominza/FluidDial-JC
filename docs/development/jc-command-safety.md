@@ -119,13 +119,20 @@ Full report: [jc-live-jog-readiness.md](jc-live-jog-readiness.md). Summary of th
   commands are `BlockedBuildPolicy` even when armed, confirmed and in Idle.
 * **Three independent checks of the same jog rule**: the builder (`TestLimit`, `JogDisabled`),
   the transport (`jc_jog_line_allowed`, a separate strict parser) and, in the simulator, a
-  Python copy of the rule. Test limits: X/Y 1 mm @ 100 mm/min, Z 0.5 mm @ 50 mm/min, A disabled.
+  Python copy of the rule. Test limits: X/Y 1 mm @ 100 mm/min only; Z is on hold (Instruction
+  006A) and A is disabled.
 * **Stopping is never blocked by bookkeeping.** `JogCancel` (and `Hold`, where compiled in)
   need only LIVE mode: not arming, not a fresh link, not a recent command, not a free executor.
 * **Unresolved operations block new motion** (`BlockedOperationPending`): an in-flight jog,
   an unacknowledged failure, a configuration read in progress.
-* **Envelope**: `BlockedEnvelopeUnread` until the soft / hard limit settings were read. A
-  configured travel is never treated as a safe movement envelope.
+* **Envelope / gate (Instruction 006A)**: per axis, PROTECTED (unreachable: no valid-position
+  indicator can be read), UNPROTECTED MICRO-JOG, or BLOCKED. Anything UNKNOWN, refused, stale
+  (older than 5 minutes), not read, or an excluded axis (Z on hold, A disabled) is BLOCKED and is
+  never treated as OFF. `BlockedEnvelopeUnread` covers those; `BlockedUnprotectedNotAcknowledged`
+  requires a deliberate per-axis operator acknowledgement, valid for one arming only and lost on
+  any link loss. A configured travel, MPos, `must_home` and a configured homing cycle are never
+  treated as a safe path, a valid position or proof of homing. A configured limit input is not
+  hard-limit protection. Full detail: `jc-live-jog-readiness.md` section 4a.
 * **Arming** lapses after 120 s, on leaving the jog page, in DEMO and on any loss of fresh data.
 * **Late start** of a jog after a cancel is detected, cancelled again and latched; motion by
   another client is counted and never cancelled by this pendant.
