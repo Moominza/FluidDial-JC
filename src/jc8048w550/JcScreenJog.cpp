@@ -23,7 +23,17 @@ constexpr ui::Rect kDro { 424, 76, 360, 50 };
 constexpr ui::Rect kPanelRect { 16, 350, 768, 122 };
 constexpr ui::Rect kAck { 28, 432, 744, 36 };
 
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+#define JC_ARM_LABEL "ARM PREVIEW"
+#define JC_STAGE_TITLE "CONFIRM SIMULATED JOG"
+#define JC_ARM_TITLE "PREVIEW ONLY: ARM MICRO-JOG?"
+#else
+#define JC_ARM_LABEL "ARM TEST"
+#define JC_STAGE_TITLE "CONFIRM LIVE JOG"
+#define JC_ARM_TITLE "ARM UNPROTECTED MICRO-JOG?"
+#endif
+
+#if JC_JOG_UI
 const char* tri_text(JcTri t) { return t == JcTri::Yes ? "ON" : (t == JcTri::No ? "OFF" : "UNKNOWN"); }
 
 // Z is on hold and A is disabled in the first-motion policy; only X and Y can jog.
@@ -67,7 +77,7 @@ void JcJogScreen::draw_steps() {
         char label[24];
         jc_format_step(label, sizeof(label), steps[i], _axis);
         ui::Btn style = _continuous ? ui::Btn::Disabled : (i == _step ? ui::Btn::Selected : ui::Btn::Normal);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         // Presets above the test limit stay selectable (the jog is then refused with a
         // clear message) but are drawn dimmed so the restriction is visible.
         if (style == ui::Btn::Normal && steps[i] > sv.profile.axes[_axis].max_step) {
@@ -85,7 +95,7 @@ void JcJogScreen::draw_feeds() {
         char label[24];
         snprintf(label, sizeof(label), "%g /min", static_cast<double>(feeds[i]));
         ui::Btn style = i == _feed ? ui::Btn::Selected : ui::Btn::Normal;
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         if (style == ui::Btn::Normal && feeds[i] > sv.profile.axes[_axis].max_feed) {
             style = ui::Btn::Disabled;
         }
@@ -96,7 +106,7 @@ void JcJogScreen::draw_feeds() {
 
 void JcJogScreen::draw_mode() {
     ui::button(sv.display, kIncremental, "INCREMENTAL", _continuous ? ui::Btn::Normal : ui::Btn::Selected);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     const uint32_t now = millis();
     if (!live_axis_allowed(_axis)) {
         ui::button(sv.display, kContinuous, "NOT AVAILABLE", ui::Btn::Disabled);
@@ -105,7 +115,7 @@ void JcJogScreen::draw_mode() {
         snprintf(label, sizeof(label), "ARMED %us", static_cast<unsigned>(sv.dispatcher.arm_remaining_ms(now) / 1000u));
         ui::button(sv.display, kContinuous, label, ui::Btn::Good);
     } else {
-        ui::button(sv.display, kContinuous, "ARM TEST", ui::Btn::Danger);
+        ui::button(sv.display, kContinuous, JC_ARM_LABEL, ui::Btn::Danger);
     }
 #else
     ui::button(sv.display, kContinuous, "CONTINUOUS",
@@ -114,7 +124,7 @@ void JcJogScreen::draw_mode() {
 }
 
 void JcJogScreen::draw_bottom() {
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     if (sv.jogs.needs_acknowledgement()) {
         ui::button(sv.display, kAck, "ACKNOWLEDGE RESULT", ui::Btn::Danger);
         return;
@@ -132,7 +142,7 @@ void JcJogScreen::on_draw() {
     draw_steps();
     draw_feeds();
     draw_mode();
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     ui::button(sv.display, kJogNeg, live_jog_label(_axis, true), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
     ui::button(sv.display, kJogPos, live_jog_label(_axis, false), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
 #else
@@ -149,7 +159,7 @@ void JcJogScreen::on_draw() {
     _motion.invalidate();
     _preview.invalidate();
     _result.invalidate();
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     _live_key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(millis()) ? 2u : 0u);
 #endif
     draw_live();
@@ -172,7 +182,7 @@ void JcJogScreen::draw_live() {
     const char* motion = !sv.model.has_status() ? "UNKNOWN (no live data)"
                        : sv.model.in_motion() ? "ACTIVE" : (sv.model.alarm() ? "ALARM" : "IDLE");
     char text[96];
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     {
         const JcJogGate g = jc_jog_gate(sv.loader.caps(), sv.loader.state() == JcLoadState::Complete, millis(), _axis,
                                         jc_position_trust(sv.loader.caps()));
@@ -184,17 +194,17 @@ void JcJogScreen::draw_live() {
     _motion.draw(sv.display, { 110, 406, 650, 26 }, text, FontId::Body16,
                  sv.model.in_motion() ? ui::kWarn : (sv.model.alarm() ? RED : ui::kGood), ui::kPanel);
 
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     // Acknowledgement, motion and completion are separate states and are reported separately.
     char result[96];
-    const JcJogTone tone = jc_jog_result_line(sv.jogs, sv.live_fresh(), result, sizeof(result));
+    const JcJogTone tone = jc_jog_result_line(sv.jogs, sv.live_fresh(), result, sizeof(result), JC_JOG_PREVIEW != 0);
     const uint16_t color = tone == JcJogTone::Alarm ? RED : tone == JcJogTone::Warn ? ui::kWarn
                          : tone == JcJogTone::Info ? ui::kInfo : tone == JcJogTone::Good ? ui::kGood : ui::kMuted;
     _result.draw(sv.display, { 110, 380, 650, 26 }, result, FontId::Body16, color, ui::kPanel);
 #endif
 }
 
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
 
 // Why the selected axis cannot be armed now (nullptr = it may). Uses the same gate the
 // authorization context uses, so the page and the gate cannot disagree.
@@ -217,12 +227,12 @@ void JcJogScreen::request_arm() {
     const uint32_t now = millis();
     if (sv.dispatcher.armed_at(now) && ((sv.dispatcher.unprotected_ack_mask() >> _axis) & 1u) != 0) {
         sv.dispatcher.disarm();  // tapping an armed button disarms everything
-        Serial.println("jogtest: disarmed by the operator");
+        Serial.println(JC_JOG_TAG ": disarmed by the operator");
         draw();
         return;
     }
     if (const char* blocker = arm_blocker()) {
-        Serial.printf("jogtest: arm refused (%s): %s\n", jc_axis_name(_axis), blocker);
+        Serial.printf(JC_JOG_TAG ": arm refused (%s): %s\n", jc_axis_name(_axis), blocker);
         show_message("CANNOT ARM THE JOG TEST", blocker, "Nothing was sent.");
         return;
     }
@@ -234,7 +244,7 @@ void JcJogScreen::request_arm() {
              tri_text(ax.hard_limits()));
     snprintf(l4, sizeof(l4), "%s", ax.hard_limits() == JcTri::No ? "Limit switches will not stop an ordinary jog."
                                                                : "Limit switches may not stop a jog: position is not trusted.");
-    open_custom_confirm("ARM UNPROTECTED MICRO-JOG?", "I ACKNOWLEDGE");
+    open_custom_confirm(JC_ARM_TITLE, "I ACKNOWLEDGE");
     dialog.add_line(both_off ? "NO CONTROLLER TRAVEL PROTECTION" : "NO TRUSTED CONTROLLER TRAVEL PROTECTION", RED);
     dialog.add_line(l2, ui::kWarn);
     dialog.add_line("Machine position may not match the physical position.", ui::kWarn);
@@ -252,7 +262,7 @@ void JcJogScreen::on_custom_confirm() {
     uint8_t mask = sv.dispatcher.armed_at(now) ? sv.dispatcher.unprotected_ack_mask() : 0;
     mask = static_cast<uint8_t>(mask | (1u << _arm_axis));
     sv.dispatcher.arm_for(now, kJcJogArmTtlMs, mask);
-    Serial.printf("jogtest: ARMED for 120 s; unprotected-micro-jog acknowledged for %s (mask 0x%02X)\n",
+    Serial.printf(JC_JOG_TAG ": ARMED for 120 s; unprotected-micro-jog acknowledged for %s (mask 0x%02X)\n",
                   jc_axis_name(_arm_axis), static_cast<unsigned>(mask));
 }
 
@@ -264,7 +274,7 @@ void JcJogScreen::jog_live(int direction) {
         char reason[64];
         snprintf(reason, sizeof(reason), "Refused: %s", jc_cmd_error_name(command.error));
         sv.dispatcher.submit(command, sv.dispatch_context(false));  // recorded as rejected
-        Serial.printf("jogtest: refused axis=%s step=%g feed=%g: %s\n", jc_axis_name(_axis),
+        Serial.printf(JC_JOG_TAG ": refused axis=%s step=%g feed=%g: %s\n", jc_axis_name(_axis),
                       static_cast<double>(direction * step_value()), static_cast<double>(feed_value()),
                       jc_cmd_error_name(command.error));
         if (_axis == 2) {
@@ -279,7 +289,7 @@ void JcJogScreen::jog_live(int direction) {
     }
     _preview.draw(sv.display, { 110, 354, 650, 26 }, command.text, FontId::Body16, CYAN, ui::kPanel);
     if (!sv.dispatcher.armed_at(now)) {
-        show_message("NOT ARMED", "Tap ARM TEST first.", "Arming lapses after 120 s, on leaving this page,",
+        show_message("NOT ARMED", "Tap " JC_ARM_LABEL " first.", "Arming lapses after 120 s, on leaving this page,",
                      "and on any loss of the connection.");
         return;
     }
@@ -289,7 +299,7 @@ void JcJogScreen::jog_live(int direction) {
         const bool rearm = pre == JcAuthDecision::BlockedUnprotectedNotAcknowledged
                            || pre == JcAuthDecision::BlockedNotArmed;
         show_message("JOG BLOCKED", jc_auth_name(pre),
-                     rearm ? "Tap ARM TEST for this axis and acknowledge." : "Nothing was sent.",
+                     rearm ? "Tap " JC_ARM_LABEL " for this axis and acknowledge." : "Nothing was sent.",
                      "Nothing was sent.");
         return;
     }
@@ -308,18 +318,26 @@ void JcJogScreen::jog_live(int direction) {
              tri_text(ax.soft_limits()), tri_text(ax.hard_limits()));
     snprintf(l2, sizeof(l2), "%s; %s", input, protection);
     const char* notes[3] = { l1, l2, "Check clear space in THIS direction. Position is not trusted." };
-    Serial.printf("jogtest: staged [%s] soft=%s hard=%s | %s | %s\n", command.text, tri_text(ax.soft_limits()),
+    Serial.printf(JC_JOG_TAG ": staged [%s] soft=%s hard=%s | %s | %s\n", command.text, tri_text(ax.soft_limits()),
                   tri_text(ax.hard_limits()), input, protection);
-    stage(command, "CONFIRM LIVE JOG", notes, 3);
+    stage(command, JC_STAGE_TITLE, notes, 3);
 }
 
 void JcJogScreen::do_cancel() {
     const JcCommand cancel = jc_jog_cancel();
     _preview.draw(sv.display, { 110, 354, 650, 26 }, "<jog cancel 0x85>", FontId::Body16, CYAN, ui::kPanel);
+#if JC_JOG_PREVIEW
+    const uint32_t before = sv.dispatcher.previewed();
+    const JcAuthDecision decision = submit_now(cancel);   // never needs arming or confirmation
+    const bool sent = sv.dispatcher.previewed() != before;   // "accepted by the SIMULATION"; nothing is ever sent
+    Serial.printf(JC_JOG_TAG ": cancel requested: %s (%s)\n", jc_auth_name(decision),
+                  sent ? "SIMULATED, NOT SENT" : "NOT ACCEPTED");
+#else
     const uint32_t before = sv.dispatcher.sent();
     const JcAuthDecision decision = submit_now(cancel);   // never needs arming or confirmation
     const bool sent = sv.dispatcher.sent() != before;
-    Serial.printf("jogtest: cancel requested: %s (%s)\n", jc_auth_name(decision), sent ? "SENT" : "NOT SENT");
+    Serial.printf(JC_JOG_TAG ": cancel requested: %s (%s)\n", jc_auth_name(decision), sent ? "SENT" : "NOT SENT");
+#endif
     if (!sent) {
         // "allowed" alone would read as success. Say why nothing left the device.
         show_message("CANCEL NOT SENT",
@@ -339,7 +357,7 @@ void JcJogScreen::do_cancel() {}
 #endif
 
 void JcJogScreen::do_jog(int direction) {
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     jog_live(direction);
     return;
 #else
@@ -376,7 +394,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             draw_steps();
             draw_feeds();
             draw_mode();
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
             ui::button(sv.display, kJogNeg, live_jog_label(_axis, true), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
             ui::button(sv.display, kJogPos, live_jog_label(_axis, false), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
 #else
@@ -409,7 +427,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
         return;
     }
     if (ui::hit(kContinuous, x, y)) {
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         request_arm();
         return;
 #else
@@ -424,13 +442,13 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
         return;
 #endif
     }
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     if (sv.jogs.needs_acknowledgement() && ui::hit(kAck, x, y)) {
         if (!sv.jogs.acknowledge()) {
             show_message("CANNOT ACKNOWLEDGE YET", "The operation is still in progress.",
                          "Wait for the controller to report Idle, or press CANCEL JOG.");
         } else {
-            Serial.println("jogtest: result acknowledged by the operator");
+            Serial.println(JC_JOG_TAG ": result acknowledged by the operator");
             draw();
         }
         return;
@@ -441,7 +459,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
     } else if (ui::hit(kJogPos, x, y)) {
         do_jog(1);
     } else if (ui::hit(kJogStop, x, y)) {
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         do_cancel();
 #else
         const JcCommand cancel = jc_jog_cancel();
@@ -457,7 +475,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
 void JcJogScreen::on_tick(uint32_t now) {
     if (now - _last_tick >= 250) {
         _last_tick = now;
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         const uint32_t key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(now) ? 2u : 0u);
         if (key != _live_key) {
             draw();  // the ACK button or the arming state changed

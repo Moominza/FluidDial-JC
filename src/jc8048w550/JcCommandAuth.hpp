@@ -28,6 +28,27 @@
 #define JC_LIVE_JOG_TEST 0
 #endif
 
+// Ordinary firmware only (PlatformIO env jc8048w550): compiles in the NON-MOTION jog test mode, an
+// operator-enabled (never persisted, off after every restart) rehearsal of the experimental jog
+// interface against a SIMULATED controller in RAM. It has no transmit path to the machine; the
+// real gate is still JC_MACHINE_CONTROL_ENABLED=0. The two experimental options exclude each other.
+#ifndef JC_JOG_PREVIEW
+#define JC_JOG_PREVIEW 0
+#endif
+#if JC_JOG_PREVIEW && (JC_LIVE_JOG_TEST || JC_MACHINE_CONTROL_ENABLED)
+#error "JC_JOG_PREVIEW (non-motion test mode) cannot be combined with live jog or enabled machine control"
+#endif
+
+// The jog page, arming, confirmation and result UI is compiled for the experimental live-jog build AND for
+// the ordinary firmware's non-motion preview. Transport code (the only thing that can reach a socket) is
+// compiled for JC_LIVE_JOG_TEST alone.
+#define JC_JOG_UI (JC_LIVE_JOG_TEST || JC_JOG_PREVIEW)
+#if JC_JOG_PREVIEW
+#define JC_JOG_TAG "jogpreview"
+#else
+#define JC_JOG_TAG "jogtest"
+#endif
+
 namespace jc8048w550 {
 
 enum class JcCommandClass : uint8_t {
@@ -144,19 +165,19 @@ inline bool jc_is_stop_or_recovery(JcCommandClass c) {
         || c == JcCommandClass::Reset || c == JcCommandClass::Unlock;
 }
 
-inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx) {
-#if !JC_MACHINE_CONTROL_ENABLED
-    (void)cls;
-    (void)ctx;
-    return JcAuthDecision::BlockedBuildPolicy;
-#else
-#if JC_LIVE_JOG_TEST
-    // Continuous jog is not authorizable here either: the transport only accepts the
-    // strict incremental line (JcJogTest.hpp), and the builder never generates it.
-    if (!jc_live_jog_class_allowed(cls)) {
+namespace detail {
+
+// The authorization rules after the build policy. `jog_only_rules` is the experimental jog test
+// policy: only Jog and JogCancel are ever authorized, every jog needs the operator's confirmation,
+// and a jog without trusted travel protection needs the per-axis acknowledgement. It is a RUNTIME
+// parameter so the non-motion preview mode (jc_authorize_preview) runs exactly the rules of the
+// live-jog build instead of a second copy that could drift.
+inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& ctx, bool jog_only_rules) {
+    if (jog_only_rules && !jc_live_jog_class_allowed(cls)) {
+        // Continuous jog is not authorizable here either: the transport only accepts the
+        // strict incremental line (JcJogTest.hpp), and the builder never generates it.
         return JcAuthDecision::BlockedBuildPolicy;
     }
-#endif
     if (jc_is_stop_always_allowed(cls)) {
         return ctx.live ? JcAuthDecision::Allowed : JcAuthDecision::BlockedNotLive;
     }
@@ -187,11 +208,9 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     if (ctx.envelope_required && !ctx.envelope_confirmed) {
         return JcAuthDecision::BlockedEnvelopeUnread;
     }
-#if JC_LIVE_JOG_TEST
-    if (ctx.unprotected_required && !ctx.unprotected_acked) {
+    if (jog_only_rules && ctx.unprotected_required && !ctx.unprotected_acked) {
         return JcAuthDecision::BlockedUnprotectedNotAcknowledged;
     }
-#endif
     const bool motion_idle_only = cls == JcCommandClass::Home || cls == JcCommandClass::Probe
                                   || cls == JcCommandClass::WorkOffset || cls == JcCommandClass::Macro
                                   || cls == JcCommandClass::Other || cls == JcCommandClass::Spindle;
@@ -202,11 +221,32 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
         && strcmp(ctx.machine_state, "Idle") != 0 && strcmp(ctx.machine_state, "Jog") != 0) {
         return JcAuthDecision::BlockedBadState;
     }
-    if (jc_needs_confirmation(cls) && !ctx.operator_confirmed) {
+    const bool needs_confirmation = jc_needs_confirmation(cls) || (jog_only_rules && cls == JcCommandClass::Jog);
+    if (needs_confirmation && !ctx.operator_confirmed) {
         return JcAuthDecision::BlockedUnconfirmed;
     }
     return JcAuthDecision::Allowed;
+}
+
+}  // namespace detail
+
+inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx) {
+#if !JC_MACHINE_CONTROL_ENABLED
+    (void)cls;
+    (void)ctx;
+    return JcAuthDecision::BlockedBuildPolicy;
+#else
+    return detail::authorize_rules(cls, ctx, JC_LIVE_JOG_TEST != 0);
 #endif
+}
+
+// NON-MOTION TEST MODE (Instruction 007). The same rules as the live-jog policy, but this decision
+// is ONLY consulted when the dispatcher's gate is in preview mode, which only the ordinary firmware's
+// operator-enabled test mode sets, and only together with a SIMULATED transport (JcJogPreview.hpp)
+// that has no connection to any socket or UART. Allowed here means "the preview controller may
+// accept this", never "a machine-changing command may be transmitted".
+inline JcAuthDecision jc_authorize_preview(JcCommandClass cls, const JcAuthContext& ctx) {
+    return detail::authorize_rules(cls, ctx, true);
 }
 
 // Sink that actually transmits an authorized command. The JC firmware does
@@ -221,21 +261,31 @@ public:
     explicit JcCommandGate(JcCommandSink sink = nullptr) : _sink(sink) {}
 
     JcAuthDecision submit(JcCommandClass cls, const char* text, const JcAuthContext& ctx) {
-        const JcAuthDecision decision = jc_authorize(cls, ctx);
+        const JcAuthDecision decision = _preview ? jc_authorize_preview(cls, ctx) : jc_authorize(cls, ctx);
         _last = decision;
         if (decision != JcAuthDecision::Allowed) {
             ++_blocked;
             return decision;
         }
-        const bool transmitted = (_sink_ex != nullptr && _sink_ex(_sink_user, cls, text))
-                                 || (_sink != nullptr && _sink(text));
-        if (transmitted) {
+        const bool accepted = (_sink_ex != nullptr && _sink_ex(_sink_user, cls, text))
+                              || (_sink != nullptr && _sink(text));
+        if (_preview) {
+            // The simulated controller is the only sink here: it either accepted the command (previewed)
+            // or declined it. Nothing is ever transmitted, so `sent()` cannot move in preview mode.
+            if (accepted) ++_previewed;
+            else ++_declined;
+        } else if (accepted) {
             ++_sent;
         } else {
             ++_previewed;  // authorized but no transmit path: preview only
         }
         return decision;
     }
+
+    // Non-motion test mode: authorize with the preview policy and count accepted commands as
+    // previewed, never as sent. Set only by the ordinary firmware's operator-enabled test mode.
+    void set_preview(bool on) { _preview = on; }
+    bool preview() const { return _preview; }
 
     void set_sink_ex(JcCommandSinkEx sink, void* user) {
         _sink_ex = sink;
@@ -245,6 +295,7 @@ public:
     uint32_t       sent() const { return _sent; }
     uint32_t       blocked() const { return _blocked; }
     uint32_t       previewed() const { return _previewed; }
+    uint32_t       declined() const { return _declined; }   // preview mode: the simulation refused it
     JcAuthDecision last() const { return _last; }
 
 private:
@@ -254,7 +305,9 @@ private:
     uint32_t       _sent = 0;
     uint32_t       _blocked = 0;
     uint32_t       _previewed = 0;
+    uint32_t       _declined = 0;
     JcAuthDecision _last = JcAuthDecision::BlockedBuildPolicy;
+    bool           _preview = false;
 };
 
 }  // namespace jc8048w550

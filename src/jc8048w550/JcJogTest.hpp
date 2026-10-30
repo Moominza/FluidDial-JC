@@ -886,7 +886,7 @@ private:
 // defect that no layout check can see.
 enum class JcJogTone : uint8_t { Muted, Info, Warn, Good, Alarm };
 
-inline JcJogTone jc_jog_result_line(const JcJogSession& s, bool live_fresh, char* out, size_t size) {
+inline JcJogTone jc_jog_result_line_raw(const JcJogSession& s, bool live_fresh, char* out, size_t size) {
     const JcJogResult r = s.result();
     const char axis = s.request().axis < 4 ? "XYZA"[s.request().axis] : '?';
     if (s.unresolved() && !live_fresh) {
@@ -937,6 +937,19 @@ inline JcJogTone jc_jog_result_line(const JcJogSession& s, bool live_fresh, char
             snprintf(out, size, "%s", jc_jog_result_name(r));
             return JcJogTone::Alarm;
     }
+}
+
+// `simulated`: the non-motion preview. Every line that describes the rehearsed jog is prefixed so it can
+// never be read as a statement about the real machine. The loss-of-communication warning is about the
+// real link and keeps its wording.
+inline JcJogTone jc_jog_result_line(const JcJogSession& s, bool live_fresh, char* out, size_t size, bool simulated = false) {
+    const JcJogTone tone = jc_jog_result_line_raw(s, live_fresh, out, size);
+    if (simulated && !(s.unresolved() && !live_fresh)) {
+        char tmp[112];
+        snprintf(tmp, sizeof(tmp), "SIM: %s", out);
+        snprintf(out, size, "%s", tmp);
+    }
+    return tone;
 }
 
 }  // namespace jc8048w550

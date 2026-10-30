@@ -87,7 +87,8 @@ public:
         if (!command.ok) {
             return JcAuthDecision::BlockedBadState;
         }
-        return jc_authorize(command.cls, make_auth(command, ctx));
+        const JcAuthContext auth = make_auth(command, ctx);
+        return _gate.preview() ? jc_authorize_preview(command.cls, auth) : jc_authorize(command.cls, auth);
     }
 
     JcAuthDecision submit(const JcCommand& command, const JcDispatchContext& ctx) {
@@ -159,6 +160,9 @@ public:
 
     // Test-only transmit hook; the firmware never calls this.
     void set_sink_ex(JcCommandSinkEx sink, void* user) { _gate.set_sink_ex(sink, user); }
+    // Non-motion test mode (see jc_authorize_preview): previewed, never sent.
+    void set_preview(bool on) { _gate.set_preview(on); }
+    bool preview() const { return _gate.preview(); }
 
     // Explicit operator arming. Nothing in the shipping UI calls arm().
     void arm() {
@@ -216,6 +220,7 @@ public:
     uint32_t blocked() const { return _gate.blocked(); }
     uint32_t sent() const { return _gate.sent(); }
     uint32_t previewed() const { return _gate.previewed(); }
+    uint32_t declined() const { return _gate.declined(); }
     JcAuthDecision last_decision() const { return _gate.last(); }
 
     uint8_t history_count() const { return _count; }

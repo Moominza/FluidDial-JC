@@ -33,7 +33,11 @@ protected:
 
 // The line under the jog panel in the experimental build. It must fit ONE line of the 744 px
 // panel text area (tests/host/ui_render.cpp checks the width); two lines overflow the panel.
+#if JC_JOG_PREVIEW
+constexpr const char* kJcLiveJogWarning = "PREVIEW ONLY - MOTION DISABLED. Real use: cancel is NOT an E-stop. Keep the E-stop in reach.";
+#else
 constexpr const char* kJcLiveJogWarning = "Cancel is NOT an E-stop and fails without communication. Keep the E-stop in reach.";
+#endif
 
 class JcJogScreen : public JcScreen {
 public:
@@ -299,6 +303,28 @@ private:
     uint32_t _last_tick = 0;
     uint32_t _drawn_key = 0;
 };
+
+#if JC_JOG_PREVIEW
+// Non-motion jog test mode: choose how the SIMULATED controller behaves and see what the gate and the
+// simulation counted. Nothing on this page can transmit anything.
+class JcJogPreviewScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::JogPreview; }
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+
+private:
+    void draw_values();
+    ui::Slot _scenario;
+    ui::Slot _lines[4];
+    uint32_t _last_tick = 0;
+};
+#endif
 
 class JcDryRunScreen : public JcScreen {
 public:

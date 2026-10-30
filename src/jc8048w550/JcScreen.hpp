@@ -20,6 +20,7 @@
 #include "JcCommandBuilder.hpp"
 #include "JcDryRun.hpp"
 #include "JcDispatch.hpp"
+#include "JcJogPreview.hpp"
 #include "JcJogTest.hpp"
 #include "JcMachineModel.hpp"
 #include "JcNav.hpp"
@@ -72,6 +73,9 @@ struct JcAppServices {
     JcJogSession&      jogs;   // inert (no transport) in the ordinary firmware
     const bool&        live_mode;
     JcAppHost&         host;
+#if JC_JOG_PREVIEW
+    JcPreviewBridge&   preview;   // the SIMULATED controller: the only jog transport in the ordinary firmware
+#endif
 
     bool live_fresh() const { return live_mode && model.fresh(); }
 
@@ -83,7 +87,7 @@ struct JcAppServices {
         c.operator_confirmed = confirmed;
         c.now_ms = millis();
         c.limits_mask = jc_profile_limits_mask(profile);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         // Experimental jog gate: per-axis mode from the CURRENT read (discarded on link loss).
         jc_jog_gate_masks(loader.caps(), loader.state() == JcLoadState::Complete, c.now_ms, c.envelope_mask,
                           c.protected_mask);

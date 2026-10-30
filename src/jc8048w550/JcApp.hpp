@@ -67,7 +67,11 @@ private:
     JcMachineModel _model;
     JcDispatcher _dispatcher;   // a transmit sink is installed ONLY in the live-jog test build
     JcCapsLoader _loader;
-    JcJogSession _jogs;         // inert (no transport) unless JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+    JcPreviewBridge _preview;   // SIMULATED controller: the only jog transport in the ordinary firmware
+    JcJogStatus _real;          // latest REAL read-only status, as the session would see it
+#endif
+    JcJogSession _jogs;         // transport: none (ordinary), the simulation (preview), the socket (live-jog test build)
     JcNav _nav;
     JcAppServices _sv;
     JcMenuScreen _menu;
@@ -86,6 +90,9 @@ private:
     JcCapsScreen _caps_screen;
     JcLimitsScreen _limits_screen;
     JcDryRunScreen _dry_run;
+#if JC_JOG_PREVIEW
+    JcJogPreviewScreen _jog_preview;
+#endif
     JcDiagnosticsScreen _diagnostics;
     JcInputScreen _input;
     LeaveFn _leave_fn = nullptr;

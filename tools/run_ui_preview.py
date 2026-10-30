@@ -29,7 +29,7 @@ SOURCES = [os.path.join(HOST, "ui_render.cpp")] + [
     os.path.join(SRC, n) for n in (
         "JcFontRenderer.cpp", "JcUiKit.cpp", "JcScreen.cpp", "JcScreenUtil.cpp", "JcScreenJog.cpp",
         "JcScreenLimits.cpp", "JcScreenCapabilities.cpp", "JcScreenMenu.cpp", "JcScreenSettings.cpp",
-        "JcScreenDryRun.cpp")]
+        "JcScreenDryRun.cpp", "JcScreenJogPreview.cpp")]
 
 
 def find_cxx():
@@ -68,6 +68,7 @@ def main():
     rc = 0
     with tempfile.TemporaryDirectory() as tmp:
         for tag, flags in (("ordinary", ["-DJC_MACHINE_CONTROL_ENABLED=0", "-DJC_LIVE_JOG_TEST=0"]),
+                           ("preview", ["-DJC_MACHINE_CONTROL_ENABLED=0", "-DJC_LIVE_JOG_TEST=0", "-DJC_JOG_PREVIEW=1"]),
                            ("live", ["-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_LIVE_JOG_TEST=1"])):
             exe = os.path.join(tmp, f"ui_{tag}.exe")
             cmd = find_cxx() + ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",

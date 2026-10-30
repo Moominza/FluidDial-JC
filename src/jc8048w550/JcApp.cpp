@@ -21,10 +21,16 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _profile(jc_profile_from_settings(_settings)),
 #if JC_LIVE_JOG_TEST
       _jogs(&JcApp::jog_tx_thunk, this),
+#elif JC_JOG_PREVIEW
+      _jogs(&JcPreviewController::tx, &_preview.controller()),
 #else
       _jogs(nullptr, nullptr),
 #endif
-      _sv { display, link, _model, _settings, _profile, _dispatcher, _loader, _jogs, live_mode, *this },
+      _sv { display, link, _model, _settings, _profile, _dispatcher, _loader, _jogs, live_mode, *this
+#if JC_JOG_PREVIEW
+             , _preview
+#endif
+      },
       _menu(_sv),
       _jog(_sv),
       _homing(_sv),
@@ -41,6 +47,9 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _caps_screen(_sv),
       _limits_screen(_sv),
       _dry_run(_sv),
+#if JC_JOG_PREVIEW
+      _jog_preview(_sv),
+#endif
       _diagnostics(_sv, uart),
       _input(_sv) {}
 
@@ -67,7 +76,14 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
     refresh_profile();
     _link.set_line_listener(&JcApp::line_thunk, this);
     _uart.set_line_listener(&JcApp::line_thunk, this);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+    // NON-MOTION TEST MODE: the sink is the jog session, whose only transport is the in-RAM simulated
+    // controller. The gate is in preview mode, so an accepted command is counted as previewed, never sent.
+    _dispatcher.set_preview(true);
+    _dispatcher.set_sink_ex(&JcJogSession::sink, &_jogs);
+    Serial.println("*** PREVIEW ONLY - MOTION DISABLED: the jog interface runs against a SIMULATED controller ***");
+    Serial.println("app: motion commands disabled");
+#elif JC_LIVE_JOG_TEST
     // EXPERIMENTAL live-jog test build: the ONLY place a command sink is installed.
     _dispatcher.set_sink_ex(&JcJogSession::sink, &_jogs);
     Serial.println("*** LIVE JOG TEST BUILD: restricted incremental jog + jog cancel are ENABLED ***");
@@ -121,6 +137,11 @@ JcScreen* JcApp::screen_for(JcPage page) {
         case JcPage::Capabilities: return &_caps_screen;
         case JcPage::LimitsHoming: return &_limits_screen;
         case JcPage::DryRun: return &_dry_run;
+#if JC_JOG_PREVIEW
+        case JcPage::JogPreview: return &_jog_preview;
+#else
+        case JcPage::JogPreview: return &_menu;
+#endif
         case JcPage::Diagnostics: return &_diagnostics;
         case JcPage::Input: return &_input;
         case JcPage::Count: break;
@@ -188,7 +209,11 @@ void JcApp::feed_status(const JcLiveMachineStatus& status, bool fresh) {
     view.sequence = status.sequence;
     view.pos_valid = status.has_data;
     memcpy(view.pos, status.axes, sizeof(view.pos));
+#if JC_JOG_PREVIEW
+    _real = view;   // the session is fed by the bridge: real status plus the simulated displacement
+#else
     _jogs.on_status(view, millis());
+#endif
 }
 
 void JcApp::note_link_fresh(bool fresh) {
@@ -198,6 +223,10 @@ void JcApp::note_link_fresh(bool fresh) {
         // A jog that is still unresolved: try to cancel it if the socket is still open
         // (stale data), otherwise record the loss. Nothing is ever replayed.
         _jogs.on_link_lost(millis(), !uart_active() && _link.tcp_connected());
+#if JC_JOG_PREVIEW
+        _preview.controller().reset();               // a rehearsal never survives a loss of the link
+        _preview.controller().reset_displacement();
+#endif
         // Controller values may be stale after a loss (it may have restarted or
         // been reconfigured): abandon any read and fall back to placeholders.
         const uint32_t now = millis();
@@ -225,7 +254,7 @@ void JcApp::refresh_profile() {
     if (_loader.state() == JcLoadState::Complete) {
         jc_profile_apply_caps(_profile, _loader.caps());
     }
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     // Last, so the controller's travel can only ever lower the test limits, never widen them.
     jc_profile_apply_test_limits(_profile);
 #endif
@@ -255,7 +284,9 @@ void JcApp::cancel_caps_read() {
 void JcApp::on_controller_line(const char* line) {
     const uint32_t now = millis();
     _loader.on_line(line, now);
-    _jogs.on_line(line, now);
+#if !JC_JOG_PREVIEW
+    _jogs.on_line(line, now);   // in the preview the session only hears the simulated controller
+#endif
 }
 
 #if JC_LIVE_JOG_TEST
@@ -270,17 +301,21 @@ bool JcApp::send_jog(const char* bytes, size_t length) {
 void JcApp::service() {
     const uint32_t now = millis();
     _jogs.set_clock(now);
+#if JC_JOG_PREVIEW
+    _real.fresh = _last_fresh && _sv.live_mode;
+    _preview.pump(_jogs, _real, now);
+#endif
     _jogs.tick(now);
     if (!_sv.live_mode && _jogs.unresolved()) {
         _jogs.on_link_lost(now, false);  // DEMO mode has no controller
     }
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     // Arming (and its acknowledgement) only exists on the jog page (or an input dialog opened
     // from it), in LIVE mode and inside its time window; anything else drops both.
     const JcDisarmReason dropped = _dispatcher.enforce_arming_scope(
         now, _sv.live_mode, _nav.current() == JcPage::Jog || _nav.current() == JcPage::Input);
     if (dropped != JcDisarmReason::None) {
-        Serial.printf("jogtest: disarmed (%s); acknowledgement cleared\n", jc_disarm_reason_text(dropped));
+        Serial.printf(JC_JOG_TAG ": disarmed (%s); acknowledgement cleared\n", jc_disarm_reason_text(dropped));
     }
 #endif
     if (_loader.running() && !_sv.live_mode) {

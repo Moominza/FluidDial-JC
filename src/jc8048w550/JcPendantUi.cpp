@@ -225,8 +225,12 @@ void PendantUi::begin() {
     if (_calibration_loaded) {
         _page = Page::Home;
         draw();
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
+#if JC_JOG_PREVIEW
+        Serial.println("ui: landscape demo started; saved calibration active; PREVIEW ONLY - MOTION DISABLED: simulated X/Y jog rehearsal from MENU > JOGGING.");
+#else
         Serial.println("ui: landscape demo started; saved calibration active; LIVE JOG TEST BUILD: restricted X/Y jog available from MENU > JOGGING.");
+#endif
 #else
         Serial.println("ui: landscape demo started; saved calibration active; recovery hold available for 10s; manual read-only status available; motion disabled.");
 #endif
@@ -512,14 +516,14 @@ void PendantUi::draw_jog_button(Feedback feedback) {
                 draw_button(feedback == Feedback::JogNegative
                                 ? Rect { 30, 376, 260, 74 }
                                 : Rect { 510, 376, 260, 74 },
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
                             "NO JOG HERE: USE MENU", false, true);
 #else
                             "MOTION DISABLED", false, true);
 #endif
                 break;
             case Feedback::Stop:
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
                 // This button sends nothing. It must not look like a working cancel.
                 draw_button({ 300, 376, 200, 74 }, "NO CANCEL HERE", false, true);
 #else
@@ -630,10 +634,21 @@ void PendantUi::draw_header(const char* title) {
     _display.drawRect(368, 13, 208, 38, connected ? kSuccess : kBorder);
     draw_text_centered(_display, { 368, 13, 208, 38 }, link_label,
                        strlen(link_label) > 14 ? FontId::Body16 : FontId::Button20, connected ? WHITE : kMuted, link_fill);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     // Prominent banner on every dashboard-style page of the experimental build (x 584..796).
     {
-        const char* banner = "LIVE JOG TEST BUILD";
+#if JC_JOG_PREVIEW
+        static const char* const kBanners[3] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY" };
+#else
+        static const char* const kBanners[3] = { "LIVE JOG TEST BUILD", "LIVE JOG TEST BUILD", "LIVE JOG TEST BUILD" };
+#endif
+        const char* banner = kBanners[2];
+        for (const char* candidate : kBanners) {
+            if (text_width(FontId::Body16, candidate) + 16 <= 796 - 584) {
+                banner = candidate;
+                break;
+            }
+        }
         const int16_t bw = static_cast<int16_t>(text_width(FontId::Body16, banner) + 16);
         const Rect box { 584, 13, bw, 38 };
         _display.fillRect(box.x, box.y, box.width, box.height, RED);
@@ -724,7 +739,7 @@ void PendantUi::draw_home() {
 
     _display.fillRect(16, 243, 768, 225, kPanel);
     _display.drawRect(16, 243, 768, 225, kBorder);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     draw_text_top(_display, 30, 248,
                   _live_mode ? "LIVE STATUS" : "DEMO JOG CONTROLS",
                   FontId::Button20, WHITE, kPanel);
@@ -1237,9 +1252,13 @@ void PendantUi::draw_connections() {
 
     _display.fillRect(16, 290, 768, 152, kAccentDark);
     _display.drawRect(16, 290, 768, 152, RED);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     draw_text_centered(_display, { 34, 300, 732, 34 },
+#if JC_JOG_PREVIEW
+                       "STATUS CONNECTION - PREVIEW ONLY, MOTION DISABLED",
+#else
                        "STATUS CONNECTION - LIVE JOG TEST BUILD",
+#endif
                        FontId::Button20, WHITE, kAccentDark);
     draw_text_centered(_display, { 34, 340, 732, 26 },
                        "Wi-Fi opens network and FluidNC settings.",
@@ -1666,10 +1685,10 @@ void PendantUi::set_live_mode(bool live) {
     _last_displayed_status_sequence = 0;
     strlcpy(_last_displayed_machine_state, "", sizeof(_last_displayed_machine_state));
     _last_displayed_reference = JcCoordinateReference::Unknown;
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     _last_action = live ? "LIVE - jog test build (jog only from MENU)"
                         : "DEMO mode - simulated coordinates";
-    Serial.printf("ui: mode=%s\n", live ? "LIVE (LIVE JOG TEST BUILD)" : "DEMO");
+    Serial.printf("ui: mode=%s\n", live ? (JC_JOG_PREVIEW ? "LIVE (PREVIEW ONLY - MOTION DISABLED)" : "LIVE (LIVE JOG TEST BUILD)") : "DEMO");
 #else
     _last_action = live ? "LIVE read-only - machine motion disabled"
                         : "DEMO mode - simulated coordinates";

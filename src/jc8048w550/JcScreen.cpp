@@ -39,7 +39,7 @@ void JcScreen::draw() {
     const bool fresh = sv.live_fresh();
     const char* mode = sv.live_mode ? (fresh ? "LIVE" : "LIVE STALE") : "DEMO MODE";
     ui::header(sv.display, jc_page_title(page()), mode, fresh);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     ui::draw_live_jog_banner(sv.display, jc_page_title(page()));  // on every page of the experimental build
 #endif
     on_draw();
@@ -108,7 +108,15 @@ void JcScreen::open_confirm_dialog(const char* title, const char* const* notes, 
         }
         dialog.add_line(line, CYAN);
     }
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+    if (!_pending_is_sequence && _command.cls == JcCommandClass::Jog) {
+        dialog.add_line("PREVIEW ONLY - MOTION DISABLED: confirming runs", RED);
+        dialog.add_line("a SIMULATED jog. Nothing is sent to the machine.", ui::kWarn);
+    } else {
+        dialog.add_line("PREVIEW ONLY - MOTION DISABLED:", RED);
+        dialog.add_line("only a simulated jog can be rehearsed.", ui::kWarn);
+    }
+#elif JC_JOG_UI
     if (!_pending_is_sequence && _command.cls == JcCommandClass::Jog) {
         dialog.add_line("LIVE JOG TEST BUILD: confirming SENDS this jog", ui::kWarn);
         dialog.add_line("to the controller. Check the travel is clear.", ui::kWarn);
@@ -156,12 +164,27 @@ void JcScreen::run_pending() {
     }
     const JcDispatchContext ctx = sv.dispatch_context(true);
     const uint32_t sent_before = sv.dispatcher.sent();
+#if JC_JOG_PREVIEW
+    const uint32_t preview_before = sv.dispatcher.previewed();
+#endif
     const JcAuthDecision decision = _pending_is_sequence
         ? sv.dispatcher.submit_sequence(_sequence, ctx)
         : sv.dispatcher.submit(_command, ctx);
     _has_pending = false;
     const bool allowed = decision == JcAuthDecision::Allowed;
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+    // Accepted by the SIMULATED controller is counted as previewed; sent() cannot move in this build.
+    const bool rehearsed = sv.dispatcher.previewed() != preview_before;
+    (void)sent_before;
+    dialog.open_result(rehearsed ? "SIMULATED JOG - NOTHING SENT" : (allowed ? "AUTHORIZED - NOT SIMULATED" : "BLOCKED - NOTHING SENT"), rehearsed);
+    dialog.add_line(jc_auth_name(decision), allowed ? ui::kGood : ui::kWarn);
+    dialog.add_line("PREVIEW ONLY - MOTION DISABLED.", RED);
+    dialog.add_line("Nothing was transmitted to the controller.");
+    if (rehearsed) {
+        dialog.add_line("CANCEL JOG rehearses the cancel against the simulation.", ui::kMuted);
+    }
+    Serial.printf("dispatch: %s%s\n", jc_auth_name(decision), rehearsed ? " (SIMULATED, NOT SENT)" : " (NOT SENT)");
+#elif JC_JOG_UI
     const bool sent = sv.dispatcher.sent() != sent_before;
     dialog.open_result(sent ? "JOG SENT" : (allowed ? "AUTHORIZED - NOT SENT" : "BLOCKED - NOT SENT"), sent);
     dialog.add_line(jc_auth_name(decision), allowed ? ui::kGood : ui::kWarn);

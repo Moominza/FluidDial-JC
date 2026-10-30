@@ -1,4 +1,4 @@
-# JC first-live-jog readiness report (Instructions 006 and 006A)
+# JC first-live-jog readiness report (Instructions 006, 006A and 007)
 
 Status: **experimental. Nothing was flashed that can move the machine, and no jog or
 cancel byte was transmitted to any controller during this work.**
@@ -572,3 +572,75 @@ operator or the machine:
 **Automatic connection (ordinary firmware)**
 - [ ] A temporary Wi-Fi or controller loss and the recovery, on hardware (see `jc-auto-connect.md`).
 - [ ] A true power-cycle (supply removed and restored), not only a reset.
+
+## 12. Non-motion jog test mode (Instruction 007)
+
+**What it is.** The ordinary firmware (`env:jc8048w550`) now carries the experimental jog interface
+in a **non-motion test mode** (`-DJC_JOG_PREVIEW=1`, set only in that environment). The real jog page,
+arming dialog, per-axis acknowledgement, per-jog confirmation, result and cancel flows, and the real
+gate and jog session run unchanged. Their only transport is `JcPreviewController`
+(`src/jc8048w550/JcJogPreview.hpp`): a few hundred bytes of RAM that pretend to be a controller. It has
+no socket, UART, Wi-Fi or Arduino reference. The real FluidNC read-only status and capability queries
+still run over the real link.
+
+**Why nothing can move.**
+- `JC_MACHINE_CONTROL_ENABLED` stays 0; `JC_JOG_PREVIEW` is a compile `#error` together with
+  `JC_LIVE_JOG_TEST` or enabled machine control.
+- The dispatcher's gate is in preview mode (`set_preview(true)` before the sink is installed). An
+  accepted command is counted as `previewed`, a declined one as `declined`; `sent()` cannot move.
+- The simulation re-checks every line with the strict jog-line rule and refuses anything else.
+- `tools/check_no_sink.py` (guard rule 6) fails the build if the preview block references a real
+  transport, if the simulated controller header references any link or Arduino API, if the preview
+  flag appears outside `[env:jc8048w550]`, or if the live-jog env inherits it.
+- The real transmit code (`send_jog_bytes`, the 0x85 write) is compiled only into
+  `env:jc8048w550_livejog_test`. It is absent from the ordinary image (checked on the binary).
+- While a rehearsed jog is in flight the session hears only the simulation: real controller `ok`
+  lines (replies to read-only queries) are not given to the jog session.
+
+**Marking.** "PREVIEW ONLY - MOTION DISABLED" appears in every page header (shorter wordings where the
+title is long: "PREVIEW - NO MOTION", "PREVIEW ONLY"), the dashboard header, the jog warning line, the
+Menu and Settings footers, the arming title ("PREVIEW ONLY: ARM MICRO-JOG?"), the per-jog confirmation,
+and the result dialog ("SIMULATED JOG - NOTHING SENT"). Result lines carry a "SIM:" prefix. The ASCII
+font has no em dash, so a hyphen is used.
+
+**Simulated scenarios** (SETTINGS > JOG PREVIEW TEST > NEXT SCENARIO): NORMAL, REJECTS (error:15),
+ALARM (ALARM:1), NO REPLY, SLOW ACK, IGNORES CANCEL (ends in "CANCEL NOT CONFIRMED - USE THE E-STOP").
+A simulated move shifts the position the session sees by the rehearsed displacement (the real machine
+does not move). The page also shows the gate counters (previewed / SENT / blocked) and the simulation
+counters (jog lines / cancels / refused). Preview mode is compiled in and always on in the ordinary
+image; there is no runtime toggle and nothing is persisted.
+
+**Loss of the link.** Disconnect, DEMO, stale status and Wi-Fi loss all end in
+`note_link_fresh(false)` / `enforce_arming_scope`: arming, the per-axis acknowledgement, the capability
+read and the simulation are cleared, and nothing is replayed after reconnecting.
+
+### 12.1 Verification run on the development PC (2026-10-30)
+
+| Check | Result |
+|---|---|
+| Host suites (core, app, control, conn; each policy) | PASS |
+| Jog tests (ordinary, rules compiled in, live policy) | PASS (1267 / 1274 / 1354 checks) |
+| `test_jc_preview.cpp` (real gate, dispatcher and session against the simulation; ordinary and rules-compiled-in policies) | PASS |
+| Static guard `check_no_sink.py` including rule 6 | PASS |
+| Mutation checks, 13 mutants (preview counted as sent, policy skips acknowledgement, simulation accepts any line, displacement dropped, declined counted as previewed, preview mode not set before sink, real transport in the preview block, Serial in the simulation, preview flag in the live env or an unrelated env, live env inherits ordinary flags, jog UI calls a link transmit, preview block uses the socket thunk) | all 13 caught |
+| Host UI renderer (real page code and fonts): ordinary / preview / live builds | 8 / 29 / 27 frames, 0 problems |
+| PlatformIO builds: `jc8048w550`, `jc8048w550_livejog_test`, `m5dial`, `cyddial` | all SUCCESS (2 existing narrowing warnings in JcScreenOffsets.cpp) |
+| Ordinary binary has "PREVIEW ONLY - MOTION DISABLED" and "app: motion commands disabled"; lacks "LIVE JOG TEST BUILD", "jogtest:", "send_jog_bytes" | verified on `firmware.bin` |
+| Live-jog binary has "LIVE JOG TEST BUILD"; lacks "PREVIEW ONLY", "jogpreview", "SIMULATED JOG" | verified (**not flashed**) |
+| Upload of `env:jc8048w550` to COM3 | SUCCESS, hash verified |
+| Boot on the panel (serial log) | preview banner, "app: motion commands disabled", auto-connect, Wi-Fi 192.168.0.135, TCP connected, "ui: LIVE entered", "mode=LIVE (PREVIEW ONLY - MOTION DISABLED)" |
+
+The renderer output is a rendering of the page code, **not** a photograph of the panel. The live-jog
+binary still contains the page title "JOG PREVIEW TEST" (a title table shared by all builds); the page
+itself is not compiled into it.
+
+### 12.2 Operator acceptance on the panel
+
+**STATUS: PENDING.** Nothing in the checklist has been confirmed by a person at the panel yet. The
+checklist is [jc-jog-preview-acceptance.md](jc-jog-preview-acceptance.md); results are recorded there.
+
+### 12.3 What this does NOT prove
+
+The simulation proves the interface and the software gate, not any property of the machine. No jog
+or cancel byte has been sent to the controller. The independent emergency-stop system is a required
+physical prerequisite and is **not installed or tested**. Sections 8 and 9 still apply.

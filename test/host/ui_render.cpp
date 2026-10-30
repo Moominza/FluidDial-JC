@@ -38,7 +38,7 @@ using namespace jc8048w550;
 
 static int g_problems = 0, g_frames = 0;
 static const char* g_outdir = nullptr;
-static const char* g_tag = JC_LIVE_JOG_TEST ? "live" : "ordinary";
+static const char* g_tag = JC_JOG_PREVIEW ? "preview" : (JC_LIVE_JOG_TEST ? "live" : "ordinary");
 
 // ---- the rig: the services a page needs, with simulated controller state ----------------------------
 
@@ -65,32 +65,63 @@ struct Rig {
     JcJogSession jogs;
     bool live_mode = true;
     StubHost host;
+#if JC_JOG_PREVIEW
+    JcPreviewBridge bridge;   // the SIMULATED controller: the only place a jog can go
+    JcJogStatus real;         // the latest REAL read-only status
+#endif
     JcAppServices sv;
     std::string wire;   // every byte the session would have transmitted
     bool tx_ok = true;
     uint32_t seq = 1000;
 
-    Rig() : jogs(&Rig::tx, this), sv { gfx, link, model, settings, profile, dispatcher, loader, jogs, live_mode, host } {
+    Rig() : jogs(&Rig::tx, this), sv { gfx, link, model, settings, profile, dispatcher, loader, jogs, live_mode, host
+#if JC_JOG_PREVIEW
+                                       , bridge
+#endif
+                                     } {
         refresh_profile();
-        dispatcher.set_sink_ex(&JcJogSession::sink, &jogs);   // the experimental build's wiring; blocked by policy otherwise
+#if JC_JOG_PREVIEW
+        dispatcher.set_preview(true);   // the ordinary firmware's non-motion test mode
+#endif
+        dispatcher.set_sink_ex(&JcJogSession::sink, &jogs);   // the experimental/preview wiring; blocked by policy otherwise
     }
+    // Test transport (can be made to fail). In the preview build the bytes go ONLY to the simulation.
     static bool tx(void* user, const char* bytes, size_t n) {
         Rig* r = static_cast<Rig*>(user);
         if (!r->tx_ok) return false;
         r->wire.append(bytes, n);
+#if JC_JOG_PREVIEW
+        return r->bridge.controller().on_tx(bytes, n);
+#else
         return true;
+#endif
+    }
+    void set_fresh(bool fresh) {
+        model.set_fresh(fresh);
+#if JC_JOG_PREVIEW
+        real.fresh = fresh;
+#endif
     }
     void refresh_profile() {
         profile = jc_profile_from_settings(settings);
         if (loader.state() == JcLoadState::Complete) jc_profile_apply_caps(profile, loader.caps());
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
         jc_profile_apply_test_limits(profile);
 #endif
     }
     void advance(uint32_t ms) {
+#if JC_JOG_PREVIEW
+        for (uint32_t done = 0; done < ms; done += 10) {
+            g_stub_millis += (ms - done < 10 ? ms - done : 10);
+            jogs.set_clock(g_stub_millis);
+            bridge.pump(jogs, real, g_stub_millis);
+            jogs.tick(g_stub_millis);
+        }
+#else
         g_stub_millis += ms;
         jogs.set_clock(g_stub_millis);
         jogs.tick(g_stub_millis);
+#endif
     }
     void status(const char* state, float x, float y, float z, float a, bool fresh = true) {
         JcLiveMachineStatus s {};
@@ -105,11 +136,17 @@ struct Rig {
         model.set_fresh(fresh);
         JcJogStatus v;
         v.fresh = fresh;
-        v.state = s.machine_state;
+        static char kept_state[24];
+        strlcpy(kept_state, s.machine_state, sizeof(kept_state));
+        v.state = kept_state;
         v.sequence = s.sequence;
         v.pos_valid = true;
         memcpy(v.pos, s.axes, sizeof(v.pos));
+#if JC_JOG_PREVIEW
+        real = v;   // the session is fed by the bridge (real status + simulated displacement)
+#else
         jogs.on_status(v, g_stub_millis);
+#endif
     }
 
     // The real accepted baseline (2026-10-30): answered through the real loader.
@@ -290,11 +327,27 @@ static void pure_checks() {
     check(none_overlap, "the banner never overlaps a title or the mode chip");
     ui::Rect box {};
     const char* text = nullptr;
-    check(ui::live_jog_banner("JOGGING", box, text) && strcmp(text, "LIVE JOG TEST BUILD") == 0, "the full banner text is used where it fits (JOGGING)");
+    check(ui::live_jog_banner("JOGGING", box, text) && strcmp(text, JC_JOG_PREVIEW ? "PREVIEW ONLY - MOTION DISABLED" : "LIVE JOG TEST BUILD") == 0,
+          "the full banner text is used where it fits (JOGGING)");
     check(ui::live_jog_banner("CONTROLLER CAPABILITIES", box, text), "a shorter banner is chosen for the longest title");
 
     // The dashboard banner (x 584..) fits in the 800 px header.
-    check(584 + text_width(FontId::Body16, "LIVE JOG TEST BUILD") + 16 <= 796, "the dashboard header banner fits");
+    check(584 + text_width(FontId::Body16, JC_JOG_PREVIEW ? "PREVIEW ONLY" : "LIVE JOG TEST BUILD") + 16 <= 796, "the dashboard header banner fits");
+#if JC_JOG_PREVIEW
+    // Simulated-result lines carry a "SIM: " prefix; the worst case must still fit the 650 px slot.
+    {
+        const char* const worst[] = {
+            "SIM: COMPLETED (X): moved +1.000 (asked +1.000)", "SIM: POSITION MISMATCH (X): moved -10.000, asked +1.000",
+            "SIM: CANCEL NOT CONFIRMED - USE THE E-STOP", "SIM: cancel sent; waiting for the controller to report Idle",
+            "SIM: ACCEPTED by the controller; motion not finished yet", "SIM: NO REPLY (timeout), cancel sent",
+            "SIM: UNEXPECTED MOTION, cancel sent", "SIM: REJECTED by controller (code 15)" };
+        bool fit = true;
+        for (const char* w : worst) if (text_width(FontId::Body16, w) > 650 - 6) { fit = false; printf("             too wide: %s\n", w); }
+        check(fit, "every simulated result line fits its 650 px slot");
+    }
+    check(text_width(FontId::Body16, "Firmware: PREVIEW ONLY - MOTION DISABLED (jog is simulated)") <= 780,
+          "the settings firmware note fits the screen width");
+#endif
 
     // Worst-case strings against their containers.
     check(text_width(FontId::Body16, "Keep E-stop / power removal in reach. Not 'safe': 1 mm only.") <= ui::kDialogBox.w - ui::kDialogTextLeft - 20,
@@ -379,7 +432,7 @@ static void scenarios() {
     check_frame(r.gfx, "limits_unread", false);
     jog.enter();
     check_frame(r.gfx, "jog_x_unread", false);
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     // Arming is refused: the read is missing.
     touch_center(jog, arm_btn);
     check_frame(r.gfx, "jog_arm_refused_unread", true);
@@ -394,7 +447,7 @@ static void scenarios() {
     caps.enter();
     check_frame(r.gfx, "capabilities_real", false);
 
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_UI
     printf("[jog page: gate, arming dialog]\n");
     r.advance(500);
     r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);
@@ -418,6 +471,19 @@ static void scenarios() {
     touch_center(jog, jog_pos);
     touch_center(jog, ui::kDialogConfirm);                       // confirm -> sent
     check_frame(r.gfx, "jog_sent_dialog", true);
+#if JC_JOG_PREVIEW
+    check(r.wire == "$J=G91G21F100X1.000\n" && r.bridge.controller().lines() == 1 && r.dispatcher.sent() == 0,
+          "exactly one restricted jog line reached the SIMULATION and nothing was sent");
+    touch_center(jog, ui::kDialogOk);
+    check_frame(r.gfx, "jog_awaiting_ok", false);
+    r.advance(400);
+    jog.enter();
+    check_frame(r.gfx, "jog_accepted_moving", false);
+    r.advance(1200);
+    jog.enter();
+    check_frame(r.gfx, "jog_completed", false);
+    check(r.jogs.result() == JcJogResult::Completed, "the simulated jog completed");
+#else
     check(r.wire == "$J=G91G21F100X1.000\n", "exactly one restricted jog line was transmitted");
     touch_center(jog, ui::kDialogOk);
     check_frame(r.gfx, "jog_awaiting_ok", false);
@@ -431,6 +497,7 @@ static void scenarios() {
     r.status("Idle", 11.0f, 20.0f, 5.0f, 0.0f);
     jog.enter();
     check_frame(r.gfx, "jog_completed", false);
+#endif
 
     printf("[jog page: Z, A and refused requests]\n");
     touch_center(jog, axis[2]);
@@ -469,6 +536,9 @@ static void scenarios() {
         f.status("Idle", 0, 0, 0, 0);
         fj.enter();
         // No reply: timeout, cancel, latched failure with the ACKNOWLEDGE button.
+#if JC_JOG_PREVIEW
+        f.bridge.controller().set_scenario(JcPreviewScenario::NoReply);
+#endif
         JcJogSession::sink(&f.jogs, JcCommandClass::Jog, "$J=G91G21F100X1.000");
         f.advance(2100);
         f.status("Idle", 0, 0, 0, 0);
@@ -483,6 +553,13 @@ static void scenarios() {
         // The controller never confirms Idle after a cancel.
         f.advance(1500);
         f.status("Idle", 0, 0, 0, 0);
+#if JC_JOG_PREVIEW
+        f.bridge.controller().set_scenario(JcPreviewScenario::IgnoreCancel);
+        JcJogSession::sink(&f.jogs, JcCommandClass::Jog, "$J=G91G21F100X1.000");
+        f.advance(400);
+        f.jogs.cancel(g_stub_millis);
+        f.advance(3600);
+#else
         JcJogSession::sink(&f.jogs, JcCommandClass::Jog, "$J=G91G21F100X1.000");
         f.advance(60);
         f.jogs.on_line("ok", g_stub_millis);
@@ -493,11 +570,12 @@ static void scenarios() {
         f.status("Jog", 0.6f, 0, 0, 0);
         f.advance(10);
         f.jogs.tick(g_stub_millis);
+#endif
         fj.enter();
         check_frame(f.gfx, "jog_cancel_unconfirmed", false);
 
         // Communication lost while a jog is unresolved: software cancel cannot be relied on.
-        f.model.set_fresh(false);
+        f.set_fresh(false);
         f.jogs.on_link_lost(g_stub_millis, false);
         fj.enter();
         check_frame(f.gfx, "jog_no_communication", false);
@@ -505,6 +583,18 @@ static void scenarios() {
         touch_center(fj, jog_stop);
         check_frame(f.gfx, "jog_cancel_not_sent_dialog", true);
     }
+#if JC_JOG_PREVIEW
+    {
+        printf("[preview: scenario page and counters]\n");
+        JcJogPreviewScreen pv(r.sv);
+        pv.enter();
+        check_frame(r.gfx, "preview_page", false);
+        touch_center(pv, ui::Rect { 560, 188, 224, 52 });
+        check_frame(r.gfx, "preview_page_next_scenario", false);
+        check(r.bridge.controller().scenario() == JcPreviewScenario::Rejected, "NEXT SCENARIO advances the simulated scenario");
+        check(r.dispatcher.sent() == 0, "the gate's SENT counter is still zero after the whole preview run");
+    }
+#endif
 #else
     // Ordinary firmware: the jog page is a preview only. Show it, and that nothing is queued to send.
     printf("[ordinary firmware: jog page is a preview]\n");

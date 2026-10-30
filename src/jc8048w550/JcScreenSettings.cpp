@@ -17,7 +17,7 @@ struct HubTile {
     const char* title;
     const char* subtitle;
 };
-constexpr HubTile kHub[7] = {
+constexpr HubTile kHub[8] = {
     { "CONNECTIONS", "Transport selection" },
     { "DISPLAY", "Brightness, precision" },
     { "JOG PRESETS", "Steps and feeds" },
@@ -25,7 +25,13 @@ constexpr HubTile kHub[7] = {
     { "DIAGNOSTICS", "Firmware, link, memory" },
     { "WI-FI SETUP", "SSID, password, host" },
     { "TOUCH CALIBRATION", "Five-point guided" },
+    { "JOG PREVIEW TEST", "Simulated controller" },
 };
+#if JC_JOG_PREVIEW
+constexpr uint8_t kHubCount = 8;
+#else
+constexpr uint8_t kHubCount = 7;
+#endif
 ui::Rect hub_rect(uint8_t i) {
     const uint8_t col = i < 4 ? i : i - 4;
     const uint8_t row = i < 4 ? 0 : 1;
@@ -35,7 +41,7 @@ ui::Rect hub_rect(uint8_t i) {
 }  // namespace
 
 void JcSettingsScreen::on_draw() {
-    for (uint8_t i = 0; i < 7; ++i) {
+    for (uint8_t i = 0; i < kHubCount; ++i) {
         const ui::Rect r = hub_rect(i);
         ui::panel(sv.display, r, ui::kPanelLight);
         ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 16), 162, 70 },
@@ -43,7 +49,9 @@ void JcSettingsScreen::on_draw() {
         ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 98), 162, 56 },
                  kHub[i].subtitle, FontId::Body16, ui::kMuted, ui::kPanelLight);
     }
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+    ui::text(sv.display, 16, 440, "Firmware: PREVIEW ONLY - MOTION DISABLED (jog is simulated)", FontId::Body16, RED, ui::kBg);
+#elif JC_JOG_UI
     ui::text(sv.display, 400, 322, "Firmware: LIVE JOG TEST BUILD (restricted jog enabled)", FontId::Body16, RED, ui::kBg);
 #else
     ui::text(sv.display, 400, 322, "Firmware: experimental, machine control disabled", FontId::Body16, ui::kWarn, ui::kBg);
@@ -53,7 +61,7 @@ void JcSettingsScreen::on_draw() {
 void JcSettingsScreen::on_touch(uint16_t x, uint16_t y) {
     static constexpr JcPage pages[5] = { JcPage::SetConnections, JcPage::SetDisplay, JcPage::SetJogging,
                                           JcPage::SetMachine, JcPage::Diagnostics };
-    for (uint8_t i = 0; i < 7; ++i) {
+    for (uint8_t i = 0; i < kHubCount; ++i) {
         if (!ui::hit(hub_rect(i), x, y)) {
             continue;
         }
@@ -61,8 +69,10 @@ void JcSettingsScreen::on_touch(uint16_t x, uint16_t y) {
             sv.host.go(pages[i]);
         } else if (i == 5) {
             sv.host.leave(JcLeaveTarget::WifiSettings);
-        } else {
+        } else if (i == 6) {
             sv.host.leave(JcLeaveTarget::Calibration);
+        } else {
+            sv.host.go(JcPage::JogPreview);
         }
         return;
     }

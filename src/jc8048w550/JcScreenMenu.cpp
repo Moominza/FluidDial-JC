@@ -15,7 +15,7 @@ struct Tile {
 
 constexpr Tile kTiles[9] = {
     { "DASHBOARD", "Live X Y Z A", JcPage::Count },
-    { "JOGGING", JC_LIVE_JOG_TEST ? "TEST: X/Y 1 mm only" : "Preview only", JcPage::Jog },
+    { "JOGGING", JC_LIVE_JOG_TEST ? "TEST: X/Y 1 mm only" : (JC_JOG_PREVIEW ? "PREVIEW: simulated" : "Preview only"), JcPage::Jog },
     { "HOMING", "Preview only", JcPage::Homing },
     { "PROBING", "Preview only", JcPage::Probing },
     { "WORK OFFSETS", "G54-G59, zero/set", JcPage::Offsets },
@@ -38,7 +38,10 @@ void JcMenuScreen::on_draw() {
         ui::text(sv.display, r.x + 16, r.y + 24, kTiles[i].title, FontId::Heading24, WHITE, ui::kPanelLight);
         ui::text(sv.display, r.x + 16, r.y + 70, kTiles[i].subtitle, FontId::Body16, ui::kMuted, ui::kPanelLight);
     }
-#if JC_LIVE_JOG_TEST
+#if JC_JOG_PREVIEW
+    ui::text(sv.display, 18, 458, "PREVIEW ONLY - MOTION DISABLED: nothing is sent to the machine. Jogging is simulated.",
+             FontId::Body16, RED, ui::kBg);
+#elif JC_JOG_UI
     ui::text(sv.display, 18, 458, "LIVE JOG TEST BUILD: only a restricted jog can be sent. Other pages are previews only.",
              FontId::Body16, RED, ui::kBg);
 #else

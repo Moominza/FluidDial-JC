@@ -53,7 +53,11 @@ void header(Arduino_GFX& d, const char* title, const char* mode_label, bool mode
 }
 
 bool live_jog_banner(const char* title, Rect& box, const char*& text) {
+#if JC_JOG_PREVIEW
+    static const char* const kWordings[3] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY" };
+#else
     static const char* const kWordings[3] = { "LIVE JOG TEST BUILD", "JOG TEST BUILD", "JOG TEST" };
+#endif
     const int16_t left = static_cast<int16_t>(18 + text_width(FontId::Heading24, title) + 14);
     const int16_t right = static_cast<int16_t>(kHeaderChipLeft - 8);
     for (const char* w : kWordings) {

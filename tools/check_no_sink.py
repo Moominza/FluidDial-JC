@@ -19,6 +19,11 @@ Checks (exit status 1 on any failure):
      preceded by the strict jog-line check.
   4. Both links route every non-'?' query write through jc_query_allowed().
   5. The ordinary build creates its jog session without a transport.
+  6. NON-MOTION TEST MODE (JC_JOG_PREVIEW, Instruction 007): the macro is set only in
+     [env:jc8048w550] and never in the live-jog environment; code under it contains no
+     link/transmit reference; its only jog transport is the in-RAM JcPreviewController,
+     its dispatcher is put in preview mode before the sink is installed; and the header
+     of the simulated controller refers to no socket, UART, Wi-Fi or Arduino API.
 """
 import os
 import re
@@ -40,38 +45,60 @@ def read(path):
         return f.read()
 
 
-def split_live(text):
-    """Returns (ordinary_text, live_text): lines inside '#if JC_LIVE_JOG_TEST' (the
-    true branch) go to live_text, everything else to ordinary_text."""
-    ordinary, live = [], []
-    stack = []  # items: ["live", branch_is_live] or ["other", None]
+_FEATURE = (("JC_LIVE_JOG_TEST", "live"), ("JC_JOG_PREVIEW", "preview"), ("JC_JOG_UI", "ui"))
+
+
+def _classify(cond):
+    """(kind_if_true, kind_if_false) for one #if / #elif condition."""
+    for macro, kind in _FEATURE:
+        if macro in cond:
+            negative = cond.lstrip().startswith("!") or re.search(r"!\s*" + macro, cond) is not None
+            return ("ordinary", kind) if negative else (kind, "ordinary")
+    return ("ordinary", "ordinary")
+
+
+def split_buckets(text):
+    """Splits source text into the code that is compiled in each build flavour:
+    ordinary (no feature macro), live (JC_LIVE_JOG_TEST), preview (JC_JOG_PREVIEW) and
+    ui (JC_JOG_UI = live or preview). #elif chains and #else branches are followed."""
+    buckets = {"ordinary": [], "live": [], "preview": [], "ui": []}
+    stack = []  # items: {"cur": kind, "else": kind}
     for line in text.splitlines():
         s = line.strip()
-        is_directive = s.startswith("#")
-        if is_directive and re.match(r"#\s*if(def|ndef)?\b", s):
-            if "JC_LIVE_JOG_TEST" in s:
-                negative = "!" in s or s.startswith("#ifndef") or re.match(r"#\s*ifndef", s) is not None
-                stack.append(["live", not negative])
-            else:
-                stack.append(["other", None])
-            ordinary.append("")
-            live.append("")
-            continue
-        if is_directive and re.match(r"#\s*else\b", s) and stack:
-            if stack[-1][0] == "live":
-                stack[-1][1] = not stack[-1][1]
-            ordinary.append("")
-            live.append("")
-            continue
-        if is_directive and re.match(r"#\s*endif\b", s) and stack:
+        directive = s.startswith("#")
+        if directive and re.match(r"#\s*if(def|ndef)?\b", s):
+            cond = re.sub(r"^#\s*if(def|ndef)?\b", "", s)
+            if re.match(r"#\s*ifndef", s):
+                cond = "!" + cond
+            tr, fl = _classify(cond)
+            stack.append({"cur": tr, "else": fl})
+            line_kind = None
+        elif directive and re.match(r"#\s*elif\b", s) and stack:
+            tr, fl = _classify(re.sub(r"^#\s*elif\b", "", s))
+            stack[-1]["cur"], stack[-1]["else"] = tr, fl
+            line_kind = None
+        elif directive and re.match(r"#\s*else\b", s) and stack:
+            stack[-1]["cur"] = stack[-1]["else"]
+            line_kind = None
+        elif directive and re.match(r"#\s*endif\b", s) and stack:
             stack.pop()
-            ordinary.append("")
-            live.append("")
-            continue
-        in_live = any(kind == "live" and branch for kind, branch in stack)
-        ordinary.append("" if in_live else line)
-        live.append(line if in_live else "")
-    return "\n".join(ordinary), "\n".join(live)
+            line_kind = None
+        else:
+            line_kind = "ordinary"
+            for item in stack:
+                if item["cur"] != "ordinary":
+                    line_kind = item["cur"]
+                    break
+        for k in buckets:
+            buckets[k].append(line if k == line_kind else "")
+    return {k: "\n".join(v) for k, v in buckets.items()}
+
+
+def split_live(text):
+    """Returns (non_live_text, live_text): everything compiled into a build WITHOUT
+    JC_LIVE_JOG_TEST (ordinary, preview and shared ui code) and the live-only code."""
+    b = split_buckets(text)
+    return "\n".join((b["ordinary"], b["preview"], b["ui"])), b["live"]
 
 
 # ---- 1. policy macros -------------------------------------------------------------
@@ -84,6 +111,13 @@ for raw in ini.splitlines():
     if m:
         section = m.group(1)
         continue
+    pm = re.search(r"-D\s*JC_JOG_PREVIEW\s*=?\s*(\S*)", line)
+    if pm and not line.startswith(";"):
+        value = pm.group(1).strip("'\"") or "1"
+        if section != "env:jc8048w550" or value != "1":
+            fail(f"platformio.ini [{section}]: JC_JOG_PREVIEW={value} is only allowed (as 1) in [env:jc8048w550]")
+    if section == LIVE_ENV and not line.startswith(";") and ("JC_JOG_PREVIEW" in line or "${env:jc8048w550.build_flags}" in line):
+        fail(f"platformio.ini [{LIVE_ENV}]: must not carry JC_JOG_PREVIEW or inherit the ordinary build_flags")
     for macro in ("JC_MACHINE_CONTROL_ENABLED", "JC_LIVE_JOG_TEST"):
         mm = re.search(r"-D\s*" + macro + r"\s*=?\s*(\S*)", line)
         if mm:
@@ -120,16 +154,25 @@ SINK_WORDS = ("set_sink_ex", "JcCommandLink", "JcCommandSink", "JcCommandGate(",
               "send_jog_bytes", "jog_tx_thunk", "send_jog(")
 ordinary_cpp = {}
 live_cpp = {}
+preview_cpp = {}
+PREVIEW_SINK_OK = ("set_sink_ex", "JcJogSession::sink")
 for name in sorted(os.listdir(SRC)):
     if name.endswith(".cpp"):
-        o, l = split_live(read(os.path.join(SRC, name)))
-        ordinary_cpp[name], live_cpp[name] = o, l
+        b = split_buckets(read(os.path.join(SRC, name)))
+        o = "\n".join((b["ordinary"], b["ui"]))
+        l = b["live"]
+        ordinary_cpp[name], live_cpp[name], preview_cpp[name] = o, l, b["preview"]
         for word in SINK_WORDS:
             if word in o:
-                fail(f"{name}: references {word} outside a JC_LIVE_JOG_TEST block (ordinary firmware must not install a sink)")
+                fail(f"{name}: references {word} outside a JC_LIVE_JOG_TEST / JC_JOG_PREVIEW block (ordinary firmware must not install a sink)")
+            if word in b["preview"] and not (name == "JcApp.cpp" and word in PREVIEW_SINK_OK):
+                fail(f"{name}: references {word} inside a JC_JOG_PREVIEW block (only the simulated sink wiring in JcApp.cpp is allowed)")
 sink_sites = [n for n, t in live_cpp.items() if "set_sink_ex" in t]
 if sink_sites != ["JcApp.cpp"]:
     fail(f"the command sink must be installed only in JcApp.cpp inside a live-jog block (found in {sink_sites})")
+preview_sites = [n for n, t in preview_cpp.items() if "set_sink_ex" in t]
+if preview_sites != ["JcApp.cpp"]:
+    fail(f"the preview sink must be installed only in JcApp.cpp inside a preview block (found in {preview_sites})")
 
 # headers: the sink wiring (JcApp.hpp) and the transmit method (link header) are live-only too
 for name in ("JcApp.hpp", "JcReadOnlyFluidNc.hpp"):
@@ -180,6 +223,35 @@ if "_jogs(nullptr, nullptr)" not in app_ord:
     fail("JcApp.cpp: the ordinary build must create its jog session without a transport")
 if "jog_tx_thunk" in app_ord:
     fail("JcApp.cpp: the ordinary build must not reference the jog transmit thunk")
+
+# ---- 6. non-motion test mode ----------------------------------------------------------------------------
+app_b = split_buckets(read(os.path.join(SRC, "JcApp.cpp")))
+pv = app_b["preview"]
+if "set_preview(true)" not in pv or pv.find("set_preview(true)") > pv.find("set_sink_ex"):
+    fail("JcApp.cpp: the preview block must put the dispatcher in preview mode BEFORE installing the sink")
+if "&JcPreviewController::tx" not in pv or "&_preview.controller()" not in pv:
+    fail("JcApp.cpp: the preview jog session must use the simulated controller as its only transport")
+if "jog_tx_thunk" in pv or "send_jog" in pv:
+    fail("JcApp.cpp: the preview block must not reference the real jog transport")
+if "_jogs(nullptr, nullptr)" not in app_b["ordinary"]:
+    fail("JcApp.cpp: neither-flag builds must keep a jog session without a transport")
+hdr = read(os.path.join(SRC, "JcJogPreview.hpp"))
+code = "\n".join(l.split("//")[0] for l in hdr.splitlines())
+for word in ("Serial", "WiFi", "::send", "send_", "JcReadOnlyFluidNc", "JcUartLink", "JcTransport", "Arduino", "socket",
+             "write(", "connect("):
+    if word in code:
+        fail(f"JcJogPreview.hpp: the simulated controller must not reference '{word}'")
+for inc in re.findall(r'#include\s+[<"]([^>"]+)[>"]', code):
+    if inc not in ("math.h", "stddef.h", "stdint.h", "stdio.h", "string.h", "JcJogTest.hpp"):
+        fail(f"JcJogPreview.hpp: unexpected include {inc}")
+for name in ("JcReadOnlyFluidNc.cpp", "JcUartLink.cpp"):
+    b = split_buckets(read(os.path.join(SRC, name)))
+    if re.search(r"::send\s*\(|Serial1\s*\.", b["preview"] + b["ui"]):
+        fail(f"{name}: a transmit call sits inside a JC_JOG_PREVIEW / JC_JOG_UI block")
+for name in ("JcScreenJog.cpp", "JcScreenJogPreview.cpp", "JcScreen.cpp"):
+    text = read(os.path.join(SRC, name))
+    if re.search(r"send_jog|send_query_line|send_status|_link\.|sv\.link\.send", text):
+        fail(f"{name}: jog UI code refers to a link transmit function")
 
 print("check_no_sink:", "FAIL" if failures else "PASS")
 sys.exit(1 if failures else 0)
