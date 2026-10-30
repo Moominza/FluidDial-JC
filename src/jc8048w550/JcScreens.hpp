@@ -259,7 +259,11 @@ protected:
     void on_tick(uint32_t now) override;
 
 private:
-    void draw_values();
+    // full: clear the area and repaint every item; otherwise only items whose
+    // text changed are repainted (no flashing while the read progresses).
+    void draw_values(bool full);
+    ui::Slot _cells[4][5];
+    ui::Slot _lines[5];
     uint32_t _last_tick = 0;
     uint32_t _drawn_key = 0;  // redraw the value area only when the loader state changes
 };

@@ -342,7 +342,7 @@ struct FakeController {
         const int index = received++;
         if (index >= silent_from) return "";
         if (index == alarm_at) return "ALARM:1\r\n";
-        if (strcmp(line, "$I") == 0) return "[VER:4.1.1 FluidNC v4.1.1:]\r\n[OPT:PH]\r\nok\r\n";
+        if (strcmp(line, "$I") == 0) return "[VER:4.1 FluidNC v4.1.1 (esp32s3-wifi) :]\r\n[OPT:PH]\r\nok\r\n";  // as sent by the real v4.1.1
         if (strcmp(line, "$G") == 0) return "[GC:G0 G55 G17 G21 G90 G94 M5 M9 T2 F0 S0]\r\nok\r\n";
         if (strcmp(line, "$/probe/pin") == 0) return "$/probe/pin=gpio.36:low\r\nok\r\n";
         if (strcmp(line, "$/probe/toolsetter_pin") == 0) return "$/probe/toolsetter_pin=NO_PIN\r\nok\r\n";
@@ -408,7 +408,7 @@ static void test_caps_loader() {
         CHECK(loader.take_finished() && !loader.take_finished());
         const JcMachineCaps& c = loader.caps();
         CHECK(c.complete && c.queries_ok == 28 && c.queries_error == 0);
-        CHECK_STR(c.firmware, "4.1.1 FluidNC v4.1.1:");
+        CHECK_STR(c.firmware, "4.1 FluidNC v4.1.1 (esp32s3-wifi)");  // trailing " :" removed
         CHECK_STR(c.wcs, "G55");
         CHECK(c.tool == 2);
         CHECK_STR(c.probe_pin, "gpio.36:low");

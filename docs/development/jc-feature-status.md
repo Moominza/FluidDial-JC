@@ -34,8 +34,8 @@ FROM CONTROLLER, a closed set of read-only configuration queries (Instruction
 | Command builders (jog, continuous, home, WCS, zero/set, probe, edge probe, file, macro) | Host-tested | Not transmitted |
 | Dispatcher / authorization gate | Host-tested | Blocks every class in the shipping build; no replay; disarm on link loss |
 | Simulator integration | Host-integrated | Real TCP to the simulator + real JC C++ logic. The ESP32 Wi-Fi/lwIP firmware itself has NOT been run against it |
-| Controller capability read (`$I`, `$G`, `$/axes/*`, `$/probe/*`), Controller Capabilities page | Host-tested + Host-integrated; page Uploaded (see 005 section) | Read-only, operator-triggered, allowlisted; never run on the real controller until the operator taps READ |
-| Reply handling: `ok` / `error:N` / `ALARM:N`, timeouts, connection loss, no resend | Host-tested + Host-integrated | `JcCommandExec`; real-controller reply formats unverified |
+| Controller capability read (`$I`, `$G`, `$/axes/*`, `$/probe/*`), Controller Capabilities page | Host-tested + Host-integrated; Uploaded; real read operator-confirmed 2026-10-30 (photo) | Read-only, operator-triggered, allowlisted. Real values in [jc-machine-control-readiness.md](jc-machine-control-readiness.md) |
+| Reply handling: `ok` / `error:N` / `ALARM:N`, timeouts, connection loss, no resend | Host-tested + Host-integrated | `JcCommandExec`; query replies seen on the real controller, command replies (after a motion command) still unverified |
 | Limits replaced by controller values only when confirmed; unconfirmed jog/probe blocked when control is enabled | Host-tested | Placeholders remain until a read completes; discarded on link loss |
 | Dispatcher: sequences step only after acknowledgement | Host-tested (fake transport) | No sink exists in the firmware |
 | Dry-run page | Uploaded | Evaluates only; records/sends nothing |

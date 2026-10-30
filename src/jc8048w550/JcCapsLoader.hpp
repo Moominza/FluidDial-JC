@@ -213,6 +213,11 @@ private:
         if (_step != 0) return;
         if (strcmp(r.key, "VER") == 0) {
             snprintf(_caps.firmware, sizeof(_caps.firmware), "%s", r.value);
+            // FluidNC v4.1.1 sends "[VER:4.1 FluidNC v4.1.1 (esp32s3-wifi) :]"; drop the trailing " :".
+            size_t n = strlen(_caps.firmware);
+            while (n > 0 && (_caps.firmware[n - 1] == ' ' || _caps.firmware[n - 1] == ':')) {
+                _caps.firmware[--n] = '\0';
+            }
             _got_value = true;
         } else if (strcmp(r.key, "OPT") == 0) {
             snprintf(_caps.options, sizeof(_caps.options), "%s", r.value);

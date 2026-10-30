@@ -94,7 +94,7 @@ def reply_for(line, scenario, query_index):
     if scenario == "caps-alarm" and query_index == 4:
         return "ALARM:1\r\n"
     if line == "$I":
-        return "[VER:4.1.1 FluidNC v4.1.1:]\r\n[OPT:PH]\r\nok\r\n"
+        return "[VER:4.1 FluidNC v4.1.1 (esp32s3-wifi) :]\r\n[OPT:PH]\r\nok\r\n"
     if line == "$G":
         return "[GC:G0 G55 G17 G21 G90 G94 M5 M9 T2 F0 S0]\r\nok\r\n"
     if line == "$/probe/pin":
