@@ -45,25 +45,75 @@ line`; the experimental image has all four. (Both contain the preview formatter 
 
 ### 2.2 Soft limits, hard limits, limit pins, homing position, must_home
 
-**PENDING: not yet read on real hardware.** The firmware now reads these (53 read-only
-queries instead of 28) and shows them on Settings > Machine > Controller Capabilities >
-LIMITS / HOMING. The section is completed from the serial capture and the operator's
-photographs once the operator has tapped READ CONTROLLER.
+**READ ON THE REAL CONTROLLER, 2026-10-30.** The ordinary read-only firmware (53 queries)
+was run LIVE against FluidNC v4.1.1 three times from Settings > Machine > Controller
+Capabilities. Every read gave the same result: **50 answered, 3 refused** (2285, 1955 and
+2261 ms). The third read is the one the operator photographed on the LIMITS / HOMING page
+(08:37); the photograph matches the serial log. Evidence:
+[evidence/2026-10-30-controller-read-capture.md](evidence/2026-10-30-controller-read-capture.md).
 
-The setting paths queried are:
+**What the evidence is.** The passive COM3 capture holds the firmware's own log of the
+parsed result of each read. The firmware does not log every raw query / reply line, so this
+is not a byte-level transcript of the 53-query exchange. Nothing but `?` and read-only
+queries was transmitted: the capture has no `jogtest:`, `SAFETY:` or dispatch line.
 
-| Item | Path |
+| Axis | Soft limit | Hard limit | Limit pin: neg / pos / all | Homing cycle | Homing direction | Home MPOS |
+| --- | --- | --- | --- | --- | --- | --- |
+| X | **OFF** | **OFF** | `gpio.41:low` / unassigned / unassigned | 1 | negative | 0 |
+| Y | **OFF** | **OFF** | `gpio.40:low` / unassigned / unassigned | 1 | negative | 0 |
+| Z | **OFF** | **OFF** | `gpio.39:low` / unassigned / unassigned | 1 | **positive** | 0 |
+| A | **OFF** | **OFF** | unassigned / unassigned / unassigned | `error:3` (refused) | `error:3` (refused) | `error:3` (refused) |
+
+| Item | Value |
+| --- | --- |
+| `$/start/must_home` | **false** (the controller does not refuse motion until homed) |
+| Probe pin / toolsetter pin | `gpio.48:low` / `NO_PIN` |
+| Firmware, modal state | `4.1 FluidNC v4.1.1 (esp32s3-wifi)`, G54, T0 |
+
+How to read it:
+
+* The three refused queries are exactly A's `homing/cycle`, `homing/positive_direction` and
+  `homing/mpos_mm` (`error:3`). They stay **refused / unknown** and are never shown as OFF or
+  "none". This replaces the earlier inference in the Instruction 005 report.
+* The OFF values for X, Y, Z **and A** are real answers (`false`), not gaps. For A the three
+  limit pins were also answered (`NO_PIN`), so they are "not assigned", not "unavailable".
+* All 12 other items per axis were answered, so the setting paths in the table below are
+  **confirmed on this controller** for X, Y, Z and A (A's homing items excepted).
+* A homing cycle of 1 on X, Y, Z only says homing is *configured*. It does **not** say the
+  machine is currently homed, and nothing read here can say that.
+
+| Item | Path (confirmed answered unless noted) |
 | --- | --- |
 | Soft limits | `$/axes/<x|y|z|a>/soft_limits` |
 | Hard limits | `$/axes/<a>/motor0/hard_limits` |
 | Limit pins | `$/axes/<a>/motor0/limit_neg_pin`, `limit_pos_pin`, `limit_all_pin` |
-| Homing | `$/axes/<a>/homing/cycle`, `positive_direction`, `mpos_mm` |
+| Homing | `$/axes/<a>/homing/cycle`, `positive_direction`, `mpos_mm` (refused for A) |
 | Must home at start | `$/start/must_home` |
 
-These paths come from general knowledge of FluidNC's configuration tree, not from a source
-in this repository, and are **assumptions until a real read confirms them**. A path the controller does not recognise returns `error:3` and
-is shown as `error:3`; it is never shown as OFF. "UNKNOWN" means not read, refused or
-unreadable.
+### 2.3 What this means for a first jog (findings, not approval)
+
+**No motion test is authorized by this read.**
+
+1. **The controller enforces no travel limit on any axis.** Soft limits are OFF and hard limits
+   are OFF on X, Y, Z and A. Nothing in the controller will stop a move at the end of travel, so
+   the configured travel (X 1000, Y 2300, Z 150 mm) says nothing about where the carriage can
+   safely go. Only the 1 mm / 0.5 mm test step limits and the operator's own eyes bound a jog.
+2. **The machine position may not be valid.** `must_home` is false and homing was not read as
+   done, so the reported position may be a power-up zero rather than a real machine position.
+   Soft limits would be meaningless in that state even if they were on.
+3. **The limit switches only act during homing.** With hard limits OFF, the single "negative"
+   switch on each of X, Y, Z (pins 41, 40, 39) is used by the homing cycle, not as a travel guard.
+4. **Z homes in the positive direction but only a negative-side limit pin is assigned.** This
+   may be a deliberate wiring / configuration choice. It is recorded here for the owner to check;
+   this report draws no conclusion from it.
+5. **A has no homing configuration and no limit pins** (as read), and stays disabled.
+
+The software already shows these facts in the jog confirmation dialog (soft limits OFF,
+hard limits OFF, limit pins, homing, `must_home`, "Travel N mm is NOT proof the path is
+clear"). **Open design decision for the owner:** today the gate only requires that the
+settings were *read*, and relies on the operator's confirmation when they are OFF. A stricter
+rule (for example, refusing a jog while soft limits are OFF, or requiring a second explicit
+acknowledgement) is not implemented and would be a change for the owner to approve.
 
 ## 3. Jog restrictions (test mode)
 
@@ -140,7 +190,7 @@ One jog at a time. Acknowledgement, motion and completion are separate states.
 | --- | --- | --- |
 | 1 baseline preserved | ordinary env unchanged and still the default | HEAD `3e29251` before work; guard; image scan |
 | 2, 3 jog restrictions, larger steps rejected | `jc_profile_apply_test_limits`, builder `TestLimit` / `JogDisabled`, transport check | host tests, simulator, guard |
-| 4 limit / homing configuration | 25 added read-only queries, LIMITS / HOMING page | host tests + simulator; **real read pending** |
+| 4 limit / homing configuration | 25 added read-only queries, LIMITS / HOMING page | host tests + simulator; **real read done 2026-10-30** (section 2.2) |
 | 5 travel is not an envelope | `BlockedEnvelopeUnread`, dialog text | host tests |
 | 6 ack, error, alarm, timeout, completion distinct | `JcJogSession` phases and results | host tests + simulator |
 | 7 cancellation | `0x85`, always attempted | host tests + simulator, incl. late start and ignored cancel |
@@ -218,7 +268,8 @@ None of these has been exercised on FluidNC, because no jog or cancel was sent:
    break a pending `$J` line (the late-start case).
 5. The controller keeps answering `?` while a jog runs. The firmware polls once a second; a
    slower or paused status stream while moving is handled (stale: cancel attempted) but unseen.
-6. The setting paths in section 2.2.
+6. ~~The setting paths in section 2.2.~~ Confirmed on this controller for X, Y, Z, A (A's
+   homing items refused); see section 2.2.
 7. Whether soft limits are enforced when the machine is not homed (this pendant does not
    assume they are).
 8. The A axis is rotary, in degrees. FluidNC cannot report this; it stays operator-declared
@@ -228,11 +279,16 @@ None of these has been exercised on FluidNC, because no jog or cancel was sent:
 
 1. **Owner approval, in writing, to flash the live-jog build and to send the first jog**, and
    a separate safety review of this design. Not given.
-2. **Complete the real configuration read** (section 2.2) and review soft limits, hard limits,
-   limit pins and homing for X, Y and Z with the owner.
-3. **Decide the machine state for the test**: homed or not, `must_home`, soft limits on or off,
-   and where the carriage must be so that a 1 mm move in either direction cannot reach an
-   end stop, a clamp or the workpiece.
+2. ~~Complete the real configuration read.~~ **Done 2026-10-30** (section 2.2). **Owner review
+   of the findings in section 2.3 is still required**: soft and hard limits are OFF on every
+   axis, `must_home` is false, whether the machine is homed is unknown, and Z homes positive
+   with only a negative-side limit pin assigned.
+3. **Decide the machine state for the test**: homed or not, whether to turn soft limits on
+   (a controller configuration change, which this project does not make and which needs the
+   owner), and where the carriage must be so that a 1 mm move in either direction cannot reach
+   an end stop, a clamp or the workpiece. With the controller enforcing no limits, this
+   position check is the only travel safeguard.
+3a. **Decide whether the gate should be stricter** when soft limits are OFF (section 2.3).
 4. **A physical emergency stop within reach**, tested, and a clear workspace. The software
    cancel is not an emergency stop.
 5. **Verify the assumptions in section 8** on the real controller without motion where
@@ -260,7 +316,8 @@ complete and the owner has approved it.
 1. Machine powered, E-stop within reach, workspace clear, nothing mounted that a 1 mm move
    could damage. Carriage position noted.
 2. With the **ordinary** firmware: connect LIVE, wait for Idle, read the controller
-   configuration, and review LIMITS / HOMING with the owner.
+   configuration, and review LIMITS / HOMING with the owner (the 2026-10-30 read found soft
+   and hard limits OFF and `must_home` false; confirm the machine is in the intended state).
 3. Flash `env:jc8048w550_livejog_test`. Confirm the boot log says "LIVE JOG TEST BUILD" and the
    Settings page shows the red banner.
 4. Connect LIVE, wait for Idle with fresh status, read the controller configuration again

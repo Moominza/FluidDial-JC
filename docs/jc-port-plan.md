@@ -847,3 +847,7 @@ Limits / Homing page, and the tests, simulator scenarios and static guard for al
 The ordinary firmware keeps `JC_MACHINE_CONTROL_ENABLED=0`; only that firmware was uploaded to
 COM3. Nothing was sent to the controller except `?` and read-only queries. Full report:
 `docs/development/jc-live-jog-readiness.md`.
+
+Real read (2026-10-30, ordinary firmware, LIVE): 50 of 53 queries answered, 3 refused (A homing
+items). Soft limits OFF and hard limits OFF on X, Y, Z and A; `must_home` false. No motion test is
+authorized; see section 2.3 of the readiness report for the findings the owner must review.

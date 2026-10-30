@@ -34,6 +34,9 @@ Findings:
 * Two queries were refused. The A-axis homing cycle shows `error:3`; the second refused query is not visible in the
   photograph and is most likely `$/axes/a/homing/positive_direction` (inferred, not observed). The
   A axis therefore has no homing configuration on this controller, and homing for A stays unavailable.
+  *Update 2026-10-30: confirmed by the 53-query capture, which shows A's `homing/cycle` and
+  `homing/positive_direction` (and the newly added `homing/mpos_mm`) refused with `error:3`; see
+  [jc-live-jog-readiness.md](jc-live-jog-readiness.md) section 2.2.*
 * All four axes have steps/mm, travel, max rate and acceleration, so all four have **confirmed limits**. Placeholder
   limits are no longer used on this machine while the connection stays up. The values are RAM-only and are discarded
   when the link is lost.

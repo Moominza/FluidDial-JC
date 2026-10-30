@@ -42,7 +42,7 @@ it has not been flashed to any device.
 | Limits replaced by controller values only when confirmed; unconfirmed jog/probe blocked when control is enabled | Host-tested | Placeholders remain until a read completes; discarded on link loss |
 | Dispatcher: sequences step only after acknowledgement | Host-tested (fake transport) | No sink exists in the firmware |
 | Dry-run page | Uploaded | Evaluates only; records/sends nothing |
-| Soft / hard limit, limit-pin, homing, must_home read-only queries (25 added) and Limits / Homing page | Host-tested + Host-integrated; Uploaded; real values pending | Setting paths are assumptions until a real read; UNKNOWN is never shown as OFF |
+| Soft / hard limit, limit-pin, homing, must_home read-only queries (25 added) and Limits / Homing page | Host-tested + Host-integrated; Uploaded; real read operator-confirmed 2026-10-30 (photo + COM3 capture) | 50 answered, 3 refused (A homing). Soft and hard limits OFF on all axes, `must_home` false. UNKNOWN / `error:3` is never shown as OFF. Evidence: [evidence/2026-10-30-controller-read-capture.md](evidence/2026-10-30-controller-read-capture.md) |
 | First-live-jog test configuration (`env:jc8048w550_livejog_test`): test limits, jog session, cancel, arming | Host-tested + Host-integrated; **built, NOT flashed, never run** | See [jc-live-jog-readiness.md](jc-live-jog-readiness.md). No jog or cancel byte has been sent to any controller |
 | Physical CNC command transmission | Disabled by design | Needs a separate safety review and owner approval |
 
