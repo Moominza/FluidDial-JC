@@ -1680,7 +1680,210 @@ static void test_limits_summary() {
     CHECK_STR(lines[1], "(other axes differ: see the table)");
 }
 
+#if JC_MACHINE_CONTROL_ENABLED && JC_LIVE_JOG_TEST
+// Item 9: no jog can reach the wire without a fresh capability read AND a per-jog confirmation.
+static void test_no_jog_without_read_and_confirmation() {
+    World w;
+    w.settle();
+    JcMachineProfile p = jc_default_profile();
+    jc_profile_apply_test_limits(p);
+    const JcCommand x = jc_jog_incremental(p, 0, 1.0f, 100.0f);
+    JcDispatcher d;
+    d.set_sink_ex(&JcJogSession::sink, &w.session);
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);   // armed and acknowledged: the ONLY things missing are below
+    const JcMachineCaps fresh = real_baseline(w.now);
+
+    // 1. No capability read at all: refused, nothing on the wire.
+    JcDispatchContext c = gate_context(w, JcMachineCaps(), false, true);
+    CHECK(d.submit(x, c) == JcAuthDecision::BlockedEnvelopeUnread);
+    CHECK(w.lines.empty() && d.sent() == 0);
+
+    // 2. A fresh read but no per-jog confirmation: refused.
+    c = gate_context(w, fresh, true, false);
+    CHECK(d.submit(x, c) == JcAuthDecision::BlockedUnconfirmed);
+    CHECK(w.lines.empty() && d.sent() == 0);
+
+    // 3. A read that is too old: refused even when confirmed.
+    JcMachineCaps old = fresh;
+    old.completed_ms = w.now - kJcCapsMaxAgeMs - 1;
+    CHECK(d.submit(x, gate_context(w, old, true, true)) == JcAuthDecision::BlockedEnvelopeUnread);
+    CHECK(w.lines.empty());
+
+    // 4. A read with an unknown limit: refused even when confirmed.
+    JcMachineCaps unk = fresh;
+    unk.axes[0].state[static_cast<uint8_t>(JcQueryField::SoftLimits)] = JcFieldState::CtrlError;
+    CHECK(d.submit(x, gate_context(w, unk, true, true)) == JcAuthDecision::BlockedEnvelopeUnread);
+    CHECK(w.lines.empty());
+
+    // 5. Both present: exactly one jog goes out.
+    w.session.set_clock(w.now);
+    CHECK(d.submit(x, gate_context(w, fresh, true, true)) == JcAuthDecision::Allowed);
+    CHECK(w.lines.size() == 1 && d.sent() == 1);
+
+    // 6. After the connection is lost the read and the arming are gone: nothing goes out until a new
+    //    read, a new arming and a new confirmation all exist again.
+    w.run(2500);
+    CHECK(w.session.result() == JcJogResult::Completed);
+    d.on_link_lost();
+    w.session.on_link_lost(w.now, false);
+    w.run(2500);
+    CHECK(w.session.acknowledge() || !w.session.needs_acknowledgement());
+    CHECK(d.submit(x, gate_context(w, fresh, true, true)) == JcAuthDecision::BlockedNotArmed);
+    CHECK(d.submit(x, gate_context(w, JcMachineCaps(), false, true)) == JcAuthDecision::BlockedNotArmed);
+    d.arm_for(w.now, kJcJogArmTtlMs, 0x03);
+    CHECK(d.submit(x, gate_context(w, JcMachineCaps(), false, true)) == JcAuthDecision::BlockedEnvelopeUnread);
+    CHECK(w.lines.size() == 1);   // still only the one jog from step 5
+}
+#endif
+
+// The RESULT line the operator reads must tell the truth in every state, and must shout when the
+// software cancel cannot be relied on.
+static void test_result_line() {
+    char t[96];
+    {   // nothing yet
+        World w;
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Muted);
+        CHECK_STR(t, "no jog yet");
+    }
+    {   // sent, then accepted, then moving, then completed: four distinct messages
+        World w;
+        w.settle();
+        w.move_ms = 2500;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Info);
+        CHECK(strstr(t, "waiting for the controller's ok") != nullptr);
+        w.run(500);
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Warn);
+        CHECK(strstr(t, "ACCEPTED") != nullptr && strstr(t, "not finished") != nullptr);   // ok is not completion
+        w.run(4000);
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Good);
+        CHECK(strstr(t, "COMPLETED (X)") != nullptr && strstr(t, "+1.000") != nullptr);
+    }
+    {   // rejected / alarm carry the controller's code and are urgent
+        World w;
+        w.settle();
+        w.reply_ok = false;
+        w.reply_error = 15;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(300);
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Alarm && strstr(t, "(code 15)") != nullptr);
+    }
+    {   // the cancel was never confirmed: this MUST be the message, not "waiting for Idle"
+        World w;
+        w.settle();
+        w.move_ms = 100000;
+        w.ignore_cancel = true;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(600);
+        CHECK(w.session.cancel(w.now));
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Warn);   // still within the window
+        CHECK(strstr(t, "waiting for the controller to report Idle") != nullptr);
+        w.run(3200);
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Alarm);
+        CHECK_STR(t, "CANCEL NOT CONFIRMED - USE THE E-STOP");
+    }
+    {   // communication lost while a jog is unresolved: say the cancel cannot be relied on
+        World w;
+        w.settle();
+        w.move_ms = 3000;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(600);
+        CHECK(jc_jog_result_line(w.session, false, t, sizeof(t)) == JcJogTone::Alarm);
+        CHECK(strstr(t, "NO COMMUNICATION") != nullptr && strstr(t, "USE E-STOP") != nullptr);
+        CHECK(strstr(t, "unreliable") != nullptr);
+    }
+    {   // no communication but nothing outstanding: no false alarm
+        World w;
+        CHECK(jc_jog_result_line(w.session, false, t, sizeof(t)) == JcJogTone::Muted);
+    }
+    {   // a mismatch names the axis and both distances
+        World w;
+        w.settle();
+        w.wrong_position = true;
+        CHECK(w.jog(1, 1.0f, 100.0f));
+        w.run(2500);
+        CHECK(jc_jog_result_line(w.session, true, t, sizeof(t)) == JcJogTone::Alarm);
+        CHECK(strstr(t, "POSITION MISMATCH (Y)") != nullptr && strstr(t, "asked +1.000") != nullptr);
+    }
+    // every result has a non-empty line
+    for (int r = 0; r <= static_cast<int>(JcJogResult::UnexpectedMotion); ++r) {
+        CHECK(strlen(jc_jog_result_name(static_cast<JcJogResult>(r))) > 0);
+    }
+}
+
+// Item 10: the cancel path in the four situations the owner listed. (Detailed variants live in
+// test_cancellation / test_connection_loss / test_late_start_and_foreign_motion.)
+static void test_cancel_matrix() {
+    // (a) Connected and responsive: cancel reaches the controller, motion stops, state is Cancelled.
+    {
+        World w;
+        w.settle();
+        w.move_ms = 3000;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(600);
+        CHECK(w.session.phase() == JcJogPhase::Moving);
+        CHECK(w.session.cancel(w.now) && w.cancels == 1);
+        for (int i = 0; i < 200 && w.session.phase() != JcJogPhase::Idle; ++i) w.run(10);
+        CHECK(w.session.result() == JcJogResult::Cancelled && !w.session.needs_acknowledgement());
+        CHECK(w.state == "Idle" && w.lines.size() == 1);
+    }
+    // (b) Connection lost: nothing can be sent. The software must not claim otherwise.
+    {
+        World w;
+        w.settle();
+        w.move_ms = 3000;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(600);
+        w.tx_fails = true;                            // the link is gone
+        CHECK(!w.session.cancel(w.now));              // the cancel byte could not leave the device
+        CHECK(w.cancels == 0 && w.session.cancels_sent() == 0);
+        w.session.on_link_lost(w.now, false);
+        CHECK(w.session.unresolved() && w.session.result() == JcJogResult::LinkLost);
+        CHECK(w.session.phase() == JcJogPhase::Recovering);
+        // ... and the controller, which never saw a cancel, finishes the move on its own.
+        w.status_on = false;
+        w.run(4000);
+        CHECK(w.state == "Idle" && w.pos[0] > 10.9f);
+    }
+    // (c) The jog acknowledgement is delayed: a cancel sent first is not confused with the late ok.
+    {
+        World w;
+        w.settle();
+        w.ack_delay = 800;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(100);
+        CHECK(w.session.cancel(w.now) && w.session.phase() == JcJogPhase::Cancelling);
+        const uint32_t before = w.session.unsolicited();
+        w.session.on_line("ok", w.now);               // the late acknowledgement
+        CHECK(w.session.unsolicited() == before + 1 && w.session.phase() == JcJogPhase::Cancelling);
+        for (int i = 0; i < 300 && w.session.phase() != JcJogPhase::Idle; ++i) w.run(10);
+        CHECK(w.session.result() == JcJogResult::Cancelled && w.session.acked() == 0);
+        CHECK(w.lines.size() == 1);
+    }
+    // (d) The controller never confirms Idle: reported, latched, still blocking, cancel can be repeated.
+    {
+        World w;
+        w.settle();
+        w.move_ms = 100000;
+        w.ignore_cancel = true;
+        CHECK(w.jog(0, 1.0f, 100.0f));
+        w.run(600);
+        CHECK(w.session.cancel(w.now));
+        w.run(3200);
+        CHECK(w.session.cancel_unconfirmed() && w.session.result() == JcJogResult::CancelUnconfirmed);
+        CHECK(w.session.phase() == JcJogPhase::Cancelling && w.session.needs_acknowledgement());
+        CHECK(!w.session.acknowledge());
+        CHECK(w.session.can_begin(w.now) == JcJogReject::NotIdle);
+        CHECK(w.session.cancel(w.now) && w.cancels == 2);
+    }
+}
+
 int main() {
+#if JC_MACHINE_CONTROL_ENABLED && JC_LIVE_JOG_TEST
+    test_no_jog_without_read_and_confirmation();
+#endif
+    test_cancel_matrix();
+    test_result_line();
     test_arming_scope();
     test_limits_summary();
     test_jog_gate_modes();

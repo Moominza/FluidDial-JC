@@ -408,6 +408,25 @@ inline const char* jc_jog_phase_name(JcJogPhase p) {
     return "?";
 }
 
+// Compact phase names for the one-line status on the jog page (the long names do not fit).
+inline const char* jc_jog_phase_short(JcJogPhase p) {
+    switch (p) {
+        case JcJogPhase::Idle: return "idle";
+        case JcJogPhase::AwaitingAck: return "awaiting ok";
+        case JcJogPhase::Accepted: return "accepted";
+        case JcJogPhase::Moving: return "moving";
+        case JcJogPhase::Cancelling: return "cancelling";
+        case JcJogPhase::Recovering: return "recovering";
+    }
+    return "?";
+}
+
+// "ACTIVE [Jog] jog: moving | gate: UNPROTECTED MICRO-JOG". Pure so a test can bound its width.
+inline void jc_jog_motion_line(char* out, size_t size, const char* motion, const char* machine_state, JcJogPhase phase,
+                               const char* gate) {
+    snprintf(out, size, "%s [%s] jog: %s | gate: %s", motion, machine_state, jc_jog_phase_short(phase), gate);
+}
+
 inline const char* jc_jog_result_name(JcJogResult r) {
     switch (r) {
         case JcJogResult::None: return "no jog yet";
@@ -861,5 +880,63 @@ private:
     uint32_t      _refused_policy = 0, _refused_busy = 0, _refused_class = 0, _unexpected_alarms = 0;
     uint32_t      _unexpected_motion = 0, _foreign_motion = 0;
 };
+
+// What the RESULT line of the jog page says, and how urgently. Pure so every state can be tested:
+// a wrong or missing warning here (for example a cancel that was never confirmed) is a safety
+// defect that no layout check can see.
+enum class JcJogTone : uint8_t { Muted, Info, Warn, Good, Alarm };
+
+inline JcJogTone jc_jog_result_line(const JcJogSession& s, bool live_fresh, char* out, size_t size) {
+    const JcJogResult r = s.result();
+    const char axis = s.request().axis < 4 ? "XYZA"[s.request().axis] : '?';
+    if (s.unresolved() && !live_fresh) {
+        // Without communication the software cancel cannot be relied on.
+        snprintf(out, size, "NO COMMUNICATION: software cancel unreliable. USE E-STOP");
+        return JcJogTone::Alarm;
+    }
+    if (s.cancel_unconfirmed()) {
+        // The cancel was sent but the controller was not seen Idle: the machine may still be moving.
+        snprintf(out, size, "CANCEL NOT CONFIRMED - USE THE E-STOP");
+        return JcJogTone::Alarm;
+    }
+    switch (s.phase()) {
+        case JcJogPhase::AwaitingAck:
+            snprintf(out, size, "sent, waiting for the controller's ok");
+            return JcJogTone::Info;
+        case JcJogPhase::Accepted:
+        case JcJogPhase::Moving:
+            snprintf(out, size, "ACCEPTED by the controller; motion not finished yet");
+            return JcJogTone::Warn;
+        case JcJogPhase::Cancelling:
+            snprintf(out, size, "cancel sent; waiting for the controller to report Idle");
+            return JcJogTone::Warn;
+        case JcJogPhase::Recovering:
+        case JcJogPhase::Idle:
+            break;
+    }
+    switch (r) {
+        case JcJogResult::Completed:
+            snprintf(out, size, "COMPLETED (%c): moved %+.3f (asked %+.3f)", axis, static_cast<double>(s.pos_delta()),
+                     static_cast<double>(s.request().distance));
+            return JcJogTone::Good;
+        case JcJogResult::Rejected:
+        case JcJogResult::Alarm:
+            snprintf(out, size, "%s (code %d)", jc_jog_result_name(r), s.code());
+            return JcJogTone::Alarm;
+        case JcJogResult::PositionMismatch:
+            snprintf(out, size, "POSITION MISMATCH (%c): moved %+.3f, asked %+.3f", axis, static_cast<double>(s.pos_delta()),
+                     static_cast<double>(s.request().distance));
+            return JcJogTone::Alarm;
+        case JcJogResult::None:
+            snprintf(out, size, "no jog yet");
+            return JcJogTone::Muted;
+        case JcJogResult::Cancelled:
+            snprintf(out, size, "%s", jc_jog_result_name(r));
+            return JcJogTone::Muted;
+        default:
+            snprintf(out, size, "%s", jc_jog_result_name(r));
+            return JcJogTone::Alarm;
+    }
+}
 
 }  // namespace jc8048w550

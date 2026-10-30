@@ -119,9 +119,7 @@ void JcJogScreen::draw_bottom() {
         ui::button(sv.display, kAck, "ACKNOWLEDGE RESULT", ui::Btn::Danger);
         return;
     }
-    ui::wrap(sv.display, { 28, 436, 744, 34 },
-             "Software cancel is NOT an emergency stop and cannot work without communication. Keep the E-stop in reach.",
-             FontId::Body16, RED, ui::kPanel);
+    ui::wrap(sv.display, { 28, 436, 744, 34 }, kJcLiveJogWarning, FontId::Body16, RED, ui::kPanel);
 #else
     ui::wrap(sv.display, { 28, 436, 744, 34 },
              "Software cancel is NOT an emergency stop. Use the machine's physical E-stop.",
@@ -173,13 +171,12 @@ void JcJogScreen::draw_live() {
 
     const char* motion = !sv.model.has_status() ? "UNKNOWN (no live data)"
                        : sv.model.in_motion() ? "ACTIVE" : (sv.model.alarm() ? "ALARM" : "IDLE");
-    char text[64];
+    char text[96];
 #if JC_LIVE_JOG_TEST
     {
         const JcJogGate g = jc_jog_gate(sv.loader.caps(), sv.loader.state() == JcLoadState::Complete, millis(), _axis,
                                         jc_position_trust(sv.loader.caps()));
-        snprintf(text, sizeof(text), "%s [%s] jog: %s | gate: %s", motion, sv.model.state(),
-                 jc_jog_phase_name(sv.jogs.phase()), jc_jog_gate_mode_name(g.mode));
+        jc_jog_motion_line(text, sizeof(text), motion, sv.model.state(), sv.jogs.phase(), jc_jog_gate_mode_name(g.mode));
     }
 #else
     snprintf(text, sizeof(text), "%s  [%s]", motion, sv.model.state());
@@ -190,38 +187,9 @@ void JcJogScreen::draw_live() {
 #if JC_LIVE_JOG_TEST
     // Acknowledgement, motion and completion are separate states and are reported separately.
     char result[96];
-    uint16_t color = ui::kMuted;
-    const JcJogResult r = sv.jogs.result();
-    if (sv.jogs.unresolved() && !sv.live_fresh()) {
-        // Without communication the software cancel cannot be relied on: say so, loudly.
-        snprintf(result, sizeof(result), "NO COMMUNICATION: software cancel unreliable. USE E-STOP");
-        color = RED;
-    } else if (sv.jogs.phase() == JcJogPhase::AwaitingAck) {
-        snprintf(result, sizeof(result), "sent, waiting for the controller's ok");
-        color = ui::kInfo;
-    } else if (sv.jogs.phase() == JcJogPhase::Accepted || sv.jogs.phase() == JcJogPhase::Moving) {
-        snprintf(result, sizeof(result), "ACCEPTED by the controller; motion not finished yet");
-        color = ui::kWarn;
-    } else if (sv.jogs.phase() == JcJogPhase::Cancelling) {
-        snprintf(result, sizeof(result), "cancel sent; waiting for the controller to report Idle");
-        color = ui::kWarn;
-    } else if (r == JcJogResult::Completed) {
-        snprintf(result, sizeof(result), "COMPLETED: moved %+.3f (asked %+.3f)", static_cast<double>(sv.jogs.pos_delta()),
-                 static_cast<double>(sv.jogs.request().distance));
-        color = ui::kGood;
-    } else if (r == JcJogResult::Rejected || r == JcJogResult::Alarm) {
-        snprintf(result, sizeof(result), "%s (code %d)", jc_jog_result_name(r), sv.jogs.code());
-        color = RED;
-    } else if (r == JcJogResult::PositionMismatch) {
-        snprintf(result, sizeof(result), "POSITION MISMATCH: moved %+.3f, asked %+.3f", static_cast<double>(sv.jogs.pos_delta()),
-                 static_cast<double>(sv.jogs.request().distance));
-        color = RED;
-    } else if (r == JcJogResult::None) {
-        snprintf(result, sizeof(result), "no jog yet");
-    } else {
-        snprintf(result, sizeof(result), "%s", jc_jog_result_name(r));
-        color = r == JcJogResult::Cancelled ? ui::kMuted : RED;
-    }
+    const JcJogTone tone = jc_jog_result_line(sv.jogs, sv.live_fresh(), result, sizeof(result));
+    const uint16_t color = tone == JcJogTone::Alarm ? RED : tone == JcJogTone::Warn ? ui::kWarn
+                         : tone == JcJogTone::Info ? ui::kInfo : tone == JcJogTone::Good ? ui::kGood : ui::kMuted;
     _result.draw(sv.display, { 110, 380, 650, 26 }, result, FontId::Body16, color, ui::kPanel);
 #endif
 }
@@ -353,7 +321,9 @@ void JcJogScreen::do_cancel() {
     const bool sent = sv.dispatcher.sent() != before;
     Serial.printf("jogtest: cancel requested: %s (%s)\n", jc_auth_name(decision), sent ? "SENT" : "NOT SENT");
     if (!sent) {
-        show_message("CANCEL NOT SENT", jc_auth_name(decision),
+        // "allowed" alone would read as success. Say why nothing left the device.
+        show_message("CANCEL NOT SENT",
+                     decision == JcAuthDecision::Allowed ? "Authorized, but the connection could not carry it." : jc_auth_name(decision),
                      "IF THE MACHINE IS MOVING, USE THE PHYSICAL E-STOP NOW.");
     }
 }

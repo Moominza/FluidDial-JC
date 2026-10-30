@@ -48,4 +48,6 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(cmd, check=True)
         rc |= subprocess.run([exe]).returncode
 rc |= subprocess.run([sys.executable, os.path.join(root, "tools", "check_no_sink.py")]).returncode
+# Renders the real page code on the host (ordinary and live-jog builds) and checks the layout.
+rc |= subprocess.run([sys.executable, os.path.join(root, "tools", "run_ui_preview.py")]).returncode
 sys.exit(rc)

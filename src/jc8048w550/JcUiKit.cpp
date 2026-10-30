@@ -6,13 +6,6 @@
 namespace jc8048w550 {
 namespace ui {
 
-namespace {
-constexpr Rect kDialogBox { 60, 64, 680, 352 };
-constexpr Rect kDialogCancel { 80, 346, 200, 56 };
-constexpr Rect kDialogConfirm { 520, 346, 200, 56 };
-constexpr Rect kDialogOk { 300, 346, 200, 56 };
-}  // namespace
-
 void text(Arduino_GFX& d, int16_t x, int16_t y_top, const char* s, FontId font,
           uint16_t fg, uint16_t bg) {
     draw_text(d, x, y_top + font_baseline(font), s, font, fg, bg);
@@ -172,10 +165,10 @@ void Dialog::draw(Arduino_GFX& d) const {
     d.drawRect(kDialogBox.x, kDialogBox.y, kDialogBox.w, kDialogBox.h, _good ? kGood : (_mode == Mode::Result ? RED : CYAN));
     d.drawRect(kDialogBox.x + 1, kDialogBox.y + 1, kDialogBox.w - 2, kDialogBox.h - 2, kBorder);
     text(d, kDialogBox.x + 20, kDialogBox.y + 14, _title, FontId::Heading24, WHITE, kPanel);
-    int16_t y = kDialogBox.y + 58;
+    int16_t y = kDialogBox.y + kDialogFirstLineY;
     for (uint8_t i = 0; i < _line_count; ++i) {
-        text(d, kDialogBox.x + 24, y, _lines[i], FontId::Body16, _colors[i] ? _colors[i] : LIGHTGREY, kPanel);
-        y += 30;
+        text(d, kDialogBox.x + kDialogTextLeft, y, _lines[i], FontId::Body16, _colors[i] ? _colors[i] : LIGHTGREY, kPanel);
+        y += kDialogLineStep;
     }
     if (_mode == Mode::Confirm) {
         button(d, kDialogCancel, "CANCEL");

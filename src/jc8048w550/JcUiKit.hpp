@@ -40,6 +40,15 @@ constexpr uint16_t kWarn = 0xFD20;
 constexpr Rect kBackButton { 690, 10, 94, 44 };
 // The page header's mode chip (LIVE / DEMO) occupies x 520..670 (see header()).
 constexpr int16_t kHeaderChipLeft = 520;
+// Modal dialog geometry. Lines are drawn from kDialogBox.y + 58, 30 px apart; the buttons start
+// at y 346, so at most seven lines fit without touching them (tests/host/ui_render.cpp checks it).
+constexpr Rect kDialogBox { 60, 64, 680, 352 };
+constexpr Rect kDialogCancel { 80, 346, 200, 56 };
+constexpr Rect kDialogConfirm { 520, 346, 200, 56 };
+constexpr Rect kDialogOk { 300, 346, 200, 56 };
+constexpr int16_t kDialogFirstLineY = 58;   // relative to kDialogBox.y
+constexpr int16_t kDialogLineStep = 30;
+constexpr int16_t kDialogTextLeft = 24;     // relative to kDialogBox.x
 constexpr int16_t kContentTop = 72;
 
 inline bool hit(const Rect& r, uint16_t x, uint16_t y) {
@@ -73,7 +82,7 @@ public:
               bool centered = false);
 
 private:
-    char _last[72] {};
+    char _last[120] {};
     uint16_t _fg = 0;
     bool _valid = false;
 };
@@ -82,7 +91,8 @@ class Dialog {
 public:
     enum class Mode : uint8_t { Closed, Confirm, Result };
     enum class Action : uint8_t { None, Confirm, Cancel, Dismiss };
-    static constexpr uint8_t kMaxLines = 8;
+    // Seven is what fits above the buttons (see kDialogFirstLineY / kDialogLineStep).
+    static constexpr uint8_t kMaxLines = 7;
 
     void open_confirm(const char* title, const char* confirm_label = "CONFIRM");
     void open_result(const char* title, bool good);

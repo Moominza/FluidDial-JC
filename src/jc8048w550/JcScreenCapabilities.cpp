@@ -163,9 +163,8 @@ void JcCapsScreen::on_draw() {
     ui::button(sv.display, kLimits, "LIMITS / HOMING");
     ui::button(sv.display, kDry, "DRY RUN");
     ui::wrap(sv.display, { 16, 428, 768, 48 },
-             "Read-only queries: nothing is changed on the controller. Values are discarded if the connection is "
-             "lost. Whether A is rotary (degrees) cannot be read from FluidNC; it is declared in Settings. "
-             "Soft/hard limits and homing are on LIMITS / HOMING.",
+             "Read-only: nothing is changed on the controller. Values are discarded if the connection "
+             "is lost. A's rotary/degrees cannot be read; it is set in Settings. Limits: LIMITS / HOMING.",
              FontId::Body16, ui::kMuted, ui::kBg);
     _drawn_key = (static_cast<uint32_t>(sv.loader.state()) << 24) | (static_cast<uint32_t>(sv.loader.step()) << 8)
                  | jc_profile_limits_mask(sv.profile);

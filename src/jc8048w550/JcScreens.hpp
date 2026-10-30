@@ -31,6 +31,10 @@ protected:
     void on_touch(uint16_t x, uint16_t y) override;
 };
 
+// The line under the jog panel in the experimental build. It must fit ONE line of the 744 px
+// panel text area (tests/host/ui_render.cpp checks the width); two lines overflow the panel.
+constexpr const char* kJcLiveJogWarning = "Cancel is NOT an E-stop and fails without communication. Keep the E-stop in reach.";
+
 class JcJogScreen : public JcScreen {
 public:
     using JcScreen::JcScreen;
