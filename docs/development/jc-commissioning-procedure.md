@@ -51,3 +51,20 @@ Sections 1-2 (software): baseline verified (feature/jc8048w550, HEAD b3a0d40, cl
 Section 3 (physical stop): **NOT VERIFIED.** No independent stop, Z hold-on-power-removal, reset-does-not-restart, or spindle-stop evidence has been supplied. Soft limits OFF, hard limits OFF, position not established (unchanged). Owner has not authorized full-control flashing.
 
 Sections 4-8 (axis tests, homing, work-positioning on hardware, probe/tool, hardware connection-loss test): **NOT STARTED** - blocked by section 3. No full-control image was flashed; no machine-changing command was sent. The Z positive-direction / negative-limit-pin discrepancy (`$/axes/z/homing/positive_direction=true`, limit on `limit_neg_pin gpio.39`) remains unresolved and must be physically checked before any Z or home-all.
+
+## 5. Instruction 017: E-stop functional verification record (REQUIRED BEFORE FLASHING FULL CONTROL)
+
+The owner reports the E-stop is wired (2026-11-01). That is a report, not a test result. Gate: every line below must be answered by the operator who performed it, with date. Any NO or untested line blocks flashing.
+
+| # | Check (performed with the spindle off and nothing in the work area first) | Result | Date / who |
+|---|---|---|---|
+| 1 | E-stop cuts motor/drive power (or otherwise stops all motion) with NO involvement of the pendant or FluidNC software | | |
+| 2 | Pressing it during a slow FluidNC motion (PC or web UI, small move) stops that motion immediately | | |
+| 3 | Spindle stops / cannot run while E-stop is pressed | | |
+| 4 | Z axis does not drop or free-fall with drive power removed (brake / leadscrew self-holding) | | |
+| 5 | Releasing the E-stop does NOT start any movement or spindle by itself | | |
+| 6 | After release, FluidNC needs an explicit operator action (reset / unlock) before motion; state shown | | |
+| 7 | Pendant (COM3) still powers and shows state while the E-stop is pressed; no command replays on recovery | | |
+| 8 | Z homing switch location and direction physically checked (config says positive_direction=true with limit_neg_pin gpio.39) | | |
+
+Only after rows 1-7 are YES: flash `jc8048w550_fullcontrol_test`, verify hash and boot, then the X, Y, Z, A tests per section 2 of this document.
