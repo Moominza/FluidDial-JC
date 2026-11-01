@@ -55,6 +55,8 @@ void header(Arduino_GFX& d, const char* title, const char* mode_label, bool mode
 bool live_jog_banner(const char* title, Rect& box, const char*& text) {
 #if JC_JOG_PREVIEW
     static const char* const kWordings[3] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY" };
+#elif JC_FULL_CONTROL_TEST
+    static const char* const kWordings[3] = { "FULL CONTROL - LIVE", "FULL CONTROL", "LIVE" };
 #else
     static const char* const kWordings[3] = { "LIVE JOG TEST BUILD", "JOG TEST BUILD", "JOG TEST" };
 #endif

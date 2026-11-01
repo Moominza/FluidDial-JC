@@ -51,6 +51,8 @@ void JcSettingsScreen::on_draw() {
     }
 #if JC_JOG_PREVIEW
     ui::text(sv.display, 16, 440, "Firmware: PREVIEW ONLY - MOTION DISABLED (jog is simulated)", FontId::Body16, RED, ui::kBg);
+#elif JC_FULL_CONTROL_TEST
+    ui::text(sv.display, 400, 322, "Firmware: FULL CONTROL (no program start/resume/macros)", FontId::Body16, RED, ui::kBg);
 #elif JC_JOG_UI
     ui::text(sv.display, 400, 322, "Firmware: LIVE JOG TEST BUILD (restricted jog enabled)", FontId::Body16, RED, ui::kBg);
 #else

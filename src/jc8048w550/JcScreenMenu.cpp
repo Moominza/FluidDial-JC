@@ -41,6 +41,9 @@ void JcMenuScreen::on_draw() {
 #if JC_JOG_PREVIEW
     ui::text(sv.display, 18, 458, "PREVIEW ONLY - MOTION DISABLED: nothing is sent to the machine. Jogging is simulated.",
              FontId::Body16, RED, ui::kBg);
+#elif JC_FULL_CONTROL_TEST
+    ui::text(sv.display, 18, 458, "FULL CONTROL: confirmed commands ARE SENT to the machine. No program start/resume.",
+             FontId::Body16, RED, ui::kBg);
 #elif JC_JOG_UI
     ui::text(sv.display, 18, 458, "LIVE JOG TEST BUILD: only a restricted jog can be sent. Other pages are previews only.",
              FontId::Body16, RED, ui::kBg);

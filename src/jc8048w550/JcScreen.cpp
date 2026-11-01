@@ -116,6 +116,9 @@ void JcScreen::open_confirm_dialog(const char* title, const char* const* notes, 
         dialog.add_line("PREVIEW ONLY - MOTION DISABLED: the command is", RED);
         dialog.add_line("rehearsed on a SIMULATED controller, never sent.", ui::kWarn);
     }
+#elif JC_FULL_CONTROL_TEST
+    dialog.add_line("FULL CONTROL: confirming SENDS this command to", ui::kWarn);
+    dialog.add_line("the controller. E-stop in reach; travel clear.", ui::kWarn);
 #elif JC_JOG_UI
     if (!_pending_is_sequence && _command.cls == JcCommandClass::Jog) {
         dialog.add_line("LIVE JOG TEST BUILD: confirming SENDS this jog", ui::kWarn);

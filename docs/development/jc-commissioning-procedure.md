@@ -68,3 +68,7 @@ The owner reports the E-stop is wired (2026-11-01). That is a report, not a test
 | 8 | Z homing switch location and direction physically checked (config says positive_direction=true with limit_neg_pin gpio.39) | | |
 
 Only after rows 1-7 are YES: flash `jc8048w550_fullcontrol_test`, verify hash and boot, then the X, Y, Z, A tests per section 2 of this document.
+
+### Operator-reported E-stop results (2026-11-01, Instruction 017)
+
+Reported in writing by the owner/operator; not witnessed or instrumented by the pendant software. Rows 1-7 of the table above map to: independent of touchscreen/Wi-Fi PASS; spindle cannot start while engaged PASS; Z supported and cannot drop PASS; release causes no movement or spindle restart PASS; deliberate reset/re-enable required PASS; pendant stays powered and does not replay commands PASS. Gaps accepted as reported: no date/name recorded, "stops a move in progress" not separately stated, the pendant-powered line was worded "if designed to do so". **Row 8 (Z homing switch placement/direction) is still open: no Z homing and no home-all until it is checked.**

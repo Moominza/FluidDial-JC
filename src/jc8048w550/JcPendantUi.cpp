@@ -646,6 +646,8 @@ void PendantUi::draw_header(const char* title) {
     {
 #if JC_JOG_PREVIEW
         static const char* const kBanners[4] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY", "PREVIEW" };
+#elif JC_FULL_CONTROL_TEST
+        static const char* const kBanners[4] = { "FULL CONTROL - LIVE", "FULL CONTROL", "FULL CTRL", "LIVE" };
 #else
         static const char* const kBanners[4] = { "LIVE JOG TEST BUILD", "LIVE JOG TEST", "LIVE JOG", "LIVE JOG" };
 #endif
@@ -889,6 +891,9 @@ void PendantUi::draw_diagnostics(bool force) {
 #if JC_JOG_PREVIEW
     _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Jog rehearsal: MENU > JOGGING.  PREVIEW ONLY - MOTION DISABLED.",
                   FontId::Body16, CYAN, kPanel);
+#elif JC_FULL_CONTROL_TEST
+    _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "FULL CONTROL: confirmed commands are sent.  E-stop in reach.",
+                  FontId::Body16, RED, kPanel);
 #elif JC_JOG_UI
     _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Restricted X/Y jog: MENU > JOGGING.  LIVE JOG TEST BUILD.",
                   FontId::Body16, RED, kPanel);
@@ -1308,6 +1313,8 @@ void PendantUi::draw_connections() {
     draw_text_centered(_display, { 34, 300, 732, 34 },
 #if JC_JOG_PREVIEW
                        "STATUS CONNECTION - PREVIEW ONLY, MOTION DISABLED",
+#elif JC_FULL_CONTROL_TEST
+                       "STATUS CONNECTION - FULL CONTROL",
 #else
                        "STATUS CONNECTION - LIVE JOG TEST BUILD",
 #endif
@@ -1741,7 +1748,7 @@ void PendantUi::set_live_mode(bool live) {
 #if JC_JOG_UI
     _last_action = live ? "LIVE - jog test build (jog only from MENU)"
                         : "DEMO mode - simulated coordinates";
-    Serial.printf("ui: mode=%s\n", live ? (JC_JOG_PREVIEW ? "LIVE (PREVIEW ONLY - MOTION DISABLED)" : "LIVE (LIVE JOG TEST BUILD)") : "DEMO");
+    Serial.printf("ui: mode=%s\n", live ? (JC_JOG_PREVIEW ? "LIVE (PREVIEW ONLY - MOTION DISABLED)" : (JC_FULL_CONTROL_TEST ? "LIVE (FULL CONTROL)" : "LIVE (LIVE JOG TEST BUILD)")) : "DEMO");
 #else
     _last_action = live ? "LIVE read-only - machine motion disabled"
                         : "DEMO mode - simulated coordinates";
