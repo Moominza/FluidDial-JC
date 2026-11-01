@@ -3,8 +3,8 @@
 
 // Files and jobs (Instruction 010). The list is the CONTROLLER's SD card, read with the read-only queries
 // `$SD/Status` and `$SD/List`; the pendant's own flash is never listed. The job state and percentage are the
-// controller's own SD report. FEED HOLD, CYCLE START and RESET are three different controls and are labelled as
-// such. Nothing restarts a job by itself, ever.
+// controller's own SD report. Instruction 010A: this page is MONITORING ONLY. It has no START JOB and no CYCLE START / RESUME; programs are
+// uploaded and started from the PC. Only FEED HOLD and a confirmed RESET remain. Nothing restarts a job, ever.
 
 #include "JcScreens.hpp"
 
@@ -25,10 +25,9 @@ constexpr ui::Rect kListArea { 16, 152, 768, 160 };
 constexpr ui::Rect kDetail { 16, 318, 768, 44 };
 constexpr ui::Rect kJobText { 16, 366, 768, 26 };
 constexpr ui::Rect kBar { 16, 394, 768, 14 };
-constexpr ui::Rect kStart { 16, 412, 186, 60 };
-constexpr ui::Rect kHold { 210, 412, 186, 60 };
-constexpr ui::Rect kResume { 404, 412, 186, 60 };
-constexpr ui::Rect kReset { 598, 412, 186, 60 };
+// Monitoring page: there is no START and no CYCLE START / RESUME (Instruction 010A).
+constexpr ui::Rect kHold { 16, 412, 376, 60 };
+constexpr ui::Rect kReset { 408, 412, 376, 60 };
 
 ui::Rect row_rect(uint8_t i) { return { 16, static_cast<int16_t>(kListTop + i * kRowH), 700, 38 }; }
 
@@ -39,12 +38,6 @@ uint32_t hash_text(const char* s) {
 }
 
 }  // namespace
-
-const char* JcFilesScreen::start_blocker() const {
-    const JcSdEntry* e = sv.sd.selected();
-    return jc_job_start_blocker(sv.live_mode, sv.model.fresh(), sv.model.state(), sv.job.phase(), e != nullptr,
-                                sv.sd.selected_runnable());
-}
 
 uint32_t JcFilesScreen::list_key() const {
     const JcSdEntry* e = sv.sd.selected();
@@ -155,19 +148,17 @@ void JcFilesScreen::draw_detail() {
         snprintf(l1, sizeof(l1), "%s", shown);
         char sz[24];
         JcSdBrowser::size_text(e->size, sz, sizeof(sz));
-        snprintf(l2, sizeof(l2), "%s   %s", sz, sv.sd.selected_runnable() ? "can be started from here" : "CANNOT be started from here: a space or special character in the name, or too long");
+        snprintf(l2, sizeof(l2), "%s   Programs are started from the PC, not from this pendant.", sz);
     }
     sv.display.fillRect(kDetail.x + 2, kDetail.y + 2, kDetail.w - 4, kDetail.h - 4, ui::kPanel);
     ui::text(sv.display, kDetail.x + 10, kDetail.y + 3, l1, FontId::Body16, e != nullptr ? WHITE : ui::kMuted, ui::kPanel);
-    ui::text(sv.display, kDetail.x + 10, kDetail.y + 23, l2, FontId::Body16, e != nullptr && !sv.sd.selected_runnable() ? ui::kWarn : ui::kMuted, ui::kPanel);
+    ui::text(sv.display, kDetail.x + 10, kDetail.y + 23, l2, FontId::Body16, ui::kMuted, ui::kPanel);
 }
 
 void JcFilesScreen::draw_buttons() {
     ui::button(sv.display, kRefresh, sv.sd.busy() ? "READING ..." : "REFRESH SD LIST", sv.sd.busy() ? ui::Btn::Disabled : ui::Btn::Normal);
-    ui::button(sv.display, kStart, "START JOB", start_blocker() == nullptr ? ui::Btn::Good : ui::Btn::Disabled);
-    ui::button(sv.display, kHold, "FEED HOLD", sv.job.active() ? ui::Btn::Normal : ui::Btn::Disabled);
-    ui::button(sv.display, kResume, "CYCLE START", sv.job.can_resume() ? ui::Btn::Normal : ui::Btn::Disabled);
-    ui::button(sv.display, kReset, "RESET (STOP)", ui::Btn::Danger);
+    ui::button(sv.display, kHold, "FEED HOLD (PAUSE)", sv.job.active() ? ui::Btn::Normal : ui::Btn::Disabled);
+    ui::button(sv.display, kReset, "RESET (ENDS THE JOB)", ui::Btn::Danger);
 }
 
 void JcFilesScreen::draw_job() {
@@ -209,53 +200,18 @@ void JcFilesScreen::on_draw() {
     _drawn_key = list_key();
 }
 
-void JcFilesScreen::ask(uint8_t what) {
-    _pending = what;
-    char l1[100];
-    if (what == 1) {
-        const JcSdEntry* e = sv.sd.selected();
-        open_custom_confirm("START THIS JOB?", "START JOB");
-        char shown[90];
-        JcSdBrowser::ellipsize(e->path, 70, shown, sizeof(shown));
-        snprintf(l1, sizeof(l1), "File on the CONTROLLER's SD card: %s", shown);
-        dialog.add_line(l1);
-        dialog.add_line("Check the program, work offset, tool and workholding.", ui::kWarn);
-#if JC_JOG_PREVIEW
-        dialog.add_line("PREVIEW ONLY - MOTION DISABLED: rehearsed on a SIMULATED controller.", RED);
-#else
-        dialog.add_line("FEED HOLD pauses. RESET ends it. Neither is an emergency stop.", RED);
-#endif
-        dialog.add_line("A lost connection NEVER restarts or resumes the job.", ui::kMuted);
-    } else if (what == 2) {
-        open_custom_confirm("CYCLE START (RESUME)?", "CYCLE START");
-        dialog.add_line(kJcJobResumeText);
-        dialog.add_line("Only a job in FEED HOLD can be resumed.", ui::kWarn);
-    } else {
-        open_custom_confirm("RESET THE CONTROLLER?", "RESET");
-        dialog.add_line(kJcJobStopText, ui::kWarn);
-        dialog.add_line("This is different from FEED HOLD, which can be resumed.");
-        dialog.add_line("It is NOT a replacement for the emergency stop.", RED);
-    }
+void JcFilesScreen::ask_reset() {
+    open_custom_confirm("RESET THE CONTROLLER?", "RESET");
+    dialog.add_line(kJcJobStopText, ui::kWarn);
+    dialog.add_line("The job will NOT continue and cannot be resumed from this pendant.");
+    dialog.add_line("Motion stops; an alarm, unlock or re-homing may follow.");
+    dialog.add_line("This is different from FEED HOLD, which only pauses.");
+    dialog.add_line("It is NOT a replacement for the emergency stop.", RED);
     draw();
 }
 
 void JcFilesScreen::on_custom_confirm() {
-    JcCommand c;
-    if (_pending == 1) {
-        const JcSdEntry* e = sv.sd.selected();
-        if (e == nullptr) return;
-#if JC_JOG_PREVIEW
-        sv.preview.controller().nc().add_file(e->path, e->size);   // the rehearsal knows the file the card listed
-        sv.preview.controller().nc().sd_present = true;
-#endif
-        c = jc_run_sd_file(e->path);
-        _job_started_ms = millis();
-    } else if (_pending == 2) {
-        c = jc_cycle_resume();
-    } else {
-        c = jc_soft_reset();
-    }
-    _pending = 0;
+    const JcCommand c = jc_soft_reset();
     if (!c.ok) { show_message("CANNOT PREPARE COMMAND", jc_cmd_error_name(c.error)); return; }
     // The operator's confirmation arms ONE submission: the arming is dropped again straight away.
     sv.dispatcher.arm_for(millis(), 5000, 0x0F);
@@ -305,33 +261,18 @@ void JcFilesScreen::on_touch(uint16_t x, uint16_t y) {
             return;
         }
     }
-    if (ui::hit(kStart, x, y)) {
-        const char* why = start_blocker();
-        if (why != nullptr) { show_message("CANNOT START A JOB", why); return; }
-#if JC_AUTHORITY
-        ask(1);
-#else
-        const char* notes[] = { "Runs this file from the controller's SD card." };
-        stage(jc_run_sd_file(sv.sd.selected()->path), "START JOB", notes, 1);
-#endif
-    } else if (ui::hit(kHold, x, y)) {
+    if (ui::hit(kHold, x, y)) {
         // Stopping is immediate: no dialog. FEED HOLD is always available while LIVE.
         const JcAuthDecision d = submit_now(jc_feed_hold());
         if (d != JcAuthDecision::Allowed) show_message("FEED HOLD NOT SENT", jc_auth_name(d));
-    } else if (ui::hit(kResume, x, y)) {
-        if (!sv.job.can_resume()) { show_message("NOTHING TO RESUME", "CYCLE START only continues a job that is in FEED HOLD.", "The controller reports no held job right now."); return; }
-#if JC_AUTHORITY
-        ask(2);
-#else
-        const char* notes[] = { "Cycle start: resumes a held job." };
-        stage(jc_cycle_resume(), "CYCLE START", notes, 1);
-#endif
     } else if (ui::hit(kReset, x, y)) {
 #if JC_AUTHORITY
-        ask(3);
+        ask_reset();
 #else
-        const char* notes[] = { "Soft reset ends the job and stops motion.", "It is NOT a replacement for the E-stop." };
-        stage(jc_soft_reset(), "RESET", notes, 2);
+        const char* notes[] = { "Ends the running job; it cannot be resumed from here.",
+                                "Motion stops; position may be lost; an alarm or re-homing may follow.",
+                                "It is NOT a replacement for the E-stop." };
+        stage(jc_soft_reset(), "RESET", notes, 3);
 #endif
     }
 }

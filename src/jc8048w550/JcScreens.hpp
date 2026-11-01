@@ -164,15 +164,12 @@ private:
     void draw_detail();
     void draw_buttons();
     void draw_job();
-    void ask(uint8_t what);          // 1 start, 2 cycle start, 3 reset
-    const char* start_blocker() const;
+    void ask_reset();                // RESET is confirmed with its consequences spelled out
     uint32_t list_key() const;
     uint16_t _scroll = 0;
-    uint8_t _pending = 0;
     uint32_t _last_tick = 0;
     uint32_t _drawn_key = 0xFFFFFFFFu;
     uint32_t _drawn_btn = 0xFFFFFFFFu;
-    uint32_t _job_started_ms = 0;
     ui::Slot _status, _job;
     int16_t _last_bar = -1;
 };

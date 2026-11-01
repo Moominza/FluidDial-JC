@@ -22,11 +22,11 @@
 
 namespace jc8048w550 {
 
-// '!' feed hold, '~' cycle start, 0x18 soft reset, 0x85 jog cancel.
+// '!' feed hold, 0x18 soft reset, 0x85 jog cancel. '~' (cycle start / resume) is not a pendant byte (Instruction 010A).
 inline bool jc_is_realtime_text(const char* text) {
     if (text == nullptr || text[0] == '\0' || text[1] != '\0') return false;
     const uint8_t b = static_cast<uint8_t>(text[0]);
-    return b == '!' || b == '~' || b == 0x18 || b == 0x85;
+    return b == '!' || b == 0x18 || b == 0x85;
 }
 
 class JcCommandLink {

@@ -87,6 +87,9 @@ public:
         if (!command.ok) {
             return JcAuthDecision::BlockedBadState;
         }
+        if (command.cls == JcCommandClass::Job || jc_is_program_start_text(command.text)) {
+            return JcAuthDecision::BlockedProgramStart;   // Instruction 010A: same rule as the gate
+        }
         const JcAuthContext auth = make_auth(command, ctx);
         return _gate.preview() ? jc_authorize_preview(command.cls, auth) : jc_authorize(command.cls, auth);
     }

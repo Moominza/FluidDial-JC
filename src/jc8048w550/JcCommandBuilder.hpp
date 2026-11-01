@@ -170,7 +170,6 @@ inline JcCommand jc_jog_incremental(const JcMachineProfile& p, uint8_t axis,
 
 inline JcCommand jc_jog_cancel() { return detail::realtime(JcCommandClass::JogCancel, static_cast<char>(0x85)); }
 inline JcCommand jc_feed_hold() { return detail::realtime(JcCommandClass::Hold, '!'); }
-inline JcCommand jc_cycle_resume() { return detail::realtime(JcCommandClass::Job, '~'); }
 inline JcCommand jc_soft_reset() { return detail::realtime(JcCommandClass::Reset, static_cast<char>(0x18)); }
 inline JcCommand jc_unlock() { return detail::make(JcCommandClass::Unlock, "$X"); }
 
@@ -353,15 +352,8 @@ inline JcCommand jc_move_relative(uint8_t axis, float signed_distance) {
 
 inline JcCommand jc_restore_absolute() { return detail::make(JcCommandClass::Probe, "G90"); }
 
-inline JcCommand jc_run_sd_file(const char* path) {
-    if (!detail::path_ok(path)) return detail::fail(JcCommandClass::Job, JcCmdError::BadPath);
-    return detail::make(JcCommandClass::Job, "$SD/Run=%s", path);
-}
-
-inline JcCommand jc_run_macro_file(const char* path) {
-    if (!detail::path_ok(path)) return detail::fail(JcCommandClass::Macro, JcCmdError::BadPath);
-    return detail::make(JcCommandClass::Macro, "$Localfs/Run=%s", path);
-}
+// Instruction 010A: there is deliberately NO builder for "$SD/Run=", "$Localfs/Run=" or cycle start / resume ('~').
+// Programs are uploaded and started from the PC; FluidDial only monitors them.
 
 inline JcCommand jc_spindle_stop() { return detail::make(JcCommandClass::Spindle, "M5"); }
 

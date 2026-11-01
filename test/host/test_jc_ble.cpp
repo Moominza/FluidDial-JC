@@ -297,6 +297,10 @@ static void test_transmit_queue_and_policy() {
     CHECK(!r.ble.send_command_bytes("$H\n$X\n", 6));
     CHECK(!r.ble.send_command_bytes("$J=G91G21F100X1.000", 19));              // no terminating newline
     CHECK(!r.ble.send_command_bytes("M6 T3\n", 6) && !r.ble.send_command_bytes("$Localfs/Delete=/a\n", 19));
+    // Instruction 010A: BLE cannot start or resume a program or run a macro file, by any spelling
+    CHECK(!r.ble.send_command_bytes("~", 1));
+    CHECK(!r.ble.send_command_bytes("$SD/Run=/a.nc\n", 14) && !r.ble.send_command_bytes("$sd/run=/a.nc\n", 14));
+    CHECK(!r.ble.send_command_bytes("$Localfs/Run=/m.nc\n", 19) && !r.ble.send_command_bytes("$Macro/Run=0\n", 13));
     CHECK(r.ble.send_command_bytes("G21 G90 G0 Z5.000\n", 18));
     r.run(400);
     // the text arrives in order, cut into ATT-sized (20 byte) pieces, and each query is a whole line

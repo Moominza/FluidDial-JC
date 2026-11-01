@@ -473,6 +473,14 @@ static void pure_checks() {
 #endif
 
     // Worst-case strings against their containers.
+    {   // the RESET dialog on the Files page (Instruction 010A): every line must fit, none may be clipped
+        const char* const reset_lines[] = { kJcJobStopText, "The job will NOT continue and cannot be resumed from this pendant.",
+                                            "Motion stops; an alarm, unlock or re-homing may follow.",
+                                            "This is different from FEED HOLD, which only pauses.", "It is NOT a replacement for the emergency stop." };
+        bool fits = true;
+        for (const char* l : reset_lines) if (text_width(FontId::Body16, l) > ui::kDialogBox.w - ui::kDialogTextLeft - 20) { fits = false; printf("             too wide: %s\n", l); }
+        check(fits, "every line of the RESET dialog fits the dialog width");
+    }
     check(text_width(FontId::Body16, "Keep E-stop / power removal in reach. Not 'safe': 1 mm only.") <= ui::kDialogBox.w - ui::kDialogTextLeft - 20,
           "the longest arming-dialog line fits the dialog width");
     check(text_width(FontId::Body16, "NO COMMUNICATION: software cancel unreliable. USE E-STOP") <= 650 - 6,
@@ -728,8 +736,7 @@ static void pages_010() {
         fs.enter();
         check_frame(r.gfx, "files_idle", false);
         check_hitboxes(r.gfx, "files page", { ui::Rect { 560, 68, 224, 40 }, ui::Rect { 16, 110, 86, 38 }, ui::Rect { 724, 152, 60, 78 },
-                                              ui::Rect { 724, 234, 60, 78 }, ui::Rect { 16, 412, 186, 60 }, ui::Rect { 210, 412, 186, 60 },
-                                              ui::Rect { 404, 412, 186, 60 }, ui::Rect { 598, 412, 186, 60 } });
+                                              ui::Rect { 724, 234, 60, 78 }, ui::Rect { 16, 412, 376, 60 }, ui::Rect { 408, 412, 376, 60 } });
         // listing
         nc.add_file("/jobs/first_part_program.nc", 18432);
         nc.add_file("/jobs/a_really_long_part_program_name_for_the_rotary_axis_fixture_number_12_final_v3.nc", 5u * 1024u * 1024u);
@@ -761,28 +768,27 @@ static void pages_010() {
         check_frame(r.gfx, "files_page_up", false);
         touch_center(fs, ui::Rect { 16, 110, 86, 38 });                   // UP
         check(strcmp(r.sd.cwd(), "/") == 0, "UP leaves the folder");
-        // a file that cannot be started from the pendant (space in the name)
+        // 010A: selecting a file only shows it; there is no START anywhere on this page
         r.sd.enter(0);
         fs.enter();
         for (uint16_t i = 0; i < r.sd.visible_count(); ++i) if (strstr(r.sd.visible(i)->path, "odd#name") != nullptr) r.sd.select(i);
         fs.enter();
-        check_frame(r.gfx, "files_not_runnable", false);
-        touch_center(fs, ui::Rect { 16, 412, 186, 60 });                  // START JOB -> explains
-        check_frame(r.gfx, "files_start_refused", true);
-        touch_center(fs, ui::kDialogOk);
-        // a runnable file
+        check_frame(r.gfx, "files_odd_name_selected", false);
         for (uint16_t i = 0; i < r.sd.visible_count(); ++i) if (strstr(r.sd.visible(i)->path, "first_part") != nullptr) r.sd.select(i);
         fs.enter();
-        check_frame(r.gfx, "files_ready_to_start", false);
-#if JC_AUTHORITY
-        touch_center(fs, ui::Rect { 16, 412, 186, 60 });                  // START JOB -> one confirmation
-        check_frame(r.gfx, "files_start_confirm", true);
-        check(r.wire.find("$SD/Run") == std::string::npos, "nothing is sent before the confirmation");
-        touch_center(fs, ui::kDialogConfirm);
-        check(r.wire.find("$SD/Run=/jobs/first_part_program.nc\n") != std::string::npos, "the confirmed START sends exactly one $SD/Run");
-        check(!r.dispatcher.armed(), "the confirmation arms ONE submission and is dropped again");
-        r.cmd.on_line("ok"); r.cmd.tick();   // the controller answered
-#endif
+        check_frame(r.gfx, "files_selected_monitor_only", false);
+        {   // sweep the whole screen with touches: nothing may ever put a program start or resume on the wire
+            const size_t w0 = r.wire.size();
+            for (int y = 8; y < 480; y += 20) {
+                for (int x = 8; x < 800; x += 24) {
+                    if (y > 66 && y < 114 && x > 556) continue;   // REFRESH is read-only and covered above
+                    fs.touch(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
+                }
+            }
+            check(r.wire.find("$SD/Run") == std::string::npos && r.wire.find("~") == std::string::npos
+                  && r.wire.find("$Localfs") == std::string::npos, "touching every part of the Files page never sends a start or resume");
+            (void)w0;
+        }
         // job states, all from the controller's own report
         const struct { const char* state; bool sd; float pct; JcJobPhase expect; const char* name; } steps[] = {
             { "Run", true, 12.5f, JcJobPhase::Running, "files_job_running" },
@@ -811,21 +817,18 @@ static void pages_010() {
         r.job.on_status(true, "Alarm", true, 40.0f, "/jobs/x.nc");
         fs.enter();
         check_frame(r.gfx, "files_job_alarm", false);
-        // feed hold is immediate, resume / reset need a confirmation
+        // feed hold is immediate; reset needs a confirmation that spells out its consequences
         r.job.on_status(true, "Hold:0", true, 40.0f, "/jobs/x.nc");
         r.status("Hold:0", 50, 50, -5, 0);
         fs.enter();
 #if JC_AUTHORITY
         const size_t wire0 = r.wire.size();
-        touch_center(fs, ui::Rect { 210, 412, 186, 60 });                 // FEED HOLD
+        touch_center(fs, ui::Rect { 16, 412, 376, 60 });                  // FEED HOLD
         check(r.wire.size() > wire0 && r.wire[r.wire.size() - 1] == '!', "FEED HOLD sends '!' at once, without a dialog");
-        touch_center(fs, ui::Rect { 404, 412, 186, 60 });                 // CYCLE START
-        check_frame(r.gfx, "files_resume_confirm", true);
-        touch_center(fs, ui::kDialogCancel);
-        touch_center(fs, ui::Rect { 598, 412, 186, 60 });                 // RESET
+        touch_center(fs, ui::Rect { 408, 412, 376, 60 });                 // RESET
         check_frame(r.gfx, "files_reset_confirm", true);
         touch_center(fs, ui::kDialogCancel);
-        check(r.wire.find("~") == std::string::npos && r.wire.find("\x18") == std::string::npos, "cancelling the dialogs sent neither '~' nor reset");
+        check(r.wire.find("~") == std::string::npos && r.wire.find("") == std::string::npos, "cancelling the dialog sent neither '~' nor reset");
 #endif
         // card problems
         Rig m;

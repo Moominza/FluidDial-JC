@@ -6,7 +6,7 @@
 // a lost connection leaves the job UNKNOWN and nothing is restarted or resumed automatically.
 //
 //   Running   status has SD: and the machine is running
-//   Paused    status has SD: and the machine is in Hold / Door (feed hold; resumable with CYCLE START)
+//   Paused    status has SD: and the machine is in Hold / Door (feed hold; resumed from the PC, never from here)
 //   Complete  the SD: field disappeared after the report had reached the end of the file (>= 99%), machine Idle
 //   Ended     the SD: field disappeared before the end, machine Idle (stopped or reset)
 //   Alarm     the controller went into ALARM while a job was active
@@ -37,10 +37,10 @@ inline const char* jc_job_phase_name(JcJobPhase p) {
     return "?";
 }
 
-// The three controls, said precisely (shown on the Files page).
-constexpr const char* kJcJobPauseText = "FEED HOLD ('!'): decelerates and stops; the job stays loaded and can be resumed.";
-constexpr const char* kJcJobResumeText = "CYCLE START ('~'): continues a job that is in feed hold.";
-constexpr const char* kJcJobStopText = "STOP / RESET (Ctrl-X): ends the job, it cannot be resumed; the position may be lost.";
+// The two controls the pendant keeps, said precisely (shown on the Files page). Starting and resuming a program are
+// done from the PC (Instruction 010A): this pendant has no START and no CYCLE START / RESUME.
+constexpr const char* kJcJobPauseText = "FEED HOLD ('!'): decelerates and stops; the job stays loaded. Resume it from the PC.";
+constexpr const char* kJcJobStopText = "RESET (Ctrl-X) ends the job. It cannot be resumed; position may be lost.";
 
 class JcJobTracker {
 public:
@@ -81,7 +81,6 @@ public:
     bool percent_valid() const { return _have_pct; }
     float percent() const { return _pct; }
     const char* name() const { return _name; }
-    bool can_resume() const { return _phase == JcJobPhase::Paused; }
     uint32_t unknown_events() const { return _unknown_events; }
 
 private:
@@ -91,19 +90,5 @@ private:
     char       _name[48] = "";
     uint32_t   _unknown_events = 0;
 };
-
-// Why a job may not be started now (nullptr = nothing prevents it). The controller still decides; these are the
-// conditions the pendant itself can see.
-inline const char* jc_job_start_blocker(bool live, bool fresh, const char* state, JcJobPhase phase, bool file_selected,
-                                        bool file_runnable) {
-    if (!live) return "not in LIVE mode";
-    if (!fresh) return "no fresh machine status";
-    if (!file_selected) return "no file selected";
-    if (!file_runnable) return "this file name has characters the pendant will not send (use letters, digits, . _ - /)";
-    if (state == nullptr || strcmp(state, "Idle") != 0) return "machine is not Idle";
-    if (phase == JcJobPhase::Running || phase == JcJobPhase::Paused) return "a job is already active";
-    if (phase == JcJobPhase::Unknown) return "job state unknown after a lost connection";
-    return nullptr;
-}
 
 }  // namespace jc8048w550

@@ -10,7 +10,9 @@
 #include <string.h>
 
 #include "../../src/jc8048w550/JcCommandBuilder.hpp"
+#include "../../src/jc8048w550/JcCommandPolicy.hpp"
 #include "../../src/jc8048w550/JcStatusFrame.hpp"
+#include "jc_forged.hpp"
 
 using namespace jc8048w550;
 
@@ -114,7 +116,7 @@ static void test_other_commands() {
     CHECK(!jc_set_axis_value(p, 0, NAN).ok);
     CHECK_STR(jc_unlock().text, "$X");
     CHECK_STR(jc_spindle_stop().text, "M5");
-    CHECK(jc_feed_hold().text[0] == '!' && jc_cycle_resume().text[0] == '~');
+    CHECK(jc_feed_hold().text[0] == '!');
     CHECK((uint8_t)jc_soft_reset().text[0] == 0x18);
 }
 
@@ -133,19 +135,13 @@ static void test_probe_and_paths() {
     CHECK_STR(s.steps[3].text, "G90");  // always restores absolute mode
     CHECK(!jc_probe_z_sequence(p, 0.0f, 100.0f, 5.0f, 1.0f).ok);
 
-    CHECK_STR(jc_run_sd_file("/job_one.nc").text, "$SD/Run=/job_one.nc");
-    CHECK(!jc_run_sd_file("/job one.nc").ok);   // one policy for every transport: no spaces
-    CHECK_STR(jc_run_macro_file("/macro0.nc").text, "$Localfs/Run=/macro0.nc");
-    const char* badp[] = { "job.nc", "/../etc", "/a\nG0X1", "/a;b", "/a$b", "/a=b", "/a&b", "", nullptr };
-    for (const char* b : badp) {
-        CHECK(!jc_run_sd_file(b).ok);
-        CHECK(!jc_run_macro_file(b).ok);
+    // Instruction 010A: no builder exists for program start / resume; a forged one is refused by the one policy.
+    const char* paths[] = { "/job_one.nc", "/a/b_c-1.nc", "job.nc", "/../etc", "/a;b", "/job one.nc" };
+    for (const char* b : paths) {
+        CHECK(!jc_command_line_allowed(JcCommandClass::Job, forged::run_sd(b).text));
+        CHECK(!jc_command_line_allowed(JcCommandClass::Macro, forged::run_macro(b).text));
+        CHECK(!jc_command_line_allowed(JcCommandClass::Other, forged::run_sd(b).text));
     }
-    char longp[200];
-    memset(longp, 'a', 199);
-    longp[0] = '/';
-    longp[199] = 0;
-    CHECK(!jc_run_sd_file(longp).ok);
 }
 
 #if JC_MACHINE_CONTROL_ENABLED
@@ -189,8 +185,9 @@ static void test_authorization_enabled() {
     CHECK(jc_authorize(JcCommandClass::JogCancel, d) == JcAuthDecision::Allowed);
 
     const JcCommandClass confirm[] = { JcCommandClass::Home, JcCommandClass::Probe, JcCommandClass::WorkOffset,
-                                       JcCommandClass::Spindle, JcCommandClass::Job, JcCommandClass::Macro,
+                                       JcCommandClass::Spindle, JcCommandClass::Macro,
                                        JcCommandClass::Other };
+    CHECK(jc_authorize(JcCommandClass::Job, c) == JcAuthDecision::BlockedProgramStart);   // never, whatever the context
     for (JcCommandClass k : confirm) {
         CHECK(jc_authorize(k, c) == JcAuthDecision::BlockedUnconfirmed);
         d = c;
@@ -223,7 +220,7 @@ static void test_default_build_blocks_everything() {
     JcCommandGate gate;
     int n = 0;
     for (int k = 0; k <= (int)JcCommandClass::Other; ++k, ++n) {
-        CHECK(gate.submit((JcCommandClass)k, "x", c) == JcAuthDecision::BlockedBuildPolicy);
+        CHECK(gate.submit((JcCommandClass)k, "x", c) == ((JcCommandClass)k == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy));
     }
     CHECK(gate.sent() == 0 && gate.previewed() == 0 && gate.blocked() == (uint32_t)n);
 #endif

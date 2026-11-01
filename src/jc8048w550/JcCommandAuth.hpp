@@ -74,7 +74,7 @@ enum class JcCommandClass : uint8_t {
     Probe,
     WorkOffset,
     Spindle,
-    Job,       // run / pause / resume / cancel
+    Job,       // start / resume a program. NEVER authorized (Instruction 010A); no builder produces it
     Macro,
     Unlock,
     Reset,
@@ -96,6 +96,7 @@ enum class JcAuthDecision : uint8_t {
     BlockedOperationPending,   // a previous motion operation is not yet resolved
     BlockedEnvelopeUnread,     // soft/hard-limit and limit-pin settings are not known from a current read
     BlockedUnprotectedNotAcknowledged,  // no trusted travel protection and the operator has not acknowledged that
+    BlockedProgramStart,       // starting / resuming a program is not a pendant function (Instruction 010A)
 };
 
 struct JcAuthContext {
@@ -127,6 +128,29 @@ struct JcAuthContext {
 
 constexpr uint32_t kJcMaxCommandAgeMs = 500;
 
+// Instruction 010A: true for any text that would start, run or resume a program or a controller file, whatever class
+// it was submitted under: the cycle-start byte '~', and any "$SD/..." or "$Localfs/..." file command, and any "$.../Run"
+// command (case-insensitive). FluidDial never sends these. Checked in the shared gate, so nothing can bypass it by
+// mislabelling the class.
+inline bool jc_is_program_start_text(const char* text) {
+    if (text == nullptr) return false;
+    if (text[0] == '~') return true;
+    if (text[0] != '$') return false;
+    char lower[24];
+    size_t n = 0;
+    for (; text[n] != '\0' && n + 1 < sizeof(lower); ++n) {
+        const char c = text[n];
+        lower[n] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    }
+    lower[n] = '\0';
+    if (strncmp(lower, "$sd/", 4) == 0 || strncmp(lower, "$localfs/", 9) == 0) return true;
+    if (strncmp(lower, "$macro", 6) == 0) return true;
+    for (const char* t = text; *t != '\0'; ++t) {
+        if (t[0] == '/' && (t[1] == 'R' || t[1] == 'r') && (t[2] == 'U' || t[2] == 'u') && (t[3] == 'N' || t[3] == 'n')) return true;
+    }
+    return false;
+}
+
 inline const char* jc_auth_name(JcAuthDecision d) {
     switch (d) {
         case JcAuthDecision::Allowed: return "allowed";
@@ -143,6 +167,8 @@ inline const char* jc_auth_name(JcAuthDecision d) {
         case JcAuthDecision::BlockedEnvelopeUnread: return "blocked: limit settings not known from a current read";
         case JcAuthDecision::BlockedUnprotectedNotAcknowledged:
             return "blocked: no controller travel protection; not acknowledged";
+        case JcAuthDecision::BlockedProgramStart:
+            return "blocked: FluidDial never starts or resumes a program (start it from the PC)";
     }
     return "blocked";
 }
@@ -194,6 +220,9 @@ enum class JcGatePolicy : uint8_t { Plain, LiveJogRestricted, Authority };
 namespace detail {
 
 inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& ctx, JcGatePolicy policy) {
+    // Owner decision (Instruction 010A): programs are started and resumed from the PC, never from this pendant.
+    // Checked first, for every policy, so no armed/confirmed/LIVE state can change the answer.
+    if (cls == JcCommandClass::Job) return JcAuthDecision::BlockedProgramStart;
     const bool restricted = policy == JcGatePolicy::LiveJogRestricted;
     if (restricted && !jc_live_jog_class_allowed(cls)) {
         // Continuous jog is not authorizable here either: the transport only accepts the
@@ -256,9 +285,8 @@ inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& c
 
 inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx) {
 #if !JC_MACHINE_CONTROL_ENABLED
-    (void)cls;
     (void)ctx;
-    return JcAuthDecision::BlockedBuildPolicy;
+    return cls == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy;
 #else
     return detail::authorize_rules(cls, ctx, JC_FULL_CONTROL_TEST ? JcGatePolicy::Authority
                                        : (JC_LIVE_JOG_TEST ? JcGatePolicy::LiveJogRestricted : JcGatePolicy::Plain));
@@ -286,7 +314,9 @@ public:
     explicit JcCommandGate(JcCommandSink sink = nullptr) : _sink(sink) {}
 
     JcAuthDecision submit(JcCommandClass cls, const char* text, const JcAuthContext& ctx) {
-        const JcAuthDecision decision = _preview ? jc_authorize_preview(cls, ctx) : jc_authorize(cls, ctx);
+        const JcAuthDecision decision = (cls == JcCommandClass::Job || jc_is_program_start_text(text))
+                                            ? JcAuthDecision::BlockedProgramStart   // Instruction 010A: by class OR by text
+                                            : (_preview ? jc_authorize_preview(cls, ctx) : jc_authorize(cls, ctx));
         _last = decision;
         if (decision != JcAuthDecision::Allowed) {
             ++_blocked;

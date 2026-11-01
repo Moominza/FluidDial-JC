@@ -314,12 +314,48 @@ q_code = "\n".join(l.split("//")[0] for l in q.splitlines())
 for word in ("$SD/Delete", "$SD/Rename", "$SD/Run", "$Localfs", "$LocalFS", "Format", "Remove"):
     if word in q_code:
         fail(f"JcQuery.hpp: the read-only allowlist must not contain {word}")
-# the SD run string exists only where commands are built / checked and in the simulator
+# Instruction 010A: FluidDial never starts or resumes a program. No code may name a program-start command; only the
+# shared gate (JcCommandAuth.hpp) recognizes them, to refuse them, and the simulated controller reuses that function.
+def strip_comments(text):
+    return "\n".join(l.split("//")[0] for l in text.splitlines())
+
+
+START_WORDS = ("$SD/Run", "$Localfs/Run", "$LocalFS/Run", "$SD/Resume", "$Macro")
 for name in sorted(os.listdir(SRC)):
-    if name.endswith((".cpp", ".hpp")) and name not in ("JcCommandBuilder.hpp", "JcCommandPolicy.hpp", "JcSimNc.hpp"):
-        t = "\n".join(l.split("//")[0] for l in read(os.path.join(SRC, name)).splitlines())
-        if '"$SD/Run' in t:
-            fail(f"{name}: builds a $SD/Run line outside the command builder")
+    if not name.endswith((".cpp", ".hpp")) or name.startswith("JcFonts"):
+        continue
+    t = strip_comments(read(os.path.join(SRC, name)))
+    for word in START_WORDS:
+        if word in t:
+            fail(f"{name}: names the program-start command {word} (Instruction 010A forbids any)")
+    for fn in ("jc_run_sd_file", "jc_run_macro_file", "jc_cycle_resume", "can_resume", "jc_job_start_blocker", "kJcJobResumeText"):
+        if re.search(r"\b" + fn + r"\b", t):
+            fail(f"{name}: {fn} must not exist (Instruction 010A)")
+    if name not in ("JcCommandAuth.hpp", "JcSimNc.hpp", "JcJogPreview.hpp") and re.search(r"'~'|\"~\"", t):
+        fail(f"{name}: the cycle-start / resume byte '~' appears outside the gate and the simulator")
+policy_code = strip_comments(read(os.path.join(SRC, "JcCommandPolicy.hpp")))
+if not re.search(r"case JcCommandClass::Job:\s*return false;", policy_code):
+    fail("JcCommandPolicy.hpp: the Job class must accept no line (Instruction 010A)")
+if "$Localfs" in policy_code or "'~'" in policy_code:
+    fail("JcCommandPolicy.hpp: no $Localfs macro line and no '~' byte may be accepted")
+auth_code = strip_comments(read(os.path.join(SRC, "JcCommandAuth.hpp")))
+if not re.search(r"authorize_rules\([^)]*\) \{\s*if \(cls == JcCommandClass::Job\) return JcAuthDecision::BlockedProgramStart;", auth_code):
+    fail("JcCommandAuth.hpp: authorize_rules must refuse the Job class before anything else")
+if not re.search(r"cls == JcCommandClass::Job \|\| jc_is_program_start_text\(text\)", auth_code):
+    fail("JcCommandAuth.hpp: JcCommandGate::submit must refuse program starts by class and by text")
+disp_code = strip_comments(read(os.path.join(SRC, "JcDispatch.hpp")))
+if "jc_is_program_start_text(command.text)" not in disp_code:
+    fail("JcDispatch.hpp: evaluate() must apply the same program-start refusal as the gate")
+for name, anchor in (("JcReadOnlyFluidNc.cpp", "jc_command_bytes_allowed(bytes, length)"), ("JcUartLink.cpp", "jc_command_bytes_allowed(bytes, length)"),
+                     ("JcBleUart.hpp", "jc_command_bytes_allowed(bytes, length)"), ("JcCommandSystem.hpp", "jc_command_bytes_allowed(bytes, n)")):
+    if anchor not in strip_comments(read(os.path.join(SRC, name))):
+        fail(f"{name}: every transport must apply the one shared jc_command_bytes_allowed() policy (Instruction 010A)")
+files_code = strip_comments(read(os.path.join(SRC, "JcScreenFiles.cpp")))
+mac_code = strip_comments(read(os.path.join(SRC, "JcScreenMacros.cpp")))
+if re.search(r"START JOB|CYCLE START|RESUME", files_code):
+    fail("JcScreenFiles.cpp: the Files page must not offer START JOB / CYCLE START / RESUME")
+if re.search(r"\bstage\(", mac_code):
+    fail("JcScreenMacros.cpp: user macros are disabled; the page must not stage a command")
 # no M6 / T word anywhere in the command builder or the policy (no automatic tool changer is assumed)
 for name in ("JcCommandBuilder.hpp", "JcCommandPolicy.hpp"):
     t = "\n".join(l.split("//")[0] for l in read(os.path.join(SRC, name)).splitlines())

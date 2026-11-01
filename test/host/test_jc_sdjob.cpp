@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "../../src/jc8048w550/JcCommandPolicy.hpp"
 #include "../../src/jc8048w550/JcCommandSystem.hpp"
 #include "../../src/jc8048w550/JcDispatch.hpp"
 #include "../../src/jc8048w550/JcJobState.hpp"
@@ -16,6 +17,7 @@
 #include "../../src/jc8048w550/JcSimNc.hpp"
 #include "../../src/jc8048w550/JcStatusFrame.hpp"
 #include "../../src/jc8048w550/JcToolInfo.hpp"
+#include "jc_forged.hpp"
 
 using namespace jc8048w550;
 
@@ -96,7 +98,6 @@ static void test_listing_counts() {
     CHECK(r.br.visible_count() == 2 && r.br.visible(0)->dir && strcmp(r.br.visible(0)->path, "/jobs/deep") == 0);
     CHECK(strcmp(r.br.visible(1)->path, "/jobs/b.nc") == 0);
     CHECK(r.br.select(1) && r.br.selected() != nullptr && strcmp(r.br.selected()->path, "/jobs/b.nc") == 0);
-    CHECK(r.br.selected_runnable());
     CHECK(!r.br.select(0));                                     // a directory is entered, never selected
     CHECK(r.br.enter(0) && r.br.visible_count() == 1 && strcmp(r.br.visible(0)->path, "/jobs/deep/c.gcode") == 0);
     CHECK(r.br.up() && strcmp(r.br.cwd(), "/jobs") == 0);
@@ -167,11 +168,9 @@ static void test_real_controller_transcript() {
     CHECK(strcmp(r.br.visible(1)->path, "/SIMATIC.S7S/S002") == 0);
     CHECK(r.br.up() && r.br.enter(1) && r.br.visible_count() == 2 && strcmp(r.br.visible(0)->path, "/System Volume Information/IndexerVolumeGuid") == 0);
     CHECK(r.br.up());
-    // a file with a space in its name is listed but cannot be started from the pendant (the one command policy)
+    // a file with a space in its name is listed and selectable (the listing is read-only; nothing here starts a file)
     for (uint16_t i = 0; i < r.br.visible_count(); ++i) if (strcmp(r.br.visible(i)->path, "/clamp squares.nc") == 0) r.br.select(i);
-    CHECK(r.br.selected() != nullptr && !r.br.selected_runnable());
-    for (uint16_t i = 0; i < r.br.visible_count(); ++i) if (strcmp(r.br.visible(i)->path, "/Test.nc") == 0) r.br.select(i);
-    CHECK(r.br.selected_runnable());
+    CHECK(r.br.selected() != nullptr && strcmp(r.br.selected()->path, "/clamp squares.nc") == 0);
     char sz[24];
     JcSdBrowser::size_text(9372688, sz, sizeof(sz));
     CHECK(strcmp(sz, "8.9 MB") == 0);
@@ -193,10 +192,8 @@ static void test_paths_and_names() {
     r.refresh_and_wait();
     CHECK(r.br.state() == JcSdState::Ready);
     for (uint16_t i = 0; i < r.br.visible_count(); ++i) {
-        if (strcmp(r.br.visible(i)->path, "/odd#name.nc") == 0) { r.br.select(i); CHECK(!r.br.selected_runnable()); }
-        if (strcmp(r.br.visible(i)->path, "/ok_name-1.nc") == 0) { r.br.select(i); CHECK(r.br.selected_runnable()); }
+        if (strcmp(r.br.visible(i)->path, "/odd#name.nc") == 0) { CHECK(r.br.select(i)); CHECK(strcmp(r.br.selected()->path, "/odd#name.nc") == 0); }
     }
-    CHECK(!jc_sd_path_runnable("/a/../b.nc") && !jc_sd_path_runnable("a.nc") && !jc_sd_path_runnable("/a#b.nc") && !jc_sd_path_runnable("/a;b.nc") && !jc_sd_path_runnable("/a b.nc") && jc_sd_path_runnable("/a/b_c-1.nc"));
     char buf[40];
     JcSdBrowser::ellipsize("a_really_long_file_name_for_a_part_program.nc", 20, buf, sizeof(buf));
     CHECK(strlen(buf) <= 20 && strstr(buf, "..") != nullptr && strcmp(buf + strlen(buf) - 3, ".nc") == 0);
@@ -361,100 +358,108 @@ struct JobRig {
 static void test_job_run_pause_resume_stop() {
     JobRig r;
     CHECK(r.job.phase() == JcJobPhase::None);
-    CHECK(r.submit(jc_run_sd_file("/jobs/a.nc")) == JcAuthDecision::Allowed);
+    // Instruction 010A: the PC starts the program. The pendant only watches the controller's own SD: report.
+    CHECK(r.nc.pc_start_job("/jobs/a.nc"));
     r.run(300);
-    CHECK(r.have_last && r.last.outcome == JcExecOutcome::Acked);   // the acknowledgement says "accepted", nothing more
-    CHECK(r.nc.count("$SD/Run=/jobs/a.nc") == 1);
     CHECK(r.job.phase() == JcJobPhase::Running);
-    // the percentage is the controller's own SD: field, nothing else
     r.run(2000);
-    NEAR(r.job.percent(), r.nc.job_pct, 1.1f);
+    NEAR(r.job.percent(), r.nc.job_pct, 1.1f);                      // the percentage is the controller's field, nothing else
     CHECK(r.job.percent() > 10.0f && r.job.percent() < 40.0f);
     CHECK(strcmp(r.job.name(), "/jobs/a.nc") == 0);
 
-    // feed hold: the percentage freezes at the controller's value
+    // feed hold (the one control kept): the percentage freezes at the controller's value
     CHECK(r.submit(jc_feed_hold()) == JcAuthDecision::Allowed);
     r.run(300);
-    CHECK(r.job.phase() == JcJobPhase::Paused && r.job.can_resume());
+    CHECK(r.job.phase() == JcJobPhase::Paused);
     const float held = r.job.percent();
     r.run(3000);
     NEAR(r.job.percent(), held, 0.01f);                            // nothing creeps while held
     CHECK(r.job.phase() == JcJobPhase::Paused);
+    CHECK(r.nc.wire.size() == 1 && r.nc.wire[0] == "!");           // the pendant sent only the hold byte
 
-    // cycle start resumes the SAME job
-    CHECK(r.submit(jc_cycle_resume()) == JcAuthDecision::Allowed);
+    // the PC resumes; the pendant just follows
+    r.nc.pc_resume_job();
     r.run(1500);
     CHECK(r.job.phase() == JcJobPhase::Running && r.job.percent() > held);
-    CHECK(r.nc.count("$SD/Run=") == 1);                            // resume is not a restart
 
     // controller reset ends the job; it is not resumable
     CHECK(r.submit(jc_soft_reset()) == JcAuthDecision::Allowed);
     r.run(500);
     CHECK(r.nc.resets == 1);
-    CHECK(r.job.phase() == JcJobPhase::Ended && !r.job.can_resume());
-    CHECK(r.submit(jc_cycle_resume()) == JcAuthDecision::Allowed);    // the gate allows the byte; the controller has nothing to resume
+    CHECK(r.job.phase() == JcJobPhase::Ended);
     r.run(500);
     CHECK(r.job.phase() == JcJobPhase::Ended);
+    CHECK(r.nc.program_start_rx == 0);
+    for (const std::string& w : r.nc.wire) CHECK(w == "!" || w == std::string(1, static_cast<char>(0x18)));   // nothing else was ever written
 }
 
 static void test_job_completion() {
     JobRig r;
     r.nc.job_total_ms = 20000;
-    r.submit(jc_run_sd_file("/jobs/a.nc"));
+    r.nc.pc_start_job("/jobs/a.nc");
     r.run(1000);
     CHECK(r.job.phase() == JcJobPhase::Running);
     r.run(20000);
     CHECK(r.job.phase() == JcJobPhase::Complete && r.job.percent() >= 99.0f);
     CHECK(strcmp(JcJobTracker().name(), "") == 0);
+    CHECK(r.nc.wire.empty() && r.nc.program_start_rx == 0);
 }
 
-static void test_job_errors() {
-    {   JobRig r; r.nc.run_error = 66;
-        r.submit(jc_run_sd_file("/jobs/a.nc")); r.run(400);
-        CHECK(r.have_last && r.last.outcome == JcExecOutcome::ControllerError && r.last.code == 66);
-        CHECK(r.job.phase() == JcJobPhase::None && !r.nc.job);
-    }
-    {   JobRig r;                                                   // file removed since the listing
-        r.submit(jc_run_sd_file("/jobs/gone.nc")); r.run(400);
-        CHECK(r.last.outcome == JcExecOutcome::ControllerError && r.last.code == 65 && r.job.phase() == JcJobPhase::None);
-    }
-    {   JobRig r; r.nc.sd_present = false;
-        r.submit(jc_run_sd_file("/jobs/a.nc")); r.run(400);
-        CHECK(r.last.outcome == JcExecOutcome::ControllerError && r.last.code == 60);
-    }
-    {   JobRig r;                                                   // a second start while one runs is refused by the controller
-        r.submit(jc_run_sd_file("/jobs/a.nc")); r.run(300);
-        r.submit(jc_run_sd_file("/jobs/a.nc")); r.run(400);
-        CHECK(r.last.outcome == JcExecOutcome::ControllerError && r.last.code == 67);
-        CHECK(r.job.phase() == JcJobPhase::Running);
-    }
-    {   JobRig r;                                                   // names with characters the policy does not allow never reach the wire
-        const JcCommand c = jc_run_sd_file("/odd#name.nc");
-        CHECK(!c.ok);
-        r.submit(c); r.run(100);
-        CHECK(r.nc.count("$SD/Run") == 0);
-        CHECK(!jc_command_line_allowed(JcCommandClass::Job, "$SD/Run=/a;$X") && !jc_command_line_allowed(JcCommandClass::Job, "$SD/Run=/a/../b.nc"));
-        CHECK(!jc_run_sd_file("/job one.nc").ok);
-    }
+static void test_job_errors_and_alarm() {
     {   JobRig r;                                                   // an alarm mid-job stops everything; only recovery remains
         r.nc.job_alarm_at_pct = 40;
-        r.submit(jc_run_sd_file("/jobs/a.nc")); r.run(6000);
+        r.nc.pc_start_job("/jobs/a.nc"); r.run(6000);
         CHECK(r.job.phase() == JcJobPhase::Alarm && strcmp(r.nc.state, "Alarm") == 0);
-        CHECK(r.submit(jc_run_sd_file("/jobs/a.nc")) == JcAuthDecision::BlockedAlarm);
+        CHECK(r.submit(forged::run_sd("/jobs/a.nc")) == JcAuthDecision::BlockedProgramStart);
         CHECK(r.submit(jc_soft_reset()) == JcAuthDecision::Allowed);
         r.run(300);
         CHECK(r.job.phase() == JcJobPhase::Ended);
+        CHECK(r.nc.program_start_rx == 0);
     }
-    {   JobRig r;                                                   // confirmation is required to start; hold needs none
-        CHECK(r.submit(jc_run_sd_file("/jobs/a.nc"), false) == JcAuthDecision::BlockedUnconfirmed);
-        CHECK(r.nc.count("$SD/Run") == 0);
-        CHECK(r.submit(jc_feed_hold(), false) == JcAuthDecision::Allowed);
+    {   JobRig r;                                                   // the SD card vanishing mid-run is the PC's problem: the pendant shows state only
+        r.nc.pc_start_job("/jobs/a.nc"); r.run(500);
+        CHECK(r.job.phase() == JcJobPhase::Running);
+        r.nc.job = false; r.nc.set_state("Idle"); r.run(300);
+        CHECK(r.job.phase() == JcJobPhase::Ended);                  // ended before the end of the file: reported honestly
     }
+}
+
+// Instruction 010A: no start, no resume, no user macro, whatever the context, confirmation or transport.
+static void test_program_start_and_resume_forbidden() {
+    JobRig r;
+    const JcCommand cmds[] = {
+        forged::run_sd("/jobs/a.nc"), forged::run_sd("/odd#name.nc"), forged::cycle_resume(), forged::run_macro("/m.nc"),
+        forged::run_sd_as(JcCommandClass::Macro, "/jobs/a.nc"), forged::run_sd_as(JcCommandClass::Other, "/jobs/a.nc"),
+        forged::cycle_resume_as(JcCommandClass::Hold), forged::cycle_resume_as(JcCommandClass::Other),
+    };
+    for (const JcCommand& c : cmds) {
+        for (int confirmed = 0; confirmed <= 1; ++confirmed) {
+            const JcAuthDecision d = r.submit(c, confirmed != 0);
+            CHECK(d != JcAuthDecision::Allowed);
+        }
+    }
+    // the dispatcher's own decision for the Job class is a refusal that no state can change
+    CHECK(r.submit(forged::run_sd("/jobs/a.nc"), true) == JcAuthDecision::BlockedProgramStart);
+    CHECK(r.submit(forged::cycle_resume(), true) == JcAuthDecision::BlockedProgramStart);
+    // even a sink that is handed the exact bytes refuses them (policy + checked_tx)
+    CHECK(!jc_command_bytes_allowed("~", 1));
+    CHECK(!jc_command_bytes_allowed("$SD/Run=/jobs/a.nc\n", 19));
+    CHECK(!jc_command_bytes_allowed("$Localfs/Run=/m.nc\n", 19));
+    CHECK(!JcCommandSystem::sink(&r.sys, JcCommandClass::Job, "$SD/Run=/jobs/a.nc"));
+    CHECK(!JcCommandSystem::sink(&r.sys, JcCommandClass::Job, "~"));
+    CHECK(!JcCommandSystem::sink(&r.sys, JcCommandClass::Macro, "$Localfs/Run=/m.nc"));
+    r.run(500);
+    CHECK(r.nc.wire.empty() && r.nc.program_start_rx == 0 && !r.nc.job);
+    CHECK(r.job.phase() == JcJobPhase::None);
+    // the simulated controller itself ignores a start that somehow reached it, and counts it
+    const char* sneaky = "$SD/Run=/jobs/a.nc\n";
+    r.nc.JcSimNc::send(sneaky, strlen(sneaky));
+    CHECK(r.nc.program_start_rx == 1 && !r.nc.job);
 }
 
 static void test_job_disconnect_no_replay() {
     JobRig r;
-    r.submit(jc_run_sd_file("/jobs/a.nc"));
+    r.nc.pc_start_job("/jobs/a.nc");
     r.run(1500);
     CHECK(r.job.phase() == JcJobPhase::Running);
     // the connection drops: the tracker does not guess, the link logic ends the operation, nothing is re-sent
@@ -469,32 +474,31 @@ static void test_job_disconnect_no_replay() {
     r.fresh = true;
     r.run(500);
     CHECK(r.job.phase() == JcJobPhase::Running);
-    CHECK(r.nc.count("$SD/Run=") == 1 && r.nc.wire.size() == wire_before);
+    CHECK(r.nc.program_start_rx == 0 && r.nc.wire.size() == wire_before);
     // a job that ended while the pendant was away is NOT restarted either
     r.fresh = false; r.run(200);
     r.nc.job = false; r.nc.set_state("Idle"); r.nc.job_pct = 30.0f;
     r.fresh = true; r.run(300);
     CHECK(r.job.phase() == JcJobPhase::Ended);
-    CHECK(r.nc.count("$SD/Run=") == 1);
+    CHECK(r.nc.program_start_rx == 0 && r.nc.wire.size() == wire_before);
     CHECK(strcmp(jc_job_phase_name(JcJobPhase::Unknown), "UNKNOWN (no fresh status)") == 0);
+    // a held job stays held across a lost connection: no resume is ever sent
+    JobRig h;
+    h.nc.pc_start_job("/jobs/a.nc"); h.run(800);
+    h.submit(jc_feed_hold()); h.run(300);
+    CHECK(h.job.phase() == JcJobPhase::Paused);
+    const size_t held_wire = h.nc.wire.size();
+    h.fresh = false; h.sys.on_link_lost(); h.run(1000);
+    h.fresh = true; h.run(1000);
+    CHECK(h.job.phase() == JcJobPhase::Paused && h.nc.wire.size() == held_wire && h.nc.program_start_rx == 0);
 }
 
-static void test_job_blockers() {
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::None, true, true) == nullptr);
-    CHECK(jc_job_start_blocker(false, true, "Idle", JcJobPhase::None, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, false, "Idle", JcJobPhase::None, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::None, false, false) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::None, true, false) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Run", JcJobPhase::None, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Alarm", JcJobPhase::None, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::Running, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::Paused, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::Unknown, true, true) != nullptr);
-    CHECK(jc_job_start_blocker(true, true, "Idle", JcJobPhase::Complete, true, true) == nullptr);
-    // the three controls are described as three different things
-    CHECK(strstr(kJcJobPauseText, "FEED HOLD") && strstr(kJcJobResumeText, "CYCLE START") && strstr(kJcJobStopText, "RESET"));
+static void test_job_texts() {
+    // two controls remain, described as two different things; there is no resume text at all
+    CHECK(strstr(kJcJobPauseText, "FEED HOLD") && strstr(kJcJobPauseText, "PC") && strstr(kJcJobStopText, "RESET"));
+    CHECK(strstr(kJcJobStopText, "cannot be resumed") != nullptr);
     // the realtime bytes are distinct
-    CHECK(jc_feed_hold().text[0] == '!' && jc_cycle_resume().text[0] == '~' && static_cast<uint8_t>(jc_soft_reset().text[0]) == 0x18);
+    CHECK(jc_feed_hold().text[0] == '!' && static_cast<uint8_t>(jc_soft_reset().text[0]) == 0x18);
     // SD status field parsing: the percentage comes from the report
     JcStatusFrame f;
     const char* fr = "<Run|WPos:1.000,2.000,3.000,0.000|FS:500,0|SD:42.50,/jobs/a.nc>";
@@ -597,9 +601,10 @@ int main() {
     test_isolation_and_link_loss();
     test_job_run_pause_resume_stop();
     test_job_completion();
-    test_job_errors();
+    test_job_errors_and_alarm();
+    test_program_start_and_resume_forbidden();
     test_job_disconnect_no_replay();
-    test_job_blockers();
+    test_job_texts();
     test_tool_info();
     printf("sdjob: %d checks, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

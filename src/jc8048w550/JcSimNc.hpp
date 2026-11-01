@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "JcCommandAuth.hpp"
+
 namespace jc8048w550 {
 
 enum class JcSimFeature : uint8_t { None, Bore, Boss, Cylinder, Plate };
@@ -66,6 +68,21 @@ public:
     uint32_t job_total_ms = 10000;
     int   job_alarm_at_pct = 0;            // >0: the job ends in ALARM:1 at that percentage
     int   resets = 0;
+    int   program_start_rx = 0;            // program start / resume bytes or lines that reached the "controller" (must stay 0)
+
+    // What the PC does (the owner starts and resumes programs there; never the pendant). Test and preview scaffolding
+    // only: these are NOT reachable through send().
+    bool pc_start_job(const char* path) {
+        if (!sd_present || job) return false;
+        bool found = false;
+        for (int i = 0; i < nfiles; ++i) if (strcmp(files[i].path, path) == 0) found = true;
+        if (!found) return false;
+        job = true; job_hold = false; job_pct = 0.0f;
+        snprintf(job_name, sizeof(job_name), "%s", path);
+        set_state("Run");
+        return true;
+    }
+    void pc_resume_job() { if (job && job_hold) { job_hold = false; set_state("Run"); } }
     void add_file(const char* path, uint32_t size) {
         if (nfiles >= kMaxFiles) return;
         snprintf(files[nfiles].path, sizeof(files[nfiles].path), "%s", path);
@@ -101,7 +118,7 @@ public:
                 moving_ = false; npend_ = 0;
                 if (job) { job_hold = true; set_state("Hold:0"); } else set_state("Hold");
             } else if (bytes[0] == '~') {
-                if (job && job_hold) { job_hold = false; set_state("Run"); }
+                ++program_start_rx;   // the pendant must never send this (Instruction 010A); the simulator ignores it
             } else if (static_cast<uint8_t>(bytes[0]) == 0x18) {
                 ++resets;
                 job = false; job_hold = false; moving_ = false; npend_ = 0;
@@ -328,17 +345,9 @@ private:
             listing_ = true; list_i_ = 0; list_at_ = now + 20;      // streamed by update(): a long list never overflows the buffers
             return;
         }
-        if (strncmp(line, "$SD/Run=", 8) == 0) {
-            if (!sd_present) { later(20, "error:60"); return; }
-            if (job) { later(20, "error:67"); return; }
-            if (run_error != 0) { char e[24]; snprintf(e, sizeof(e), "error:%d", run_error); later(20, e); return; }
-            bool found = false;
-            for (int i = 0; i < nfiles; ++i) if (strcmp(files[i].path, line + 8) == 0) found = true;
-            if (!found) { later(20, "error:65"); return; }
-            job = true; job_hold = false; job_pct = 0.0f;
-            snprintf(job_name, sizeof(job_name), "%s", line + 8);
-            set_state("Run");
-            later(20, "ok");
+        if (line[0] == '$' && jc_is_program_start_text(line)) {   // "$SD/Run", "$Localfs/Run", "$Macro/..." and relatives
+            ++program_start_rx;   // never sent by the pendant (Instruction 010A): counted so tests can prove it, then refused
+            later(20, "error:20");
             return;
         }
         if (strcmp(line, "G49") == 0) { if (!ignore_tlo) { tlo = 0.0f; tlo_active = false; } later(20, "ok"); return; }

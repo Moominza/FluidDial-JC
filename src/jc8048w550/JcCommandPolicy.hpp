@@ -65,18 +65,6 @@ inline bool eat(const char*& p, const char* lit) {
     return true;
 }
 
-inline bool path_ok(const char* p) {
-    if (p == nullptr || p[0] != '/' || strlen(p) > 80) return false;
-    if (strstr(p, "..") != nullptr) return false;
-    for (; *p; ++p) {
-        const char c = *p;
-        const bool good = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                          || c == '/' || c == '.' || c == '_' || c == '-';
-        if (!good) return false;
-    }
-    return true;
-}
-
 }  // namespace policy_detail
 
 // Parses "$J=G91G21F<feed><axis><-?d.ddd>". Same shape as jc_parse_jog_line (JcJogTest.hpp) but all four
@@ -111,7 +99,6 @@ inline bool jc_command_line_allowed(JcCommandClass cls, const char* text) {
         switch (cls) {
             case JcCommandClass::JogCancel: return b == 0x85;
             case JcCommandClass::Hold: return b == '!';
-            case JcCommandClass::Job: return b == '~';
             case JcCommandClass::Reset: return b == 0x18;
             default: return false;
         }
@@ -181,9 +168,12 @@ inline bool jc_command_line_allowed(JcCommandClass cls, const char* text) {
             return read_fixed3(p, v) && *p == '\0' && v != 0.0f && fabsf(v) <= kJcSanityMaxMove;
         }
         case JcCommandClass::Job:
-            return eat(p, "$SD/Run=") && path_ok(p);
+            // Instruction 010A: FluidDial never starts ($SD/Run=) or resumes ('~') a program. No line and no byte
+            // is accepted for this class, whatever the transport, the gate or the operator's confirmation.
+            return false;
         case JcCommandClass::Macro: {
-            if (eat(p, "$Localfs/Run=")) return path_ok(p);
+            // User macros ($Localfs/Run=<path>) are disabled: a macro file can run machining code, and no
+            // per-macro permission is defined. Only the built-in positioning lines below belong to this class.
             // Built-in positioning: absolute work coordinates, Z alone or X and/or Y (never both, never A).
             if (!eat(p, "G21 G90 G0 ")) return false;
             float v = 0.0f;
@@ -220,7 +210,7 @@ inline bool jc_command_bytes_allowed(const char* bytes, size_t n) {
     if (bytes == nullptr || n == 0) return false;
     if (n == 1) {
         const uint8_t b = static_cast<uint8_t>(bytes[0]);
-        return b == 0x85 || b == '!' || b == '~' || b == 0x18;
+        return b == 0x85 || b == '!' || b == 0x18;   // jog cancel, feed hold, reset; never '~' (cycle start / resume)
     }
     char line[160];
     if (n >= sizeof(line) || bytes[n - 1] != '\n') return false;

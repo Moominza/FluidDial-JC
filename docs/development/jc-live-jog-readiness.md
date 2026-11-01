@@ -757,7 +757,7 @@ motion-disabled; `env:jc8048w550_fullcontrol_test` was built but **not flashed**
 | Area | Implementation | Where |
 |---|---|---|
 | SD browser | `$SD/Status` + `$SD/List` read-only queries (allowlisted), tolerant parser, folders inferred from paths, sizes, selection, scrolling, refresh, empty / missing-card (`error:60`) / error states, bounded to 160 entries with a visible TRUNCATED flag, long names ellipsized; the controller's own words are shown; lines are adopted only while the browser's own request is outstanding, so local flash entries can never appear | `JcSdBrowser.hpp`, `JcScreenFiles.cpp` |
-| Job management | Percent, name and feed-hold are the controller's `SD:` status field only; phases Running / Paused / Complete / Ended / Alarm / Unknown; FEED HOLD (`!`, immediate), CYCLE START (`~`, confirmed), RESET (Ctrl-X, confirmed) are three labelled controls; START needs one confirmation, arms exactly one submission and disarms; a lost connection makes the job UNKNOWN and nothing is restarted or resumed | `JcJobState.hpp`, `JcScreenFiles.cpp` |
+| Job management | Percent, name and feed-hold are the controller's `SD:` status field only; phases Running / Paused / Complete / Ended / Alarm / Unknown; FEED HOLD (`!`, immediate) and RESET (Ctrl-X, confirmed, consequences spelled out) are the two controls left; **START JOB and CYCLE START / RESUME were removed by Instruction 010A (section 16)**; a lost connection makes the job UNKNOWN and nothing is restarted or resumed | `JcJobState.hpp`, `JcScreenFiles.cpp` |
 | Tool state | `$G` T word and `$#` `[TLO:]`; routines stay disabled until the controller reports `[TLO:]`; the reference contact is discarded on any link loss or transport switch | `JcToolInfo.hpp`, `JcScreenTools.cpp` |
 | Tool routines | MEASURE REFERENCE TOOL, CHANGE TOOL BY HAND + MEASURE (Z to your clearance, then waits for you), MEASURE ONLY; probe direction down or up, search, feed, retract, plate thickness; **contact is verified by hand first** (Pn:P must appear and clear) before any probing move; the result is a PROPOSED offset (`new - reference`, sign reversed when probing up) applied only on a separate confirmation with `G43.1 Z<x>` and read back; CLEAR with `G49`, the readback must be 0 | `JcWorkflow.hpp`, `JcWorkflowPlans.hpp`, `JcScreenWorkflow.cpp` |
 | Not conflated | Tool length compensation never writes G54..G59, G10 or G92; the plate thickness is displayed but cancels out of the offset; no M6 / T word is generated (guard-enforced) | `JcCommandBuilder.hpp`, `check_no_sink.py` |
@@ -770,8 +770,8 @@ motion-disabled; `env:jc8048w550_fullcontrol_test` was built but **not flashed**
 
 Read-only (ordinary firmware, live): `?`, `$I`, `$G`, `$#`, `$SD/Status`, `$SD/List`, `$/...` capability reads, `$/probe/pin`.
 Machine-changing (full-control build, or rehearsed on the simulator in the ordinary build): `$J=`, `$H[axis]`, `$X`, G54..G59,
-`G10 L2` / `L20`, `G38.2` probing with `G91 G0` retract and `G90`, `G21 G90 G0` positioning, `M5`, `$SD/Run=<path>`, `$Localfs/Run=<path>`,
-`G43.1 Z<x>`, `G49`, and the real-time bytes `!`, `~`, Ctrl-X, 0x85.
+`G10 L2` / `L20`, `G38.2` probing with `G91 G0` retract and `G90`, `G21 G90 G0` positioning, `M5`,
+`G43.1 Z<x>`, `G49`, and the real-time bytes `!`, Ctrl-X, 0x85. (`$SD/Run=<path>`, `$Localfs/Run=<path>` and `~` were listed here until Instruction 010A removed them: see section 16.)
 
 **Checked against the real controller (read-only, 2026-10-30, FluidNC v4.1.1 at the saved endpoint, over its HTTP command endpoint, nothing changed):**
 `$SD/Status` answers the plain text `SD card detected`; `$SD/List` prints **relative** names with the folder depth as leading spaces
@@ -805,3 +805,60 @@ controller reset, any BLE hardware verification.
 | Host UI renderer (ordinary 42 / preview 83 / live 66 frames): Files (idle, reading, root, folder, selected, paging, not runnable, start / resume / reset confirmations, every job phase including SIMULATED and UNKNOWN, no card, empty, error, 210-file card), Tools, tool routines, BLE page; hitboxes checked inside 800x480, at least 38 px, non-overlapping and equal to the rectangles actually drawn | 0 problems |
 
 The renderer output is a rendering of the page code, not a photograph. The BLE firmware radio is compile-checked only.
+
+## 16. SD and job control restrictions (Instruction 010A)
+
+Owner decision: FluidDial-JC must not initiate CNC machining programs or resume them. Programs are uploaded to FluidNC from the PC and started
+from the approved PC control interface; FluidNC executes them from its SD card; FluidDial is for setup and monitoring.
+
+### 16.1 What the pendant still does
+
+| Function | State |
+|---|---|
+| Read-only SD browsing and status (`$SD/Status`, `$SD/List`) | kept, unchanged |
+| Running job name and progress | kept: the controller's own `SD:<pct>,<name>` status field, never a timer |
+| Job state, errors and alarms | kept: Running / Paused / Complete / Ended / Alarm / Unknown |
+| FEED HOLD (`!`) | kept, labelled "FEED HOLD (PAUSE)"; immediate, no dialog; it transmits only in motion-enabled builds (the ordinary image blocks it with the build-policy reason) |
+| RESET (Ctrl-X) | kept, separate from FEED HOLD; **always confirmed**; the dialog says it ends the job, that it cannot be resumed from the pendant, that motion stops, that position may be lost, that an alarm / unlock / re-homing may follow, and that it is not an emergency stop |
+
+### 16.2 What was removed
+
+- The START JOB and CYCLE START / RESUME buttons on the Files page, their confirmation dialogs, the start blocker and the "runnable file" notion.
+- Every command builder for them: `jc_run_sd_file`, `jc_run_macro_file` and `jc_cycle_resume` no longer exist. No `$SD/Run`, `$Localfs/Run` or `$SD/Resume` string remains
+  in the source (the static guard fails if one appears) or in the ordinary firmware binary (checked with `grep -a`).
+- The dry-run page's "RUN FILE" action (replaced by a repeat of UNLOCK).
+- The `~` byte from the pendant's real-time set (`jc_is_realtime_text`, `jc_command_bytes_allowed`).
+- **User macros are disabled.** A macro file can run machining code and no per-macro command permission is defined, so the policy no longer accepts `$Localfs/Run=`; on the Macros page
+  RUN and EDIT are disabled (a tap explains why); stored slots can still be cleared. They stay disabled until the owner defines their command permissions. The built-in positioning
+  routines (`G21 G90 G0 ...`) are unaffected: they do not execute files.
+
+### 16.3 Where it is enforced (not just hidden buttons)
+
+1. **Shared gate** (`JcCommandGate::submit`, `JcDispatcher::evaluate`): the new decision `BlockedProgramStart` is returned for the `Job` class in every build and every gate policy,
+   **and** for any text recognized by `jc_is_program_start_text` regardless of the class it was submitted under: `~`, any `$SD/...` or `$Localfs/...` command, `$Macro...`, or any
+   `$.../Run` (case-insensitive). Arming, confirmation, LIVE state and a fresh link cannot change the answer.
+2. **Command policy** (`jc_command_line_allowed` / `jc_command_bytes_allowed`, the one function in front of Wi-Fi, wired UART, BLE and the simulator): the `Job` class accepts no line and
+   no byte, the `Macro` class accepts only the built-in positioning lines, and `~` is accepted for no class.
+3. **Transports**: Wi-Fi (`JcReadOnlyFluidNc.cpp`), wired UART (`JcUartLink.cpp`), BLE (`JcBleUart.hpp`) and the command system's `checked_tx` all call that one policy; the guard fails if
+   any of them stops doing so. The read-only query allowlist already refused `$SD/Run`, `$Localfs` and macro commands. BLE refusal of `~`, `$SD/Run=`, `$sd/run=`, `$Localfs/Run=` and
+   `$Macro/Run=` is tested with the mock radio.
+4. **Reconnection**: a lost connection makes the job UNKNOWN; neither the tracker nor the link produces a command, so nothing is resumed or restarted. A held job stays held across a
+   lost connection (tested).
+5. **Preview versus live**: the ordinary image's simulated controller can no longer be given a job from the pendant either. Only test code can emulate "the PC started / resumed a program"
+   (`JcSimNc::pc_start_job` / `pc_resume_job`, not reachable through `send()`); a start or resume that reaches the simulated controller is refused with `error:20` and counted
+   (`program_start_rx`, asserted 0 in every scenario). The live path never uses the simulator.
+
+### 16.4 Verification (all on the PC; nothing transmitted to a controller)
+
+| Check | Result |
+|---|---|
+| Host suites: core 108 / 121, app 172 / 169, control 836 / 892, connection 228, capability workflow 23, jog 1267 / 1274 / 1355, command interface 772, positioning and probing 289, SD and job 182, BLE 330 (mock radio), BLE policy compile checks | PASS |
+| SD/job tests now: monitoring a PC-started job (running, held, resumed by the PC, reset), completion, alarm, forged start / resume / macro under every class refused with and without confirmation, nothing on the wire, direct sink and policy refusals, disconnect and reconnect with no replay (running and held) | PASS |
+| Static guard (adds: no program-start string or builder anywhere, `~` only in the gate and the simulators, Job class returns false in the policy, gate and dispatcher refusals present, every transport applies the shared policy, no START / CYCLE START / RESUME on the Files page, no staged command on the Macros page) | PASS |
+| Mutation checks for 010A: policy accepts `$SD/Run`, `~` re-added to the policy, gate class/text refusal removed, `authorize_rules` Job refusal removed, `~` re-added to the link | 5 of 5 caught |
+| Simulator integration (`tools/run_sim_integration.py`, real TCP to the simulator) | PASS |
+| Host UI renderer (ordinary 41 / preview 80 / live 65 frames, 0 problems), including a touch sweep over the whole Files page that never puts a start or resume on the wire | PASS |
+| PlatformIO `jc8048w550`, `jc8048w550_fullcontrol_test`, `jc8048w550_livejog_test`, `m5dial`, `cyddial` | all SUCCESS |
+
+The renderer output is a rendering of the page code, not a photograph. No firmware was uploaded for this instruction (the image on the board is still the 010 build, which still has
+the old START / CYCLE START buttons until the owner authorizes an upload). The full-control image was not flashed and no machine-changing command was transmitted.

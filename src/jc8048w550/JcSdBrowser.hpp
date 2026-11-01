@@ -44,20 +44,9 @@ inline const char* jc_sd_error_text(int code) {
     }
 }
 
-// A path the pendant can put into `$SD/Run=` (letters, digits and / . _ - only; the command policy's rule: a name with a space, # ; or similar cannot be started from the pendant).
-inline bool jc_sd_path_runnable(const char* p) {
-    if (p == nullptr || p[0] != '/' || strlen(p) > 80 || strstr(p, "..") != nullptr) return false;
-    for (; *p; ++p) {
-        const char c = *p;
-        const bool good = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                          || c == '/' || c == '.' || c == '_' || c == '-';
-        if (!good) return false;
-    }
-    return true;
-}
-
+// Read-only browsing (Instruction 010A): the pendant lists the controller's SD card; it never starts a file.
 struct JcSdEntry {
-    char     path[96];     // full path as reported (truncated if longer; then runnable = false)
+    char     path[96];     // full path as reported (truncated if longer)
     uint32_t size;         // bytes; 0 for directories
     bool     dir;
     bool     truncated;    // the controller's path did not fit
@@ -209,11 +198,6 @@ public:
     }
     void clear_selection() { _selected = -1; }
     const JcSdEntry* selected() const { return _selected >= 0 ? &_entries[_selected] : nullptr; }
-    // True when the selected file can be started from the pendant (path characters the command policy accepts).
-    bool selected_runnable() const {
-        const JcSdEntry* e = selected();
-        return e != nullptr && !e->dir && !e->truncated && jc_sd_path_runnable(e->path);
-    }
 
     // ---- observers ----
     JcSdState state() const { return _state; }

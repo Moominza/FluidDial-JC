@@ -41,8 +41,10 @@ void JcMacrosScreen::draw_list() {
 
 void JcMacrosScreen::on_draw() {
     draw_list();
-    ui::button(sv.display, kRun, "RUN (PREVIEW)");
-    ui::button(sv.display, kEdit, "EDIT SLOT");
+    // Instruction 010A: user macros are DISABLED. A macro file can run machining code and no per-macro permission is
+    // defined, so a slot can be neither run nor (re)defined; stored slots can still be cleared.
+    ui::button(sv.display, kRun, "RUN (DISABLED)", ui::Btn::Disabled);
+    ui::button(sv.display, kEdit, "EDIT (DISABLED)", ui::Btn::Disabled);
     ui::button(sv.display, kClear, "CLEAR SLOT", ui::Btn::Danger);
 #if JC_AUTHORITY
     ui::button(sv.display, kRoutines, "POSITIONING / PROBING", ui::Btn::Selected);
@@ -51,12 +53,12 @@ void JcMacrosScreen::on_draw() {
              FontId::Body16, ui::kMuted, ui::kBg);
 #else
     ui::wrap(sv.display, { 552, 306, 232, 160 },
-             "Macros run controller files with $Localfs/Run=<path>. They are defined here by you; the "
-             "controller's own macro list is not shown because reading it needs a query command.",
+             "User macros are disabled: this pendant never runs controller files.",
              FontId::Body16, ui::kMuted, ui::kBg);
 #endif
     ui::wrap(sv.display, { 16, 392, 520, 74 },
-             "Macros can move the machine, change tools or run the spindle. Each run needs confirmation.",
+             "User macros stay disabled until their command permissions are defined by the owner. "
+             "Programs are started from the PC.",
              FontId::Body16, ui::kWarn, ui::kBg);
 }
 
@@ -119,21 +121,9 @@ void JcMacrosScreen::on_touch(uint16_t x, uint16_t y) {
         return;
     }
 #endif
-    const JcMacroSlot& m = sv.settings.macros[_selected];
-    if (ui::hit(kRun, x, y)) {
-        if (m.path[0] == '\0') {
-            show_message("EMPTY SLOT", "Use EDIT SLOT to define a macro first.");
-            return;
-        }
-        char title[40];
-        snprintf(title, sizeof(title), "RUN MACRO: %s", m.name[0] ? m.name : "(unnamed)");
-        const char* notes[] = { m.description[0] ? m.description : "No description.",
-                                "The macro may move the machine or change its state." };
-        stage(jc_run_macro_file(m.path), title, notes, 2);
-    } else if (ui::hit(kEdit, x, y)) {
-        _editing = m;
-        _edit_stage = 0;
-        next_edit_stage();
+    if (ui::hit(kRun, x, y) || ui::hit(kEdit, x, y)) {
+        show_message("USER MACROS ARE DISABLED", "A macro file can run machining code, and no permission",
+                     "is defined for it. Programs are started from the PC.");
     } else if (ui::hit(kClear, x, y)) {
         memset(&sv.settings.macros[_selected], 0, sizeof(JcMacroSlot));
         sv.host.save_settings();

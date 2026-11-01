@@ -36,10 +36,11 @@ functionally verified, and the owner explicitly authorizes the flash. FluidNC is
 ## 6. SD card and jobs (ordinary image first, then full-control)
 - [ ] Ordinary image, real controller: FILES > REFRESH SD LIST shows the files that are really on the controller's SD card (compare with the card / WebUI). The parser matches the v4.1.1 reply read from this controller (relative names, folder depth as leading spaces, `[/sd Free: Used: Total:]` summary). Record any difference.
 - [ ] Remove the card: the page says NO SD CARD (error:60); empty card: SD CARD HAS NO FILES; the pendant's own flash files never appear.
-- [ ] Long names and deep folders display ellipsized without overlap; a name with a space or `#` is shown but START refuses it (decide whether to allow spaces; first test with a read-only probe how FluidNC parses `$SD/Run=` with a space).
-- [ ] Full-control image, test file with a harmless program (spindle removed, no workpiece): START JOB shows the file and needs one confirmation; the percentage follows the controller's `SD:` field, not a timer.
-- [ ] FEED HOLD (`!`) pauses at once; CYCLE START (`~`) resumes the same job; RESET (Ctrl-X) ends it and it cannot be resumed.
-- [ ] Pull the Wi-Fi link during a job: the page shows JOB STATE UNKNOWN; after reconnecting nothing is restarted or resumed; the controller's job state is simply re-read.
+- [ ] Long names and deep folders display ellipsized without overlap; a name with a space or `#` is listed and can be selected (nothing on the pendant starts a file).
+- [ ] The Files page has NO START JOB and NO CYCLE START / RESUME control (Instruction 010A). Start a harmless program (spindle removed, no workpiece) **from the PC**; the pendant shows its name and the percentage from the controller's `SD:` field, not a timer.
+- [ ] Full-control image only, with the owner's explicit authorization: FEED HOLD (`!`) pauses at once and is labelled "FEED HOLD (PAUSE)"; resume it from the PC. RESET (Ctrl-X) always shows its confirmation dialog (job ends, cannot be resumed from here, position may be lost, not an E-stop).
+- [ ] Macros page: RUN and EDIT are disabled and explain why; no macro file can be run from the pendant.
+- [ ] Pull the Wi-Fi link during a job: the page shows JOB STATE UNKNOWN; after reconnecting nothing is restarted or resumed (a held job stays held); the controller's job state is simply re-read.
 
 ## 7. Tools and tool length (full-control image; spindle removed)
 - [ ] READ TOOL STATE shows the controller's T word and `[TLO:]`. If `[TLO:]` is not reported, the tool routines stay disabled.

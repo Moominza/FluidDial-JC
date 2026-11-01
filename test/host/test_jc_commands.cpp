@@ -18,6 +18,7 @@
 #include "../../src/jc8048w550/JcCommandSystem.hpp"
 #include "../../src/jc8048w550/JcDispatch.hpp"
 #include "../../src/jc8048w550/JcHomingState.hpp"
+#include "jc_forged.hpp"
 
 using namespace jc8048w550;
 
@@ -176,9 +177,11 @@ static void test_policy_accepts_builder_output() {
     // Real-time bytes.
     CHECK(jc_command_line_allowed(JcCommandClass::JogCancel, jc_jog_cancel().text));
     CHECK(jc_command_line_allowed(JcCommandClass::Hold, jc_feed_hold().text));
-    CHECK(jc_command_line_allowed(JcCommandClass::Job, jc_cycle_resume().text));
     CHECK(jc_command_line_allowed(JcCommandClass::Reset, jc_soft_reset().text));
-    CHECK(!jc_command_line_allowed(JcCommandClass::Hold, jc_cycle_resume().text));
+    // Instruction 010A: '~' (cycle start / resume) is accepted for NO class.
+    for (uint8_t k = 0; k <= static_cast<uint8_t>(JcCommandClass::Other); ++k)
+        CHECK(!jc_command_line_allowed(static_cast<JcCommandClass>(k), "~"));
+    CHECK(!jc_command_bytes_allowed("~", 1) && jc_command_bytes_allowed("!", 1) && jc_command_bytes_allowed("\x18", 1));
     // Homing.
     CHECK(jc_command_line_allowed(JcCommandClass::Home, jc_home(p, 0xFF).text));
     for (uint8_t a = 0; a < 4; ++a) CHECK(jc_command_line_allowed(JcCommandClass::Home, jc_home(p, a).text));
@@ -204,8 +207,8 @@ static void test_policy_accepts_builder_output() {
         }
     }
     // Jobs, macros, recovery, spindle.
-    CHECK(jc_command_line_allowed(JcCommandClass::Job, jc_run_sd_file("/sd/job1.gcode").text));
-    CHECK(jc_command_line_allowed(JcCommandClass::Macro, jc_run_macro_file("/macro1.nc").text));
+    CHECK(!jc_command_line_allowed(JcCommandClass::Job, forged::run_sd("/sd/job1.gcode").text));        // 010A: no program start
+    CHECK(!jc_command_line_allowed(JcCommandClass::Macro, forged::run_macro("/macro1.nc").text));       // 010A: no user macros
     CHECK(jc_command_line_allowed(JcCommandClass::Unlock, jc_unlock().text));
     CHECK(jc_command_line_allowed(JcCommandClass::Spindle, jc_spindle_stop().text));
 }
@@ -261,8 +264,6 @@ static void test_builder_invalid_and_unsupported() {
     CHECK(!jc_probe_move(p, 3, 5.0f, 100.0f).ok);                            // rotary never probed
     CHECK(!jc_probe_edge_sequence(p, 2, 1, 10.0f, 100.0f, 3.0f, 6.0f).ok);   // edge probe is X / Y only
     CHECK(!jc_select_wcs(6).ok);
-    CHECK(!jc_run_sd_file("../x").ok);
-    CHECK(!jc_run_macro_file("").ok);
 }
 
 // ---- gate: controller-authoritative -----------------------------------------------------------------------
@@ -278,7 +279,8 @@ static void test_authority_gate() {
     a.operator_confirmed = true;
     CHECK(jc_authorize(JcCommandClass::Home, a) == JcAuthDecision::Allowed);
     CHECK(jc_authorize(JcCommandClass::Probe, a) == JcAuthDecision::Allowed);
-    CHECK(jc_authorize(JcCommandClass::Job, a) == JcAuthDecision::Allowed);
+    CHECK(jc_authorize(JcCommandClass::Job, a) == JcAuthDecision::BlockedProgramStart);   // 010A, even armed + confirmed + LIVE
+    CHECK(jc_authorize_preview(JcCommandClass::Job, a) == JcAuthDecision::BlockedProgramStart);
     // Client-side integrity rules stay.
     JcAuthContext b = a;
     b.armed = false;      CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::BlockedNotArmed);
@@ -309,8 +311,7 @@ static void test_ack_and_result_for_each_class() {
         { "select g55", jc_select_wcs(1), JcCommandClass::WorkOffset },
         { "zero x", jc_zero_axis(p, 0), JcCommandClass::WorkOffset },
         { "probe z", jc_probe_move(p, 2, -10.0f, 100.0f), JcCommandClass::Probe },
-        { "run file", jc_run_sd_file("/sd/a.gcode"), JcCommandClass::Job },
-        { "macro", jc_run_macro_file("/m1.nc"), JcCommandClass::Macro },
+        { "goto z", jc_goto_work_z(5.0f), JcCommandClass::Macro },
         { "unlock", jc_unlock(), JcCommandClass::Unlock },
         { "spindle off", jc_spindle_stop(), JcCommandClass::Spindle },
     };
@@ -335,8 +336,13 @@ static void test_ack_and_result_for_each_class() {
     r.run(100);
     CHECK(r.have_last && r.last.outcome == JcExecOutcome::SentNoAck && r.last.cls == JcCommandClass::Hold);
     CHECK(r.nc.wire.size() == 1 && r.nc.wire[0] == "!");
-    CHECK(r.submit(jc_cycle_resume(), true) == JcAuthDecision::Allowed);
-    CHECK(r.nc.wire.back() == "~");
+    {   // Instruction 010A: forged start / resume commands never reach the wire
+        const size_t before = r.nc.wire.size();
+        CHECK(r.submit(forged::cycle_resume(), true) == JcAuthDecision::BlockedProgramStart);
+        CHECK(r.submit(forged::run_sd("/sd/a.gcode"), true) == JcAuthDecision::BlockedProgramStart);
+        CHECK(r.submit(forged::run_macro("/m1.nc"), true) != JcAuthDecision::Allowed);
+        CHECK(r.nc.wire.size() == before);
+    }
     CHECK(r.submit(jc_soft_reset(), true) == JcAuthDecision::Allowed);
     CHECK(r.nc.wire.back() == std::string(1, static_cast<char>(0x18)));
 }

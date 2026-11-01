@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "jc_forged.hpp"
 #include "../../src/jc8048w550/JcCapsLoader.hpp"
 #include "../../src/jc8048w550/JcCommandBuilder.hpp"
 #include "../../src/jc8048w550/JcCommandExec.hpp"
@@ -206,9 +207,9 @@ static void test_query_allowlist() {
     const JcMachineProfile p = jc_default_profile();
     std::vector<JcCommand> cmds = {
         jc_jog_incremental(p, 0, 1.0f, 100.0f), jc_jog_continuous(p, 0, 1, 100.0f), jc_jog_cancel(),
-        jc_feed_hold(), jc_cycle_resume(), jc_soft_reset(), jc_unlock(), jc_home(p, 0xFF), jc_home(p, 0),
+        jc_feed_hold(), forged::cycle_resume(), jc_soft_reset(), jc_unlock(), jc_home(p, 0xFF), jc_home(p, 0),
         jc_select_wcs(0), jc_set_axis_value(p, 0, 1.0f), jc_zero_axis(p, 1), jc_probe_move(p, 2, -5.0f, 50.0f),
-        jc_run_sd_file("/a.nc"), jc_run_macro_file("/m.nc"), jc_spindle_stop(),
+        forged::run_sd("/a.nc"), forged::run_macro("/m.nc"), jc_spindle_stop(),
     };
     for (const JcCommand& c : cmds) {
         CHECK(c.ok);
@@ -315,7 +316,7 @@ static void test_exec() {
     CHECK(jc_command_timeout_ms(JcCommandClass::Home) > jc_command_timeout_ms(JcCommandClass::Jog));
     CHECK(jc_command_timeout_ms(JcCommandClass::Probe) > jc_command_timeout_ms(JcCommandClass::Jog));
     for (int k = 0; k <= (int)JcCommandClass::Other; ++k) CHECK(jc_command_timeout_ms((JcCommandClass)k) >= 1000);
-    CHECK(jc_is_realtime_text("!") && jc_is_realtime_text("~") && jc_is_realtime_text("\x18") && jc_is_realtime_text("\x85"));
+    CHECK(jc_is_realtime_text("!") && !jc_is_realtime_text("~") &&jc_is_realtime_text("\x18") && jc_is_realtime_text("\x85"));
     CHECK(!jc_is_realtime_text("$X") && !jc_is_realtime_text("") && !jc_is_realtime_text("?"));
 }
 
@@ -739,7 +740,7 @@ static void test_dispatcher_transport() {
             c.ok = true;
             c.cls = (JcCommandClass)k;
             strcpy(c.text, "X");
-            CHECK(d.submit(c, good_ctx(1000)) == JcAuthDecision::BlockedBuildPolicy);
+            CHECK(d.submit(c, good_ctx(1000)) == (c.cls == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy));
         }
         CHECK(wire.sent.empty());
 #else

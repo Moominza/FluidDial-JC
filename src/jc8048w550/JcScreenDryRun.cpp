@@ -15,11 +15,11 @@ namespace {
 
 constexpr const char* kActionLabels[8] = {
     "JOG X +10 mm", "JOG A +45 deg", "HOME ALL ($H)", "ZERO X (G10 L20)",
-    "PROBE Z (1st step)", "UNLOCK ($X)", "JOG CANCEL (0x85)", "RUN FILE /test.nc",
+    "PROBE Z (1st step)", "UNLOCK ($X)", "JOG CANCEL (0x85)", "UNLOCK AGAIN ($X)",
 };
 constexpr const char* kActionNames[8] = {
     "Jog X by +10 mm at F500", "Jog A by +45 deg at F1000", "Home all axes", "Set X work zero",
-    "Z probe: first move", "Unlock after alarm", "Cancel a jog", "Run SD file /test.nc",
+    "Z probe: first move", "Unlock after alarm", "Cancel a jog", "Unlock after alarm (repeat)",
 };
 
 ui::Rect action_rect(uint8_t i) {
@@ -55,7 +55,7 @@ void JcDryRunScreen::build_report(uint8_t action) {
         }
         case 5: command = jc_unlock(); break;
         case 6: command = jc_jog_cancel(); break;
-        default: command = jc_run_sd_file("/test.nc"); break;
+        default: command = jc_unlock(); break;
     }
     _report = jc_dry_run(sv.dispatcher, kActionNames[action], command, sv.dispatch_context(true),
                          command.ok ? "" : jc_cmd_error_name(command.error));

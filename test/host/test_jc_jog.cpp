@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "jc_forged.hpp"
 #include "../../src/jc8048w550/JcCapsLoader.hpp"
 #include "../../src/jc8048w550/JcCommandAuth.hpp"
 #include "../../src/jc8048w550/JcCommandBuilder.hpp"
@@ -945,7 +946,7 @@ static void test_authorization() {
                                    JcCommandClass::Probe, JcCommandClass::WorkOffset, JcCommandClass::Spindle,
                                    JcCommandClass::Job, JcCommandClass::Macro, JcCommandClass::Unlock,
                                    JcCommandClass::Reset, JcCommandClass::Hold, JcCommandClass::Other };
-    for (JcCommandClass k : all) CHECK(jc_authorize(k, a) == JcAuthDecision::BlockedBuildPolicy);
+    for (JcCommandClass k : all) CHECK(jc_authorize(k, a) == (k == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy));
     CHECK(JC_LIVE_JOG_TEST == 0);
     // nothing can be sent through the dispatcher either, whatever the session would do
     World w;
@@ -1002,9 +1003,9 @@ static void test_authorization() {
                                        JcCommandClass::Unlock, JcCommandClass::Reset, JcCommandClass::Hold,
                                        JcCommandClass::Other };
     for (JcCommandClass k : blocked) {
-        CHECK(jc_authorize(k, a) == JcAuthDecision::BlockedBuildPolicy);   // armed, live, fresh, confirmed: still blocked
+        CHECK(jc_authorize(k, a) == (k == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy));   // armed, live, fresh, confirmed: still blocked
         b = a; strcpy(b.machine_state, "Alarm");
-        CHECK(jc_authorize(k, b) == JcAuthDecision::BlockedBuildPolicy);
+        CHECK(jc_authorize(k, b) == (k == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy));
     }
 #else
     CHECK(!jc_needs_confirmation(JcCommandClass::Jog));
@@ -1062,8 +1063,9 @@ static void test_dispatcher_end_to_end() {
     // other classes never reach the transport, even armed and confirmed
     const JcCommand home = jc_home(p, 0xFF);
     CHECK(d.submit(home, ready_context(w, true)) == JcAuthDecision::BlockedBuildPolicy);
-    CHECK(d.submit(jc_run_sd_file("/a.nc"), ready_context(w, true)) == JcAuthDecision::BlockedBuildPolicy);
-    CHECK(d.submit(jc_run_macro_file("/m.nc"), ready_context(w, true)) == JcAuthDecision::BlockedBuildPolicy);
+    CHECK(d.submit(forged::run_sd("/a.nc"), ready_context(w, true)) == JcAuthDecision::BlockedProgramStart);   // 010A
+    CHECK(d.submit(forged::cycle_resume(), ready_context(w, true)) == JcAuthDecision::BlockedProgramStart);
+    CHECK(d.submit(forged::run_macro("/m.nc"), ready_context(w, true)) == JcAuthDecision::BlockedProgramStart);   // refused by text, whatever the class
     CHECK(d.submit(jc_spindle_stop(), ready_context(w, true)) == JcAuthDecision::BlockedBuildPolicy);
     CHECK(d.submit(jc_probe_move(p, 2, -5.0f, 100.0f), ready_context(w, true)) == JcAuthDecision::BlockedBuildPolicy);
     CHECK(d.submit(jc_zero_axis(p, 0), ready_context(w, true)) == JcAuthDecision::BlockedBuildPolicy);
