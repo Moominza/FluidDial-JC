@@ -862,3 +862,17 @@ from the approved PC control interface; FluidNC executes them from its SD card; 
 
 The renderer output is a rendering of the page code, not a photograph. No firmware was uploaded for this instruction (the image on the board is still the 010 build, which still has
 the old START / CYCLE START buttons until the owner authorizes an upload). The full-control image was not flashed and no machine-changing command was transmitted.
+
+## 17. Built-in positioning: GO TO WORK Z0 and X0 Y0 Z0 (Instruction 011A)
+
+All targets are WORK coordinates of the currently selected G54..G59 system (read with `$G` / `$#` before the preview). They are never machine home (no `$H`, no G53) and no work offset is written (no G10 / G92; the WCS-unchanged check runs before every move).
+
+| Routine | Plan |
+|---|---|
+| GO TO WORK X0, Y0, X0 Y0 (retained) | clearance first, CONTINUE, then the XY move |
+| **GO TO WORK Z0** | checks, **its own CONFIRM** (the move is not sent before it), re-checks, one `G21 G90 G0 Z0.000`; no clearance needed |
+| **GO TO WORK X0 Y0 Z0** | needs a separately entered clearance height **above work Z0**; raise to clearance, CONTINUE, X/Y move (`G21 G90 G0 X0.000 Y0.000`), **second CONFIRM**, re-checks, then `G21 G90 G0 Z0.000` |
+
+Only Z and X/Y words are ever sent, so the A axis keeps its position. The combined routine is three separate commands (the one command policy accepts only Z alone or X/Y), each verified by FluidNC's Idle report and the reached work position. CANCEL at either pause sends nothing further. The ordinary firmware still rehearses these on the simulated controller only; the full-control image was not flashed and nothing was transmitted to a machine.
+
+Tests: `test_jc_workflow.cpp` (341 checks) covers G55 with a non-zero G54, nothing moving before the confirmations, exactly the expected commands (no G53 / G92 / G10 / A), offsets untouched, X/Y untouched by Z0, refusal of a missing / zero / negative clearance for XYZ, and cancel at the second pause. The renderer checks nine non-overlapping list buttons (>= 38 px) and that the new wait labels fit.

@@ -473,6 +473,12 @@ static void pure_checks() {
 #endif
 
     // Worst-case strings against their containers.
+    {   // Instruction 011A: the new GO TO wait-step labels must fit the progress line (no clipping)
+        const char* const labels[] = { "Step 4 of 8: CONFIRM: Z to work Z0 (active WCS)", "Step 8 of 12: XY reached. CONFIRM to lower to work Z0" };
+        bool fits = true;
+        for (const char* l : labels) if (text_width(FontId::Body16, l) > 744) { fits = false; printf("             too wide: %s\n", l); }
+        check(fits, "the new GO TO wait-step labels fit the progress line");
+    }
     {   // the RESET dialog on the Files page (Instruction 010A): every line must fit, none may be clipped
         const char* const reset_lines[] = { kJcJobStopText, "The job will NOT continue and cannot be resumed from this pendant.",
                                             "Motion stops; an alarm, unlock or re-homing may follow.",
@@ -1337,7 +1343,13 @@ static void scenarios() {
         JcWorkflowScreen wfs(w.sv);
         wfs.enter();
         check_frame(w.gfx, "workflow_list", false);
-        touch_center(wfs, ui::Rect { 412, 100, 372, 56 });          // FIND X CENTRE
+        {   // Instruction 011A: nine routines, five positioning (left) and four probing (right); no overlap, all >= 38 px
+            std::vector<ui::Rect> rs;
+            for (int i = 0; i < 5; ++i) rs.push_back(ui::Rect { 16, static_cast<int16_t>(98 + i * 50), 372, 46 });
+            for (int i = 0; i < 4; ++i) rs.push_back(ui::Rect { 412, static_cast<int16_t>(98 + i * 50), 372, 46 });
+            check_hitboxes(w.gfx, "workflow list (9 routines)", rs);
+        }
+        touch_center(wfs, ui::Rect { 412, 98, 372, 46 });           // FIND X CENTRE
         check_frame(w.gfx, "workflow_setup_x", false);
         touch_center(wfs, ui::Rect { 198, 408, 586, 52 });          // PREPARE
         w.wf_run(600);
@@ -1364,6 +1376,38 @@ static void scenarios() {
         wfs.tick(g_stub_millis + 300);
         check(w.wf.result().readback_ok, "the offset was read back from the simulated FluidNC and matches");
         check_frame(w.gfx, "workflow_origin_set", false);
+        {   // Instruction 011A: GO TO WORK Z0 and GO TO WORK X0 Y0 Z0
+            Rig z;
+            z.status("Idle", 50, 50, 15, 0);
+            z.advance(500);
+            z.nc.m[0] = 50; z.nc.m[1] = 50; z.nc.m[2] = 15;
+            JcWorkflowScreen zs(z.sv);
+            zs.enter();
+            touch_center(zs, ui::Rect { 16, 248, 372, 46 });          // GO TO WORK Z0
+            check_frame(z.gfx, "workflow_setup_z0", false);
+            touch_center(zs, ui::Rect { 198, 408, 586, 52 });          // PREPARE
+            z.wf_run(600);
+            zs.tick(g_stub_millis);
+            check(z.wf.state() == JcWfState::Planned && z.wf.kind() == JcWfKind::GoToZ, "GO TO WORK Z0 is planned without a clearance");
+            check(z.wire.find("G21") == std::string::npos, "nothing moves on selection or preview");
+            check_frame(z.gfx, "workflow_preview_z0", false);
+            touch_center(zs, ui::Rect { 258, 408, 250, 52 });          // START
+            check_frame(z.gfx, "workflow_start_confirm_z0", true);
+            touch_center(zs, ui::kDialogConfirm);
+            z.wf_run(900);
+            zs.tick(g_stub_millis);
+            check(z.wf.state() == JcWfState::WaitOperator && z.wire.find("G21") == std::string::npos, "Z0 waits for its own confirmation before any move");
+            check_frame(z.gfx, "workflow_z0_wait", false);
+
+            Rig x;
+            x.status("Idle", 50, 50, -5, 0);
+            x.advance(500);
+            x.nc.m[0] = 50; x.nc.m[1] = 50; x.nc.m[2] = -5;
+            JcWorkflowScreen xs(x.sv);
+            xs.enter();
+            touch_center(xs, ui::Rect { 16, 298, 372, 46 });          // GO TO WORK X0 Y0 Z0
+            check_frame(x.gfx, "workflow_setup_xyz", false);
+        }
         // a failed contact
         Rig f;
         f.status("Idle", 50, 50, -5, 0);

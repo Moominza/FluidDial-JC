@@ -66,11 +66,22 @@ inline void JcWorkflow::add_pair(uint8_t axis, const char* tag, uint8_t slot_hi,
 inline bool JcWorkflow::build_plan() {
     _n = 0;
     _action = false;
-    const bool goto_kind = _kind == JcWfKind::GoToXY || _kind == JcWfKind::GoToX || _kind == JcWfKind::GoToY;
+    const bool goto_kind = jc_wf_is_goto(_kind);
     _probe_z = _status.wpos_valid ? _status.wpos[2] : 0.0f;
     _y_start = _status.wpos_valid ? _status.wpos[1] : 0.0f;
     add_check(JcWfCheck::StatusIdle, "machine Idle");
     add_check(JcWfCheck::SpindleOff, "spindle stopped (never started here)");
+    if (_kind == JcWfKind::GoToZ) {
+        // Z only: work Z0 of the active WCS (not machine home). XY and A are never commanded.
+        if (!_status.wpos_valid) { snprintf(_reason, sizeof(_reason), "work position unknown"); return false; }
+        add_check(JcWfCheck::WcsUnchanged, "active WCS unchanged");
+        add_wait("CONFIRM: Z to work Z0 (active WCS)");
+        add_check(JcWfCheck::StatusIdle, "machine still Idle");
+        add_check(JcWfCheck::SpindleOff, "spindle still stopped");
+        add_check(JcWfCheck::WcsUnchanged, "active WCS still unchanged");
+        add_goto_z(0.0f, "move to work Z0");
+        return true;
+    }
     if (goto_kind) {
         add_check(JcWfCheck::ClearanceNotBelow, "clearance not below the current Z");
         if (!_status.wpos_valid) { snprintf(_reason, sizeof(_reason), "work position unknown"); return false; }
@@ -84,6 +95,14 @@ inline bool JcWorkflow::build_plan() {
         m.cmd = jc_goto_work_xy(hx, 0.0f, hy, 0.0f);
         m.motion = true;
         m.mask = static_cast<uint8_t>((hx ? 1 : 0) | (hy ? 2 : 0));
+        if (_kind == JcWfKind::GoToXYZ) {
+            // XY is established above the clearance height; Z0 needs its OWN confirmation.
+            add_wait("XY reached. CONFIRM to lower to work Z0");
+            add_check(JcWfCheck::StatusIdle, "machine still Idle");
+            add_check(JcWfCheck::SpindleOff, "spindle still stopped");
+            add_check(JcWfCheck::WcsUnchanged, "active WCS unchanged");
+            add_goto_z(0.0f, "lower to work Z0");
+        }
         return true;
     }
     const bool tool_kind = _kind == JcWfKind::ToolReference || _kind == JcWfKind::ToolMeasure || _kind == JcWfKind::ToolChange;

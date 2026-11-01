@@ -31,13 +31,15 @@
 
 namespace jc8048w550 {
 
-enum class JcWfKind : uint8_t { GoToXY, GoToX, GoToY, FindX, FindY, FindXY, FindRotary, ToolReference, ToolMeasure, ToolChange };
+enum class JcWfKind : uint8_t { GoToXY, GoToX, GoToY, GoToZ, GoToXYZ, FindX, FindY, FindXY, FindRotary, ToolReference, ToolMeasure, ToolChange };
 
 inline const char* jc_wf_title(JcWfKind k) {
     switch (k) {
         case JcWfKind::GoToXY: return "GO TO WORK X0 Y0";
         case JcWfKind::GoToX: return "GO TO WORK X0";
         case JcWfKind::GoToY: return "GO TO WORK Y0";
+        case JcWfKind::GoToZ: return "GO TO WORK Z0";
+        case JcWfKind::GoToXYZ: return "GO TO WORK X0 Y0 Z0";
         case JcWfKind::FindX: return "FIND X CENTRE";
         case JcWfKind::FindY: return "FIND Y CENTRE";
         case JcWfKind::FindXY: return "FIND XY CENTRE";
@@ -47,6 +49,12 @@ inline const char* jc_wf_title(JcWfKind k) {
         case JcWfKind::ToolChange: return "MANUAL TOOL CHANGE + MEASURE";
     }
     return "?";
+}
+
+// Built-in positioning actions. All targets are WORK coordinates of the currently selected G54..G59 system (never
+// machine home / G53); the A axis is never commanded.
+inline bool jc_wf_is_goto(JcWfKind k) {
+    return k == JcWfKind::GoToXY || k == JcWfKind::GoToX || k == JcWfKind::GoToY || k == JcWfKind::GoToZ || k == JcWfKind::GoToXYZ;
 }
 
 struct JcWfParams {
@@ -80,7 +88,10 @@ struct JcWfParams {
 
 inline bool jc_wf_validate(JcWfKind kind, const JcWfParams& p, char* why, size_t size) {
     auto bad = [&](const char* m) { snprintf(why, size, "%s", m); return false; };
-    const bool goto_kind = kind == JcWfKind::GoToXY || kind == JcWfKind::GoToX || kind == JcWfKind::GoToY;
+    const bool goto_kind = jc_wf_is_goto(kind);
+    if (kind == JcWfKind::GoToXYZ && p.clearance_set && isfinite(p.clearance_z) && !(p.clearance_z > 0.0f))
+        return bad("the clearance height must be ABOVE work Z0 (it is separate from Z0)");
+    if (kind == JcWfKind::GoToZ) return true;   // a Z-only move needs no clearance; the operator confirms the move itself
     if (!p.clearance_set || !isfinite(p.clearance_z)) {
         if (goto_kind || p.feature == JcFeatureKind::Outside || kind == JcWfKind::FindRotary)
             return bad("set a safe Z clearance (work Z): Z0 is not assumed safe");

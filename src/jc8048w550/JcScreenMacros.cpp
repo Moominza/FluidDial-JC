@@ -49,7 +49,7 @@ void JcMacrosScreen::on_draw() {
 #if JC_AUTHORITY
     ui::button(sv.display, kRoutines, "POSITIONING / PROBING", ui::Btn::Selected);
     ui::wrap(sv.display, { 552, 380, 232, 90 },
-             "Built-in routines: go to work X0 Y0, find an X / Y centre, find a rotary A centreline.",
+             "Built-in routines: go to work X0 / Y0 / Z0 / X0 Y0 / X0 Y0 Z0, find an X / Y centre, find a rotary A centreline.",
              FontId::Body16, ui::kMuted, ui::kBg);
 #else
     ui::wrap(sv.display, { 552, 306, 232, 160 },

@@ -24,15 +24,15 @@ constexpr ui::Rect kMoveCentre { 16, 340, 380, 52 };
 constexpr ui::Rect kSetOrigin { 404, 340, 380, 52 };
 
 ui::Rect list_button(uint8_t i) {
-    if (i < 3) return { 16, static_cast<int16_t>(100 + i * 62), 372, 56 };
-    return { 412, static_cast<int16_t>(100 + (i - 3) * 62), 372, 56 };
+    if (i < 5) return { 16, static_cast<int16_t>(98 + i * 50), 372, 46 };
+    return { 412, static_cast<int16_t>(98 + (i - 5) * 50), 372, 46 };
 }
 ui::Rect param_rect(uint8_t i) {
     const uint8_t col = i / 7;
     return { static_cast<int16_t>(16 + col * 392), static_cast<int16_t>(98 + (i % 7) * 36), 376, 34 };
 }
 
-const JcWfKind kKinds[7] = { JcWfKind::GoToXY, JcWfKind::GoToX, JcWfKind::GoToY, JcWfKind::FindX, JcWfKind::FindY, JcWfKind::FindXY, JcWfKind::FindRotary };
+const JcWfKind kKinds[9] = { JcWfKind::GoToXY, JcWfKind::GoToX, JcWfKind::GoToY, JcWfKind::GoToZ, JcWfKind::GoToXYZ, JcWfKind::FindX, JcWfKind::FindY, JcWfKind::FindXY, JcWfKind::FindRotary };
 
 uint8_t params_for(JcWfKind k, P out[14]) {
     uint8_t n = 0;
@@ -40,7 +40,8 @@ uint8_t params_for(JcWfKind k, P out[14]) {
     if (k == JcWfKind::ToolMeasure) { out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; return n; }
     if (k == JcWfKind::ToolChange) { out[n++] = P::Clear; out[n++] = P::ToolNum; out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; return n; }
     out[n++] = P::Clear;
-    if (k == JcWfKind::GoToXY || k == JcWfKind::GoToX || k == JcWfKind::GoToY) return n;
+    if (k == JcWfKind::GoToZ) { n = 0; return n; }   // no parameters: Z0 of the active WCS
+    if (jc_wf_is_goto(k)) return n;
     out[n++] = P::Search; out[n++] = P::Feed; out[n++] = P::Retract; out[n++] = P::Tip;
     if (k != JcWfKind::FindRotary) { out[n++] = P::Feature; out[n++] = P::Expected; }
     out[n++] = P::Timeout; out[n++] = P::Slow; out[n++] = P::SlowFeed;
@@ -126,10 +127,11 @@ void JcWorkflowScreen::on_enter() {
 void JcWorkflowScreen::draw_list() {
     ui::text(sv.display, 16, 72, "POSITIONING", FontId::Button20, WHITE, ui::kBg);
     ui::text(sv.display, 412, 72, "PROBING", FontId::Button20, WHITE, ui::kBg);
-    for (uint8_t i = 0; i < 7; ++i) ui::button(sv.display, list_button(i), jc_wf_title(kKinds[i]));
-    ui::wrap(sv.display, { 16, 330, 768, 70 },
-             "FluidNC plans and executes every move and every probe. Each routine needs a safe Z clearance that YOU enter "
-             "(Z0 is not assumed safe), reads the active WCS first, shows a preview and asks you to confirm. Nothing "
+    for (uint8_t i = 0; i < 9; ++i) ui::button(sv.display, list_button(i), jc_wf_title(kKinds[i]));
+    ui::wrap(sv.display, { 16, 352, 768, 100 },
+             "FluidNC plans and executes every move and every probe. GO TO targets are WORK zero of the active WCS, not machine "
+             "home. Routines that move X/Y need a safe Z clearance that YOU enter (Z0 is not assumed safe). Each reads the "
+             "active WCS first, shows a preview and asks you to confirm; X0 Y0 Z0 asks again before lowering to Z0. Nothing "
              "moves because a routine was selected.",
              FontId::Body16, ui::kMuted, ui::kBg);
 }
@@ -210,8 +212,9 @@ void JcWorkflowScreen::draw_active() {
             if (row < 4) _lines[2 + row].draw(sv.display, { 28, static_cast<int16_t>(160 + row * 28), 744, 24 }, text, FontId::Body16, color, ui::kPanel);
             ++row;
         };
-        if (k == JcWfKind::GoToXY || k == JcWfKind::GoToX || k == JcWfKind::GoToY) {
+        if (jc_wf_is_goto(k)) {
             put("Arrived. FluidNC reported Idle at the work target.", ui::kGood);
+            put("Work zero of the active WCS, not machine home. A axis and work offsets unchanged.", ui::kMuted);
         }
         if (r.x.ok) {
             snprintf(line, sizeof(line), "X centre: machine %.3f   work %.3f   size %.3f", static_cast<double>(r.x.centre), static_cast<double>(w.work_coord(0, r.x.centre)), static_cast<double>(r.x.size));
@@ -398,7 +401,7 @@ void JcWorkflowScreen::on_custom_confirm() {
 void JcWorkflowScreen::on_touch(uint16_t x, uint16_t y) {
     const uint32_t now = millis();
     if (_mode == Mode::List) {
-        for (uint8_t i = 0; i < 7; ++i) {
+        for (uint8_t i = 0; i < 9; ++i) {
             if (ui::hit(list_button(i), x, y)) {
                 _kind = kKinds[i];
                 _mode = Mode::Setup;

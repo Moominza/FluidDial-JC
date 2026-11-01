@@ -170,6 +170,74 @@ static void test_goto() {
     CHECK(b.count("G21 G90 G0 Y0.000") == 1);
 }
 
+// Instruction 011A: GO TO WORK Z0 and GO TO WORK X0 Y0 Z0 (work coordinates of the selected WCS, never machine home).
+static void test_goto_z_and_xyz() {
+    // Z0 alone: no clearance needed, its own confirmation before the move, nothing but a Z word is sent.
+    Rig z;
+    z.nc.wcs = 1;                                                      // G55 selected
+    z.nc.off[1][0] = 30; z.nc.off[1][1] = 40; z.nc.off[1][2] = -10;
+    z.nc.off[0][2] = 123.0f;                                           // G54 must stay untouched
+    z.nc.m[0] = 90; z.nc.m[1] = 100; z.nc.m[2] = 5;                    // work (60, 60, 15) in G55
+    JcWfParams q;                                                      // no clearance set
+    CHECK(z.prepare(JcWfKind::GoToZ, q));
+    CHECK(z.wf.state() == JcWfState::Planned && z.wf.wcs() == 1);
+    CHECK(z.moves_sent() == 0);
+    CHECK(z.wf.start(z.nc.now));
+    z.go();
+    CHECK(z.wf.state() == JcWfState::WaitOperator);
+    CHECK(z.moves_sent() == 0);                                         // waits for the operator first
+    z.run(2000);
+    CHECK(z.moves_sent() == 0);
+    z.wf.continue_after_pause(z.nc.now);
+    z.go();
+    CHECK(z.wf.state() == JcWfState::Done);
+    CHECK(z.moves_sent() == 1 && z.count("G21 G90 G0 Z0.000") == 1);
+    NEAR(z.nc.work(2), 0.0f, 0.06f); NEAR(z.nc.work(0), 60.0f, 0.06f); NEAR(z.nc.work(1), 60.0f, 0.06f);   // X / Y untouched
+    NEAR(z.nc.off[0][2], 123.0f, 0.0001f); NEAR(z.nc.off[1][2], -10.0f, 0.0001f);                            // offsets untouched
+    for (const std::string& t : z.sent_log) CHECK(t.find("G53") == std::string::npos && t.find("G92") == std::string::npos && t.find("G10") == std::string::npos && t.find('A') == std::string::npos && t.find("$H") == std::string::npos);
+
+    // XYZ: clearance first, XY, then a SECOND confirmation before Z0.
+    Rig r;
+    r.nc.off[0][0] = 10; r.nc.off[0][1] = 20; r.nc.off[0][2] = -5;
+    r.nc.m[0] = 70; r.nc.m[1] = 80; r.nc.m[2] = -5;                    // work (60, 60, 0)
+    JcWfParams p = base_params();                                      // clearance 20
+    CHECK(r.prepare(JcWfKind::GoToXYZ, p));
+    CHECK(r.moves_sent() == 0);
+    CHECK(r.wf.start(r.nc.now));
+    r.go();
+    CHECK(r.wf.state() == JcWfState::WaitOperator);                    // wait 1: clearance reached
+    CHECK(r.count("G21 G90 G0 Z20.000") == 1 && r.moves_sent() == 1);
+    r.wf.continue_after_pause(r.nc.now);
+    r.go();
+    CHECK(r.wf.state() == JcWfState::WaitOperator);                    // wait 2: XY done, Z0 NOT yet sent
+    CHECK(r.count("G21 G90 G0 X0.000 Y0.000") == 1);
+    CHECK(r.count("G21 G90 G0 Z0.000") == 0 && r.moves_sent() == 2);
+    NEAR(r.nc.work(0), 0.0f, 0.06f); NEAR(r.nc.work(1), 0.0f, 0.06f); NEAR(r.nc.work(2), 20.0f, 0.06f);
+    r.run(3000);
+    CHECK(r.count("G21 G90 G0 Z0.000") == 0);                           // still waiting
+    r.wf.continue_after_pause(r.nc.now);
+    r.go();
+    CHECK(r.wf.state() == JcWfState::Done);
+    CHECK(r.count("G21 G90 G0 Z0.000") == 1 && r.moves_sent() == 3);
+    NEAR(r.nc.work(0), 0.0f, 0.06f); NEAR(r.nc.work(1), 0.0f, 0.06f); NEAR(r.nc.work(2), 0.0f, 0.06f);
+    NEAR(r.nc.off[0][0], 10.0f, 0.0001f); NEAR(r.nc.off[0][2], -5.0f, 0.0001f);
+    for (const std::string& t : r.sent_log) CHECK(t.find("G53") == std::string::npos && t.find("G92") == std::string::npos && t.find("G10") == std::string::npos && t.find('A') == std::string::npos);
+
+    // Refusals: XYZ needs a separately specified clearance that is above Z0; cancel stops with nothing further sent.
+    Rig n1; JcWfParams none;
+    CHECK(!n1.prepare(JcWfKind::GoToXYZ, none));
+    Rig n2; JcWfParams low = base_params(); low.clearance_z = 0.0f;
+    CHECK(!n2.prepare(JcWfKind::GoToXYZ, low));
+    Rig n3; JcWfParams neg = base_params(); neg.clearance_z = -3.0f;
+    CHECK(!n3.prepare(JcWfKind::GoToXYZ, neg));
+    Rig c; c.nc.m[0] = 70; c.nc.m[1] = 80; c.nc.m[2] = -5;
+    CHECK(c.prepare(JcWfKind::GoToXYZ, p)); c.wf.start(c.nc.now); c.go(); c.wf.continue_after_pause(c.nc.now); c.go();
+    CHECK(c.wf.state() == JcWfState::WaitOperator);
+    c.wf.cancel(c.nc.now); c.run(2000);
+    CHECK(c.count("G21 G90 G0 Z0.000") == 0);
+    CHECK(strcmp(jc_wf_title(JcWfKind::GoToZ), "GO TO WORK Z0") == 0 && strcmp(jc_wf_title(JcWfKind::GoToXYZ), "GO TO WORK X0 Y0 Z0") == 0);
+}
+
 static void test_goto_refusals() {
     JcWfParams p = base_params();
     {   // no clearance: not started, nothing sent
@@ -753,6 +821,7 @@ static void test_tlo_policy_and_gate() {
 int main() {
     test_calc_functions();
     test_goto();
+    test_goto_z_and_xyz();
     test_goto_refusals();
     test_find_x_inside();
     test_find_x_outside_and_y();

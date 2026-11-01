@@ -33,6 +33,11 @@ functionally verified, and the owner explicitly authorizes the flash. FluidNC is
 - [ ] Outside feature (boss) X / Y; contact timeout and no-contact reported; stop with cancel.
 - [ ] FIND ROTARY A CENTRELINE on a reference cylinder: Y / Z centreline and tilt plausible; A calibration unchanged.
 
+## 5a. GO TO WORK positioning (full-control image, spindle removed, owner authorization first)
+- [ ] GO TO WORK Z0: nothing moves until the explicit CONFIRM; Z reaches work Z0 of the ACTIVE WCS (check with G55 selected), X/Y/A and the offsets in `$#` are unchanged.
+- [ ] GO TO WORK X0 Y0 Z0: enter a clearance above Z0; Z rises, X/Y move, then a SECOND confirmation is required before Z lowers to Z0; CANCEL at that pause leaves Z at the clearance.
+- [ ] Work zero is not machine home: the machine position at work X0 Y0 Z0 differs from the homed position unless the origin was set there.
+
 ## 6. SD card and jobs (ordinary image first, then full-control)
 - [ ] Ordinary image, real controller: FILES > REFRESH SD LIST shows the files that are really on the controller's SD card (compare with the card / WebUI). The parser matches the v4.1.1 reply read from this controller (relative names, folder depth as leading spaces, `[/sd Free: Used: Total:]` summary). Record any difference.
 - [ ] Remove the card: the page says NO SD CARD (error:60); empty card: SD CARD HAS NO FILES; the pendant's own flash files never appear.
