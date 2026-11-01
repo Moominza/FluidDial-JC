@@ -459,6 +459,8 @@ public:
     const JcWfParams& params() const { return _p; }
     const JcWfStep& step(uint8_t i) const { return _plan[i]; }
     const float* offset(uint8_t idx) const { return _offsets[idx]; }
+    bool  wpos_known() const { return _status.wpos_valid; }
+    float wpos_now(uint8_t axis) const { return _status.wpos[axis < 4 ? axis : 0]; }   // work position from the last status report
     bool probe_slot_ok(uint8_t i) const { return i < kJcWfSlots && _slot_ok[i]; }
     uint32_t commands_sent() const { return _sent; }
     // One line per planned step for the preview.

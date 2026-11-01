@@ -300,6 +300,61 @@ static void test_authority_gate() {
     b.live = false; CHECK(jc_authorize(JcCommandClass::JogCancel, b) == JcAuthDecision::BlockedNotLive);
 }
 
+// ---- Instruction 013: the full-control image enables exactly these command classes ------------------------------
+
+static void test_full_control_class_matrix() {
+    JcMachineProfile p = jc_default_profile();
+    JcAuthContext a;
+    a.armed = true; a.live = true; a.link_fresh = true; a.now_ms = a.command_issued_ms = 100; a.operator_confirmed = true;
+    strcpy(a.machine_state, "Idle");
+    struct Row { const char* name; JcCommand c; JcCommandClass cls; };
+    const Row rows[] = {
+        { "jog X (mm)", jc_jog_incremental(p, 0, 1.0f, 100.0f), JcCommandClass::Jog },
+        { "jog Y (mm)", jc_jog_incremental(p, 1, -1.0f, 100.0f), JcCommandClass::Jog },
+        { "jog Z (mm)", jc_jog_incremental(p, 2, 0.5f, 100.0f), JcCommandClass::Jog },
+        { "jog A (degrees)", jc_jog_incremental(p, 3, 5.0f, 600.0f), JcCommandClass::Jog },
+        { "jog cancel", jc_jog_cancel(), JcCommandClass::JogCancel },
+        { "home all", jc_home(p, 0xFF), JcCommandClass::Home },
+        { "home X", jc_home(p, 0), JcCommandClass::Home },
+        { "feed hold", jc_feed_hold(), JcCommandClass::Hold },
+        { "reset", jc_soft_reset(), JcCommandClass::Reset },
+        { "unlock", jc_unlock(), JcCommandClass::Unlock },
+        { "select G55", jc_select_wcs(1), JcCommandClass::WorkOffset },
+        { "set work offset", jc_zero_axis(p, 0), JcCommandClass::WorkOffset },
+        { "write G54 origin", jc_set_wcs_origin(0, true, 1.0f, true, 2.0f, true, 3.0f), JcCommandClass::WorkOffset },
+        { "tool length offset", jc_set_tlo(1.5f), JcCommandClass::WorkOffset },
+        { "clear tool length offset", jc_clear_tlo(), JcCommandClass::WorkOffset },
+        { "probe", jc_probe_move(p, 2, -5.0f, 100.0f), JcCommandClass::Probe },
+        { "go to work Z0", jc_goto_work_z(0.0f), JcCommandClass::Macro },
+        { "go to work X0 Y0", jc_goto_work_xy(true, 0.0f, true, 0.0f), JcCommandClass::Macro },
+        { "spindle stop", jc_spindle_stop(), JcCommandClass::Spindle },
+    };
+    for (const Row& r : rows) {
+        CHECK(r.c.ok && r.c.cls == r.cls);
+        CHECK(jc_command_line_allowed(r.c.cls, r.c.text) || r.c.realtime);                 // the one shared policy accepts it
+        CHECK(jc_authorize(r.cls, a) == JcAuthDecision::Allowed || jc_is_stop_always_allowed(r.cls));
+    }
+    // units: Z in millimetres, A in degrees; both in the same $J grammar
+    CHECK_STR(jc_jog_incremental(p, 2, -2.5f, 100.0f).text, "$J=G91G21F100Z-2.500");
+    CHECK_STR(jc_jog_incremental(p, 3, 5.0f, 600.0f).text, "$J=G91G21F600A5.000");
+    CHECK(p.axes[2].rotary == false && p.axes[3].rotary == true);
+    // the classes that are NEVER enabled, whatever the context: program start / resume and user macros
+    CHECK(jc_authorize(JcCommandClass::Job, a) == JcAuthDecision::BlockedProgramStart);
+    CHECK(!jc_command_bytes_allowed("~", 1) && !jc_command_bytes_allowed("$SD/Run=/a.nc\n", 14) && !jc_command_bytes_allowed("$Localfs/Run=/m.nc\n", 19));
+    // every one of them really reaches the transmit sink of the unified system and nothing else does
+    Rig q; q.run(600);
+    size_t n = 0;
+    for (const Row& r : rows) {
+        if (r.c.cls == JcCommandClass::Hold || r.c.cls == JcCommandClass::Reset || r.c.cls == JcCommandClass::JogCancel) continue;
+        if (r.c.cls == JcCommandClass::Jog && r.c.axis == 3) continue;                      // the simulator models X/Y/Z
+        Rig z; z.run(600);
+        CHECK(z.submit(r.c) == JcAuthDecision::Allowed);
+        CHECK(z.nc.wire.size() == 1 && z.nc.wire[0] == std::string(r.c.text) + "\n");
+        ++n;
+    }
+    CHECK(n >= 12);
+}
+
 // ---- every class through the unified system, simulated FluidNC -----------------------------------------------
 
 static void test_ack_and_result_for_each_class() {
@@ -585,6 +640,7 @@ int main() {
     test_builder_invalid_and_unsupported();
     test_positioning_builders();
     test_authority_gate();
+    test_full_control_class_matrix();
     test_ack_and_result_for_each_class();
     test_rejection_alarm_timeout_loss();
     test_single_operation_and_no_duplicate();

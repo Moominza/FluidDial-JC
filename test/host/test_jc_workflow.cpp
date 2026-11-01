@@ -235,6 +235,29 @@ static void test_goto_z_and_xyz() {
     CHECK(c.wf.state() == JcWfState::WaitOperator);
     c.wf.cancel(c.nc.now); c.run(2000);
     CHECK(c.count("G21 G90 G0 Z0.000") == 0);
+    {   // Instruction 012: the exact XYZ sequence, one axis group at a time, no diagonal XYZ move, no replay after a lost link
+        Rig s;
+        s.nc.off[0][0] = 10; s.nc.off[0][1] = 20; s.nc.off[0][2] = -5;
+        s.nc.m[0] = 70; s.nc.m[1] = 80; s.nc.m[2] = 10;                // work (60, 60, 15), clearance 20 is above it
+        CHECK(s.prepare(JcWfKind::GoToXYZ, p));
+        CHECK(s.wf.wpos_known() && fabsf(s.wf.wpos_now(2) - 15.0f) < 0.01f);   // the current work Z is available for display
+        s.wf.start(s.nc.now); s.go();
+        NEAR(s.nc.work(2), 20.0f, 0.06f); NEAR(s.nc.work(0), 60.0f, 0.06f);    // D: only Z moved, to the clearance
+        s.wf.continue_after_pause(s.nc.now); s.go();                           // E -> F
+        NEAR(s.nc.work(0), 0.0f, 0.06f); NEAR(s.nc.work(1), 0.0f, 0.06f); NEAR(s.nc.work(2), 20.0f, 0.06f);
+        CHECK(s.wf.state() == JcWfState::WaitOperator);                        // G: second confirmation
+        const size_t before = s.sent_log.size();
+        s.sys.on_link_lost(); s.wf.on_link_lost();                             // the connection drops at the pause
+        s.run(5000);
+        CHECK(s.wf.state() != JcWfState::WaitOperator && s.wf.state() != JcWfState::Done);
+        s.wf.continue_after_pause(s.nc.now); s.run(5000);
+        CHECK(s.sent_log.size() == before && s.count("G21 G90 G0 Z0.000") == 0);   // nothing replayed or continued
+        NEAR(s.nc.work(2), 20.0f, 0.06f);
+        for (const std::string& t : s.sent_log) {                              // never a combined X/Y with Z in one line
+            const bool hasZ = t.find(" Z") != std::string::npos, hasXY = t.find(" X") != std::string::npos || t.find(" Y") != std::string::npos;
+            CHECK(!(hasZ && hasXY));
+        }
+    }
     CHECK(strcmp(jc_wf_title(JcWfKind::GoToZ), "GO TO WORK Z0") == 0 && strcmp(jc_wf_title(JcWfKind::GoToXYZ), "GO TO WORK X0 Y0 Z0") == 0);
 }
 

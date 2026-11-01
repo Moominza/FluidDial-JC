@@ -1407,6 +1407,31 @@ static void scenarios() {
             xs.enter();
             touch_center(xs, ui::Rect { 16, 298, 372, 46 });          // GO TO WORK X0 Y0 Z0
             check_frame(x.gfx, "workflow_setup_xyz", false);
+            // XYZ routine with an operator-entered clearance of 20 (work), driven through the screen's active page
+            JcWfParams xp; xp.clearance_set = true; xp.clearance_z = 20.0f;
+            x.nc.m[2] = 10;
+            x.status("Idle", 50, 50, 10, 0);
+            x.wf.prepare(JcWfKind::GoToXYZ, xp, x.wf_status(), g_stub_millis);
+            x.wf_run(600);
+            xs.show_active();
+            xs.draw();
+            check(x.wf.state() == JcWfState::Planned, "GO TO WORK X0 Y0 Z0 is planned with the entered clearance");
+            check_frame(x.gfx, "workflow_preview_xyz", false);
+            touch_center(xs, ui::Rect { 258, 408, 250, 52 });          // START
+            check_frame(x.gfx, "workflow_start_confirm_xyz", true);
+            touch_center(xs, ui::kDialogConfirm);
+            for (int i = 0; i < 60 && x.wf.state() == JcWfState::Running; ++i) x.wf_run(300);
+            xs.tick(g_stub_millis + 300);
+            check(x.wf.state() == JcWfState::WaitOperator && x.wire.find("X0.000") == std::string::npos, "pause 1: Z is at the clearance, X/Y not yet commanded");
+            check_frame(x.gfx, "workflow_xyz_pause1", false);
+            x.wf.continue_after_pause(g_stub_millis);
+            for (int i = 0; i < 60 && x.wf.state() == JcWfState::Running; ++i) x.wf_run(300);
+            xs.tick(g_stub_millis + 300);
+            check(x.wf.state() == JcWfState::WaitOperator && x.wire.find("Z0.000") == std::string::npos, "pause 2: X/Y reached, Z0 not yet commanded");
+            check_frame(x.gfx, "workflow_xyz_pause2", false);
+            touch_center(xs, ui::Rect { 16, 408, 230, 52 });           // CANCEL during the second pause
+            for (int i = 0; i < 20; ++i) x.wf_run(300);
+            check(x.wire.find("Z0.000") == std::string::npos, "cancel at the second pause prevents the lowering to Z0");
         }
         // a failed contact
         Rig f;

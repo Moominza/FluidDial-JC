@@ -175,6 +175,24 @@ void JcWorkflowScreen::draw_live_lines() {
     _lines[0].draw(sv.display, { 16, 374, 768, 24 }, line, FontId::Body16, sv.model.fresh() ? ui::kGood : ui::kWarn, ui::kBg);
 }
 
+void JcWorkflowScreen::goto_values_line(char* out, size_t size) const {
+    const JcWorkflow& w = sv.wf;
+    if (!w.wpos_known()) { snprintf(out, size, "Work position: unknown (no fresh status)"); return; }
+    const double z = static_cast<double>(w.wpos_now(2));
+    switch (w.kind()) {
+        case JcWfKind::GoToZ:
+            snprintf(out, size, "Z (work): now %.3f   ->   target 0.000     X Y A unchanged", z);
+            break;
+        case JcWfKind::GoToXYZ:
+            snprintf(out, size, "Work now X%.3f Y%.3f Z%.3f  ->  Z%.3f, then X0 Y0, then Z0", static_cast<double>(w.wpos_now(0)),
+                     static_cast<double>(w.wpos_now(1)), z, static_cast<double>(w.params().clearance_z));
+            break;
+        default:
+            snprintf(out, size, "Work now X%.3f Y%.3f Z%.3f", static_cast<double>(w.wpos_now(0)), static_cast<double>(w.wpos_now(1)), z);
+            break;
+    }
+}
+
 void JcWorkflowScreen::draw_active() {
     const JcWorkflow& w = sv.wf;
     char line[140];
@@ -190,18 +208,32 @@ void JcWorkflowScreen::draw_active() {
         _lines[1].draw(sv.display, { 28, 130, 744, 24 }, line, FontId::Body16, WHITE, ui::kPanel);
     }
     if (w.state() == JcWfState::Planned) {
-        for (uint8_t i = 0; i < w.step_count() && i < 8; ++i) {
+        // GO TO routines: current and target values and the Z0 warning come first (Instruction 012)
+        const bool gt = jc_wf_is_goto(w.kind());
+        const int16_t top = gt ? 208 : 160;
+        const uint8_t shown = gt ? 6 : 8;
+        if (gt) {
+            goto_values_line(line, sizeof(line));
+            ui::text(sv.display, 28, 160, line, FontId::Body16, WHITE, ui::kPanel);
+            ui::text(sv.display, 28, 182, "Work Z0 is NOT machine home and NOT necessarily a safe height.", FontId::Body16, ui::kWarn, ui::kPanel);
+        }
+        for (uint8_t i = 0; i < w.step_count() && i < shown; ++i) {
             char s[80];
             w.preview_line(i, s, sizeof(s));
-            ui::text(sv.display, 28, 160 + i * 22, s, FontId::Body16, ui::kMuted, ui::kPanel);
+            ui::text(sv.display, 28, top + i * 22, s, FontId::Body16, ui::kMuted, ui::kPanel);
         }
-        if (w.step_count() > 8) {
+        if (w.step_count() > shown) {
             snprintf(line, sizeof(line), "... %u steps in all, each sent ONE at a time", static_cast<unsigned>(w.step_count()));
-            ui::text(sv.display, 28, 160 + 8 * 22, line, FontId::Body16, ui::kMuted, ui::kPanel);
+            ui::text(sv.display, 28, top + shown * 22, line, FontId::Body16, ui::kMuted, ui::kPanel);
         }
     } else if (w.state() == JcWfState::Running || w.state() == JcWfState::WaitOperator) {
         snprintf(line, sizeof(line), "Step %u of %u: %s", static_cast<unsigned>(w.step_index()) + 1u, static_cast<unsigned>(w.step_count()), w.step_label());
         _lines[2].draw(sv.display, { 28, 160, 744, 24 }, line, FontId::Body16, WHITE, ui::kPanel);
+        if (jc_wf_is_goto(w.kind())) {
+            goto_values_line(line, sizeof(line));
+            _lines[4].draw(sv.display, { 28, 226, 744, 24 }, line, FontId::Body16, ui::kInfo, ui::kPanel);
+            _lines[5].draw(sv.display, { 28, 254, 744, 24 }, "Work Z0 is NOT machine home and NOT necessarily a safe height.", FontId::Body16, ui::kWarn, ui::kPanel);
+        }
     } else if (bad) {
         _lines[2].draw(sv.display, { 28, 160, 744, 24 }, w.reason(), FontId::Body16, RED, ui::kPanel);
     } else if (w.state() == JcWfState::Done) {
@@ -440,6 +472,8 @@ void JcWorkflowScreen::on_touch(uint16_t x, uint16_t y) {
                 snprintf(l3, sizeof(l3), "Z rises to %.3f (work), then WAITS for you to change the tool by hand.", static_cast<double>(sv.wf.params().clearance_z));
             } else if (tool) {
                 snprintf(l3, sizeof(l3), "You touch the tool to the plate by hand first: the probe must react.");
+            } else if (sk == JcWfKind::GoToZ) {
+                snprintf(l3, sizeof(l3), "No clearance: Z goes straight to work Z0. Spindle stays stopped.");
             } else {
                 snprintf(l3, sizeof(l3), "Safe Z clearance %.3f (work).  Spindle stays stopped.", static_cast<double>(sv.wf.params().clearance_z));
             }
@@ -447,6 +481,10 @@ void JcWorkflowScreen::on_touch(uint16_t x, uint16_t y) {
             dialog.add_line(l1);
             dialog.add_line(l2);
             dialog.add_line(l3, ui::kWarn);
+            if (sk == JcWfKind::GoToZ || sk == JcWfKind::GoToXYZ) {
+                dialog.add_line("Work Z0 is NOT machine home and NOT necessarily a safe height.", ui::kWarn);
+                if (sk == JcWfKind::GoToXYZ) dialog.add_line("A second confirmation is required before Z lowers to Z0.");
+            }
             dialog.add_line("A failed step ends the routine: nothing is retried or resumed.");
             dialog.add_line("CANCEL sends a feed hold. It is NOT an emergency stop.", RED);
             draw();

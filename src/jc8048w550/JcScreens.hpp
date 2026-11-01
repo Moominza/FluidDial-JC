@@ -224,6 +224,7 @@ private:
     void request_action(uint8_t which);   // 1 move to centre, 2 set work origin, 3 apply tool offset, 4 clear tool offset
     Mode _mode = Mode::List;
     JcWfKind _kind = JcWfKind::GoToXY;
+    void goto_values_line(char* out, size_t size) const;   // current / target work values for the GO TO routines
     JcWfParams _p;
     uint8_t _edit = 0;
     uint8_t _action_pending = 0;   // 1 = move to centre, 2 = set work origin (waiting for the confirmation)
