@@ -43,3 +43,11 @@ Stop at the first unexpected result and record it; do not continue to the next t
 ## 3. Evidence to keep
 
 Photographs of the pendant at each step, the serial log of the session, FluidNC's replies, the date, the firmware revision (`git describe`) and the image hash.
+
+## 4. Instruction 016 status (2026-11-01, baseline b3a0d40)
+
+Sections 1-2 (software): baseline verified (feature/jc8048w550, HEAD b3a0d40, clean, main 47f8489 unchanged). `jc8048w550` and `jc8048w550_fullcontrol_test` rebuilt: SUCCESS; `check_firmware_symbols.py` PASS (ordinary image has no transmit function; full-control has Wi-Fi and UART transmit behind the shared policy; no program-start string in any image); `check_no_sink.py` PASS.
+
+Section 3 (physical stop): **NOT VERIFIED.** No independent stop, Z hold-on-power-removal, reset-does-not-restart, or spindle-stop evidence has been supplied. Soft limits OFF, hard limits OFF, position not established (unchanged). Owner has not authorized full-control flashing.
+
+Sections 4-8 (axis tests, homing, work-positioning on hardware, probe/tool, hardware connection-loss test): **NOT STARTED** - blocked by section 3. No full-control image was flashed; no machine-changing command was sent. The Z positive-direction / negative-limit-pin discrepancy (`$/axes/z/homing/positive_direction=true`, limit on `limit_neg_pin gpio.39`) remains unresolved and must be physically checked before any Z or home-all.

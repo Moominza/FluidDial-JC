@@ -68,3 +68,10 @@ functionally verified, and the owner explicitly authorizes the flash. FluidNC is
 
 ## 10. Still not implemented / not claimed
 Automatic tool changer or M6 macro (never assumed), rotary-axis probing, outside-feature XY centre in one routine (use X then Y), SD file deletion / upload / rename (deliberately not offered), file names with spaces, job resume after a controller reset, any BLE hardware verification, any physical commissioning.
+
+## Instruction 016 (2026-11-01)
+- [x] Baseline b3a0d40 and full-control build/symbol checks (software only)
+- [ ] Independent stop physically verified (BLOCKING, no evidence yet)
+- [ ] Owner authorization to flash full-control
+- [ ] Axis X / Y / Z / A tests, homing, work positioning, probe/tool, hardware connection-loss: not started
+
