@@ -235,8 +235,8 @@ static void test_navigation() {
 
 static void test_settings_persistence() {
     JcUserSettings d = jc_settings_defaults();
-    CHECK(d.linear_steps[3] == 50.0f && d.linear_steps[4] == 100.0f);
-    CHECK(d.rotary_steps[3] == 45.0f && d.rotary_steps[4] == 90.0f);
+    CHECK(d.linear_steps[0] == 0.01f && d.linear_steps[3] == 10.0f && d.linear_steps[4] == 100.0f);
+    CHECK(d.rotary_steps[2] == 5.0f && d.rotary_steps[3] == 45.0f && d.rotary_steps[4] == 90.0f);
     CHECK(!d.a_axis_has_homing && d.transport == 0 && d.uart_rx_pin == -1);
 
     // Round trip of a customized configuration.
@@ -272,7 +272,7 @@ static void test_settings_persistence() {
     memset(evil.macros[2].name, 'a', sizeof(evil.macros[2].name));  // not NUL terminated
     blob = jc_settings_encode(evil);
     CHECK(jc_settings_decode(&blob, sizeof(blob), out));
-    CHECK(out.linear_steps[2] == 10.0f && out.rotary_steps[1] == 360.0f && out.linear_feeds[0] == 1.0f);
+    CHECK(out.linear_steps[2] == 1.0f && out.rotary_steps[1] == 360.0f && out.linear_feeds[0] == 1.0f);
     CHECK(out.brightness_percent == 100 && out.coordinate_decimals == 3 && out.transport == 0);
     CHECK(out.uart_baud == 115200 && out.uart_rx_pin == -1);
     CHECK(out.probe_travel == 50.0f && out.tool_diameter == 0.0f);

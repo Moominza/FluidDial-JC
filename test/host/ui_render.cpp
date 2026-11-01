@@ -1055,7 +1055,7 @@ static void scenarios() {
 
     const ui::Rect axis[4] = { jl::axis_rect(0), jl::axis_rect(1), jl::axis_rect(2), jl::axis_rect(3) };
     const ui::Rect arm_btn = jl::kArm, jog_neg = jl::kJogNeg, jog_stop = jl::kJogStop, jog_pos = jl::kJogPos, ack_btn = jl::kAck;
-    const ui::Rect step10 = jl::step_rect(2);
+    const ui::Rect step10 = jl::step_rect(3);
 
     printf("[menu / settings]\n");
     menu.enter();
@@ -1161,7 +1161,7 @@ static void scenarios() {
     touch_center(jog, ui::kDialogConfirm);                       // confirm -> sent
     check_frame(r.gfx, "jog_sent_dialog", true);
 #if JC_JOG_PREVIEW
-    check(r.wire == "$J=G91G21F100X1.000\n" && r.bridge.controller().lines() == 1 && r.dispatcher.sent() == 0,
+    check(r.wire == "$J=G91G21F300X1.000\n" && r.bridge.controller().lines() == 1 && r.dispatcher.sent() == 0,
           "exactly one restricted jog line reached the SIMULATION and nothing was sent");
     touch_center(jog, ui::kDialogOk);
     check_frame(r.gfx, "jog_awaiting_ok", false);
@@ -1230,7 +1230,7 @@ static void scenarios() {
     check(r.dispatcher.armed_at(g_stub_millis), "the confirmation arms jogging (no capability read, homing or per-axis acknowledgement)");
     check_frame(r.gfx, "jog_x_armed", false);
     touch_center(jog, jog_pos);                                  // sent at once: arming is the confirmation
-    check(r.wire == "$J=G91G21F100X1.000\n" && r.dispatcher.sent() == 0, "the jog line reached the transport (the simulation) at once");
+    check(r.wire == "$J=G91G21F300X1.000\n" && r.dispatcher.sent() == 0, "the jog line reached the transport (the simulation) at once");
     check_frame(r.gfx, "jog_x_sent", false);
     r.advance(1500);
     jog.enter();

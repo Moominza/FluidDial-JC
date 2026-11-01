@@ -89,7 +89,9 @@ void setup() {
     touch.setRotation(ROTATION_NORMAL);
     Serial.println("touch: configured SDA=19, SCL=20, RST=38, INT=NC, rotation=normal.");
     ui.begin();
-#if JC_LIVE_JOG_TEST
+#if JC_FULL_CONTROL_TEST
+    Serial.println("Ready. FULL CONTROL: demo mode by default; confirmed commands are sent only in LIVE. No program start/resume/macros.");
+#elif JC_LIVE_JOG_TEST
     Serial.println("Ready. LIVE JOG TEST BUILD: demo mode by default; only a restricted incremental jog and jog cancel can be sent.");
 #else
     Serial.println("Ready. Demo mode by default; manual read-only status only; motion commands disabled.");

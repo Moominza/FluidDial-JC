@@ -24,10 +24,20 @@ using jl::kPanelRect;
 using jl::kAck;
 constexpr ui::Rect kContinuous = jl::kArm;  // ARM / READ SETTINGS in the jog-UI builds
 
+#if JC_FULL_CONTROL_TEST
+#define JC_CMD_LABEL "COMMAND"
+#else
+#define JC_CMD_LABEL "PREVIEW"
+#endif
+
 #if JC_JOG_PREVIEW
 #define JC_ARM_LABEL "ARM PREVIEW"
 #define JC_STAGE_TITLE "CONFIRM SIMULATED JOG"
 #define JC_ARM_TITLE "PREVIEW ONLY: ARM MICRO-JOG?"
+#elif JC_FULL_CONTROL_TEST
+#define JC_ARM_LABEL "ARM JOG"
+#define JC_STAGE_TITLE "CONFIRM JOG"
+#define JC_ARM_TITLE "ARM JOGGING?"
 #else
 #define JC_ARM_LABEL "ARM TEST"
 #define JC_STAGE_TITLE "CONFIRM LIVE JOG"
@@ -181,7 +191,7 @@ void JcJogScreen::on_draw() {
 #endif
     ui::button(sv.display, kJogStop, "CANCEL JOG", ui::Btn::Danger);
     ui::panel(sv.display, kPanelRect);
-    ui::text(sv.display, 28, jl::kLabelPreviewY, "PREVIEW", FontId::Body16, ui::kMuted, ui::kPanel);
+    ui::text(sv.display, 28, jl::kLabelPreviewY, JC_CMD_LABEL, FontId::Body16, ui::kMuted, ui::kPanel);
     ui::text(sv.display, 28, jl::kLabelResultY, "RESULT", FontId::Body16, ui::kMuted, ui::kPanel);
     ui::text(sv.display, 28, jl::kLabelMotionY, "MOTION", FontId::Body16, ui::kMuted, ui::kPanel);
     draw_bottom();

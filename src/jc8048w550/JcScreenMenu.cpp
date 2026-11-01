@@ -15,6 +15,15 @@ struct Tile {
 
 constexpr Tile kTiles[9] = {
     { "DASHBOARD", "Live X Y Z A", JcPage::Count },
+#if JC_FULL_CONTROL_TEST
+    { "JOGGING", "X Y Z mm, A degrees", JcPage::Jog },
+    { "HOMING", "X Y; Z/all pending check", JcPage::Homing },
+    { "PROBING", "Centre, edge, rotary", JcPage::Probing },
+    { "WORK OFFSETS", "G54-G59, zero/set", JcPage::Offsets },
+    { "FILES / JOBS", "Monitor only; no start", JcPage::Files },
+    { "MACROS", "Work positioning", JcPage::Macros },
+    { "TOOLS", "Reference, TLO", JcPage::Tools },
+#else
     { "JOGGING", JC_LIVE_JOG_TEST ? "TEST: X/Y 1 mm only" : (JC_JOG_PREVIEW ? "PREVIEW: simulated" : "Preview only"), JcPage::Jog },
     { "HOMING", "Preview only", JcPage::Homing },
     { "PROBING", "Preview only", JcPage::Probing },
@@ -22,6 +31,7 @@ constexpr Tile kTiles[9] = {
     { "FILES / JOBS", "Job status; no listing", JcPage::Files },
     { "MACROS", "User defined", JcPage::Macros },
     { "TOOLS", "Manual tool change", JcPage::Tools },
+#endif
     { "SETTINGS", "Setup + diagnostics", JcPage::Settings },
 };
 

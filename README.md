@@ -3,37 +3,42 @@
 <img src="http://wiki.fluidnc.com/hardware/fd1.png" alt="M5 Fluid Dial" height="500"><img src="http://wiki.fluidnc.com/cydpendant.jpg" alt="CYD Dial Pendant" height="500">
 
 This community repository preserves the upstream FluidDial history and adds
-an opt-in port for the **Guition JC8048W550C_I** ESP32-S3 touchscreen. The JC
-target is experimental and separate from the existing M5Dial and CYD targets.
-Its current firmware provides a four-axis (X/Y/Z linear, A rotary) dashboard
-with a local DEMO mode and an experimental **read-only** Wi-Fi status monitor
-for FluidNC. **Machine control is disabled in this build**: no jog, home,
-probe, offset, job or macro command is transmitted. The only things sent to the
-controller are the `?` status query and, when the operator asks for them on the
-Controller Capabilities page, a closed set of read-only configuration queries
-(`$I`, `$G`, `$/axes/<x|y|z|a>/<item>`, `$/probe/...`). See the
-[feature status matrix](docs/development/jc-feature-status.md), the
-[command safety design](docs/development/jc-command-safety.md) and the
-[JC port plan](docs/jc-port-plan.md) for hardware, build, validation
-evidence, and known limitations.
+an opt-in port for the **Guition JC8048W550C_I** (ESP32-S3, 800x480 capacitive
+touchscreen, GT911). The JC target is separate from the M5Dial and CYD targets.
+Release candidate: `1.5.1-rc1` (feature branch only; no stable release).
 
-JC application sections (all preview-only; nothing is transmitted): dashboard, jogging,
-homing, probing, work offsets, files and jobs, macros, tools, and settings with
-diagnostics. Transports: Wi-Fi (read-only status), wired UART (read-only status,
-unverified wiring), Bluetooth LE (unavailable: no FluidNC BLE service). See the
-[architecture](docs/development/jc-architecture.md) for the module map.
+FluidDial-JC is a four-axis (X/Y/Z linear mm, A rotary degrees) touchscreen pendant for
+**FluidNC v4.1.1** (tested on an MKS DLC32 MAX V1.2). It is only the operator interface:
+FluidNC plans and executes all motion, homing, limits and probing. The pendant shows
+status, sends operator-confirmed commands, shows the controller's replies and errors, and
+never replays a command after a reconnect.
 
-After a restart the JC reconnects to the saved FluidNC controller by itself (Wi-Fi only; see
-[auto-connect](docs/development/jc-auto-connect.md)); a manual disconnect or DEMO turns that off.
+**Two JC firmware images, kept distinct**
 
-Build: `pio run -e jc8048w550` (also `m5dial`, `cyddial`). Host unit tests:
-`python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`).
+| Environment | Purpose | Machine commands |
+|---|---|---|
+| `jc8048w550_fullcontrol_test` | **Full-control pendant** (banner FULL CONTROL, red) | Jog (X/Y/Z mm, A degrees), jog cancel, homing, WCS G54-G59, work offsets, work positioning, probing, tool length, feed hold, confirmed reset/unlock |
+| `jc8048w550` | Ordinary diagnostic/preview image | None. Simulated controller; only `?` is sent |
+| `jc8048w550_livejog_test` | Restricted commissioning image (X/Y 1 mm jog only), never flashed by default | One restricted jog + cancel |
 
-**Experimental, never flashed by default:** `pio run -e jc8048w550_livejog_test` builds a
-separate image that can send one restricted incremental jog (X/Y 1 mm only; Z on hold, A disabled)
-and the jog-cancel byte, and nothing else. It is not a default environment and must not be
-flashed to a machine-connected device without the owner's written approval; see the
-[first-live-jog readiness report](docs/development/jc-live-jog-readiness.md).
+**Owner policy, enforced on every build and every transport (Wi-Fi, UART, BLE):** the pendant
+can never start or resume a program (no `$SD/Run`, `$Localfs/Run`, `~`), never runs user
+macros, and never restarts a job. The PC starts programs. The pendant only monitors the SD
+card and job progress, and offers FEED HOLD and a confirmed RESET. FEED HOLD and RESET are
+not an emergency stop; use the machine's physical E-stop.
+
+Transports: Wi-Fi TCP (auto-connects at boot; verified on hardware), wired UART and BLE
+(compatible UART-style BLE module; implemented and tested with mocks, **hardware not yet
+verified**). Only one transport is active at a time.
+
+Docs: [User guide](docs/USER_GUIDE.md), [commissioning](docs/COMMISSIONING.md),
+[release notes](docs/RELEASE_NOTES.md), [architecture](docs/development/jc-architecture.md),
+[command safety](docs/development/jc-command-safety.md).
+
+Build: `pio run -e jc8048w550_fullcontrol_test` (also `jc8048w550`, `jc8048w550_livejog_test`,
+`m5dial`, `cyddial`). Flash with `pio run -e <env> -t upload --upload-port COMx`. Host tests:
+`python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`); static checks:
+`python tools/check_no_sink.py`, `python tools/check_firmware_symbols.py`.
 
 Contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md) and the project
 rules in [AGENTS.md](AGENTS.md).

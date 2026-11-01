@@ -50,12 +50,16 @@ struct JcUserSettings {
 
 inline JcUserSettings jc_settings_defaults() {
     JcUserSettings s {};
-    const float lin[kJcStepPresets] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f };
-    const float rot[kJcStepPresets] = { 0.1f, 1.0f, 10.0f, 45.0f, 90.0f };
+    const float lin[kJcStepPresets] = { 0.01f, 0.1f, 1.0f, 10.0f, 100.0f };
+    const float rot[kJcStepPresets] = { 0.1f, 1.0f, 5.0f, 45.0f, 90.0f };
     memcpy(s.linear_steps, lin, sizeof(lin));
     memcpy(s.rotary_steps, rot, sizeof(rot));
-    const float lf[kJcFeedPresets] = { 100.0f, 500.0f, 1000.0f };
-    const float rf[kJcFeedPresets] = { 600.0f, 1800.0f, 3600.0f };
+#if defined(JC_LIVE_JOG_TEST) && JC_LIVE_JOG_TEST
+    const float lf[kJcFeedPresets] = { 100.0f, 1000.0f, 3000.0f };  // restricted live-jog test image caps jog feed at 100
+#else
+    const float lf[kJcFeedPresets] = { 300.0f, 1000.0f, 3000.0f };
+#endif
+    const float rf[kJcFeedPresets] = { 200.0f, 500.0f, 1000.0f };
     memcpy(s.linear_feeds, lf, sizeof(lf));
     memcpy(s.rotary_feeds, rf, sizeof(rf));
     s.brightness_percent = 100;

@@ -72,7 +72,7 @@ private:
 
     uint8_t _axis = 0;
     uint8_t _arm_axis = 0;   // axis the arming dialog was opened for
-    uint8_t _step = 1;
+    uint8_t _step = 2;
     uint8_t _feed = 0;
     bool _continuous = false;
     uint32_t _last_tick = 0;
