@@ -30,7 +30,15 @@ void JcDiagnosticsScreen::row_text(uint8_t row, char* label, size_t label_size, 
     const JcReadOnlyFluidNc& link = sv.link;
     switch (row) {
         case 0: snprintf(value, value_size, "%s", git_info); break;
-        case 1: snprintf(value, value_size, "%s", __DATE__ " " __TIME__); break;
+        case 1:   // build mode, not a compile timestamp: keeps the binary reproducible from one source revision
+#if JC_FULL_CONTROL_TEST
+            snprintf(value, value_size, "%s", "FULL CONTROL (sends commands)");
+#elif JC_LIVE_JOG_TEST
+            snprintf(value, value_size, "%s", "LIVE JOG TEST (X/Y 1 mm)");
+#else
+            snprintf(value, value_size, "%s", "MOTION DISABLED (diagnostic)");
+#endif
+            break;
         case 2: {
             const unsigned long s = millis() / 1000;
             snprintf(value, value_size, "%lu:%02lu:%02lu", s / 3600, (s / 60) % 60, s % 60);
