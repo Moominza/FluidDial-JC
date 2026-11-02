@@ -35,3 +35,9 @@ Everything in the owner's acceptance table (X, Y, Z, A, jog cancel, homing, prob
 - No measurements, panel photos, controller logs or UART/BLE module identities were supplied; none are claimed.
 - UART and BLE hardware results are operator-reported only; repository tests use a mock radio and a simulator.
 - FEED HOLD, CANCEL JOG and RESET are not an emergency stop.
+
+## Checksums (source commit 3c76461, tag v1.5.1, reproducible: two clean builds matched)
+
+```nc8789e72f5f8d14cbfc52f3fc9e495c832f85a9b9e4d114b884e05e02746f99d  fluiddial-jc-1.5.1-diagnostic-motion-disabled.bin
+db29f6bac963211442ed10fa0ca2b5440847614dc41d3996e8c717393c88c23c  fluiddial-jc-1.5.1-fullcontrol.bin
+```n
