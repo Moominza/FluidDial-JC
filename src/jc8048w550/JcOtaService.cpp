@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <Update.h>
 
 namespace jc8048w550 {
 
@@ -22,6 +23,7 @@ __attribute__((used)) const char kImageMarker[] = JC_OTA_IMAGE_MARKER;
 
 JcOtaService* g_svc = nullptr;
 uint32_t g_total = 0;
+bool g_rejected = false;   // this transfer was aborted by the target check before the boot slot was switched
 
 // Reads the image just written back from flash and looks for the target marker.
 bool new_image_has_marker(const esp_partition_t* part, uint32_t length) {
@@ -46,6 +48,7 @@ struct JcOtaCallbacks {
             Serial.println("ota: transfer refused (controller not quiet)");
             return;
         }
+        g_rejected = false;
         Serial.println("ota: transfer started");
         if (g_svc && g_svc->_draw) g_svc->_draw(g_svc->_draw_user);
     }
@@ -54,6 +57,23 @@ struct JcOtaCallbacks {
         g_total = total;
         const uint8_t before = g_svc->_ctl->percent();
         g_svc->_ctl->on_progress(done, total);
+        if (done == total && total > 0 && !g_rejected) {
+            // The last byte has been handed to the flash writer but the stock library has NOT yet finalised the
+            // update, so the boot slot has not been switched. This is the moment to refuse a foreign image: aborting
+            // here leaves the boot selector untouched. (The final partial 4 KB block is only flushed by the library's
+            // end step, so the check covers the whole-block prefix; the marker is verified to lie inside it for
+            // every release image by tools/check_firmware_symbols.py.)
+            const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
+            const uint32_t flushed = total - (total % 4096u);
+            if (target == nullptr || !new_image_has_marker(target, flushed)) {
+                g_rejected = true;
+                Update.abort();
+                g_svc->_ctl->on_target_rejected();
+                Serial.println("ota: not a JC image - transfer aborted before the boot slot was switched");
+                if (g_svc->_draw) g_svc->_draw(g_svc->_draw_user);
+                return;
+            }
+        }
         if (g_svc->_ctl->percent() != before && g_svc->_draw) g_svc->_draw(g_svc->_draw_user);
     }
     static void on_end() {
@@ -66,7 +86,18 @@ struct JcOtaCallbacks {
         const esp_partition_t* boot = esp_ota_get_boot_partition();
         bool ok = boot != nullptr && running != nullptr && boot != running && new_image_has_marker(boot, g_total);
         if (!ok && boot != nullptr && running != nullptr && boot != running) {
-            esp_ota_set_boot_partition(running);
+            // Second layer (the progress-time check normally prevents getting here): put the boot slot back and
+            // VERIFY that it went back. On a real device a single esp_ota_set_boot_partition(running) was observed
+            // to leave the selector pointing at the rejected image, so the result is checked, not assumed.
+            esp_err_t err = ESP_FAIL;
+            for (int i = 0; i < 3 && esp_ota_get_boot_partition() != running; ++i) err = esp_ota_set_boot_partition(running);
+            const bool restored = esp_ota_get_boot_partition() == running;
+            Serial.printf("ota: restore of the boot slot %s (err %d)\n", restored ? "ok" : "FAILED", static_cast<int>(err));
+            if (!restored) {
+                g_svc->_ctl->on_boot_not_restored();
+                if (g_svc->_draw) g_svc->_draw(g_svc->_draw_user);
+                return;
+            }
         }
         g_svc->_ctl->on_validated(ok, millis());
         Serial.printf("ota: image target check %s\n", ok ? "passed" : "FAILED (old image kept)");

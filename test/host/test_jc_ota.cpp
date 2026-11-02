@@ -195,6 +195,36 @@ static void test_wrong_target_image_rejected() {
     CHECK(c.state() == JcOtaState::Ready);
 }
 
+static void test_target_rejected_before_commit_and_unrestored_boot() {
+    // Foreign image refused while it is still being received (before the boot slot is switched).
+    JcOtaController c = ready_controller();
+    CHECK(c.on_start());
+    c.on_progress(10, 10);
+    c.on_target_rejected();
+    CHECK(c.state() == JcOtaState::Failed && !c.locked() && !c.restart_due(1u << 30));
+    CHECK(strstr(c.message(), "REJECTED") != nullptr && strstr(c.message(), "kept") != nullptr);
+    c.on_error(JcOtaError::End);                           // the library then reports its own end error: message kept
+    CHECK(c.state() == JcOtaState::Failed && strstr(c.message(), "REJECTED") != nullptr);
+    c.on_transfer_complete(); c.on_validated(true, 5);     // nothing can turn the rejection into an update
+    CHECK(c.state() == JcOtaState::Failed && !c.restart_due(1u << 30) && !c.boot_unsafe());
+    // Only a receiving transfer can be rejected this way.
+    JcOtaController d = ready_controller();
+    d.on_target_rejected();
+    CHECK(d.state() == JcOtaState::Ready);
+    // Last resort: the boot slot could not be restored. Restart is forbidden and the message never clears by itself.
+    JcOtaController e = ready_controller();
+    CHECK(e.on_start());
+    e.on_transfer_complete();
+    e.on_boot_not_restored();
+    CHECK(e.state() == JcOtaState::Failed && e.boot_unsafe() && !e.locked());
+    CHECK(strstr(e.message(), "USB") != nullptr);
+    e.tick(quiet(), 100);
+    e.tick(quiet(), 100 + 10 * kJcOtaFailureShowMs);
+    CHECK(e.state() == JcOtaState::Failed && e.boot_unsafe());     // not auto-cleared
+    e.acknowledge_failure();
+    CHECK(e.state() == JcOtaState::Failed && e.boot_unsafe());     // not dismissible either
+}
+
 static void test_errors() {
     struct { JcOtaError e; } cases[] = { { JcOtaError::Begin }, { JcOtaError::Connect }, { JcOtaError::Receive }, { JcOtaError::End } };
     for (auto& k : cases) {
@@ -355,6 +385,7 @@ int main() {
     test_transfer_lifecycle();
     test_wrong_target_image_rejected();
     test_errors();
+    test_target_rejected_before_commit_and_unrestored_boot();
     test_authentication();
     test_marker_scanner();
     test_lockout_at_shared_transmit_point();

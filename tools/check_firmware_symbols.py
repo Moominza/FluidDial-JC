@@ -69,6 +69,13 @@ for env in ("jc8048w550", "jc8048w550_fullcontrol_test", "jc8048w550_livejog_tes
         continue
     if MARKER not in data:
         fail.append(f"{env}: lacks the OTA image-target marker")
+    else:
+        # The pendant checks the marker when the last byte arrives, but the final partial 4 KB block is only
+        # flushed afterwards, so the marker must lie inside the whole-block prefix (with margin) of the image.
+        off = data.index(MARKER)
+        prefix = len(data) - (len(data) % 4096)
+        if off + len(MARKER) + 64 > prefix:
+            fail.append(f"{env}: OTA marker at {off} lies in the final partial flash block (image {len(data)} bytes)")
     if b"ArduinoOTA" not in data and b"OTA server at" not in data:
         fail.append(f"{env}: lacks the OTA service")
     if b"verifyRollbackLater" not in data and b"cancel_rollback" not in data and b"rollback" not in data.lower():

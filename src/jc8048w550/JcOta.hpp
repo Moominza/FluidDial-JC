@@ -87,28 +87,36 @@ inline bool jc_ota_password_valid(const char* p) {
 enum class JcOtaError : uint8_t { Auth = 0, Begin = 1, Connect = 2, Receive = 3, End = 4 };
 
 // Finds the image marker in a stream delivered in arbitrary chunks (the new image is read back from flash).
+// Linear time (Knuth-Morris-Pratt): the new image is a megabyte or more and is scanned on the device.
 class JcOtaMarkerScanner {
 public:
-    void reset() { _fill = 0; _found = false; }
+    JcOtaMarkerScanner() {
+        const char* m = JC_OTA_IMAGE_MARKER;
+        const size_t ml = strlen(m);
+        _fail[0] = 0;
+        size_t k = 0;
+        for (size_t i = 1; i < ml; ++i) {
+            while (k > 0 && m[i] != m[k]) k = _fail[k - 1];
+            if (m[i] == m[k]) ++k;
+            _fail[i] = static_cast<uint8_t>(k);
+        }
+    }
+    void reset() { _k = 0; _found = false; }
     void feed(const uint8_t* data, size_t n) {
         const char* m = JC_OTA_IMAGE_MARKER;
         const size_t ml = strlen(m);
         for (size_t i = 0; i < n && !_found; ++i) {
-            // Sliding window of the last ml bytes.
-            if (_fill < ml) {
-                _win[_fill++] = data[i];
-            } else {
-                memmove(_win, _win + 1, ml - 1);
-                _win[ml - 1] = data[i];
-            }
-            if (_fill == ml && memcmp(_win, m, ml) == 0) _found = true;
+            const char c = static_cast<char>(data[i]);
+            while (_k > 0 && c != m[_k]) _k = _fail[_k - 1];
+            if (c == m[_k]) ++_k;
+            if (_k == ml) _found = true;
         }
     }
     bool found() const { return _found; }
 
 private:
-    uint8_t _win[sizeof(JC_OTA_IMAGE_MARKER)] {};
-    size_t  _fill = 0;
+    uint8_t _fail[sizeof(JC_OTA_IMAGE_MARKER)] {};
+    size_t  _k = 0;
     bool    _found = false;
 };
 
@@ -125,6 +133,7 @@ public:
     uint8_t percent() const { return _total == 0 ? 0 : static_cast<uint8_t>((static_cast<uint64_t>(_done) * 100u) / _total); }
     uint8_t auth_failures() const { return _auth_failures; }
     bool paused() const { return _paused; }
+    bool boot_unsafe() const { return _boot_bad; }   // the boot slot could not be put back: do not restart
 
     // Every pass. Offers the service while the controller is quiet and withdraws it the moment it is not.
     void tick(const JcOtaInputs& in, uint32_t now) {
@@ -163,6 +172,7 @@ public:
     // Operator action: nothing to arm any more; this only clears a failure message so the service is offered again.
     void acknowledge_failure() {
         if (_state == JcOtaState::Failed) {
+            if (_boot_bad) return;   // never hide this one: a restart would boot the wrong image
             _state = JcOtaState::Off;
             _fail_seen = false;
             set_message("");
@@ -202,6 +212,18 @@ public:
             _state = JcOtaState::Failed;
             set_message("REJECTED: not a JC8048W550C_I image. Old firmware kept.");
         }
+    }
+    // The image written so far is not a JC image. Called BEFORE the boot slot is switched; the transfer is aborted.
+    void on_target_rejected() {
+        if (_state != JcOtaState::Receiving) return;
+        _state = JcOtaState::Failed;
+        set_message("REJECTED: not a JC8048W550C_I image. Old firmware kept.");
+    }
+    // Last-resort path: an image was committed, failed the target check and the boot slot could not be restored.
+    void on_boot_not_restored() {
+        _state = JcOtaState::Failed;
+        _boot_bad = true;
+        set_message("BOOT SLOT NOT RESTORED - do not restart; reinstall by USB");
     }
     void on_error(JcOtaError e) {
         if (e == JcOtaError::Auth) {
@@ -243,6 +265,7 @@ private:
     uint32_t   _pause_until = 0;
     bool       _paused = false, _pause_set = false;
     bool       _fail_seen = false;
+    bool       _boot_bad = false;
     uint32_t   _fail_at = 0;
     uint32_t   _restart_at = 0;
     uint32_t   _done = 0, _total = 0;

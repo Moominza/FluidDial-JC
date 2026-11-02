@@ -1,4 +1,4 @@
-// FluidDial Updater - espota protocol client.
+﻿// FluidDial Updater - espota protocol client.
 // Reuses the stock Arduino ESP32 OTA ("espota") exchange; nothing here is a new protocol:
 //   1. UDP invitation  "0 <local tcp port> <size> <md5>\n"  to <pendant>:3232
 //   2. pendant answers "AUTH <nonce>"
@@ -242,7 +242,7 @@ namespace FluidDialUpdater
                         {
                             if (answer.IndexOf("Authentication", StringComparison.OrdinalIgnoreCase) >= 0)
                                 return OtaOutcome.Make(OtaResult.AuthFailed,
-                                    "Wrong OTA password. (Five wrong passwords switch the update off on the pendant; arm it again.)");
+                                    "Wrong OTA password. (Five wrong passwords pause the update on the pendant for 5 minutes.)");
                             return OtaOutcome.Make(OtaResult.BadAnswer, "Unexpected answer from the pendant: " + Clean(answer));
                         }
                         if (status != null) status("Password accepted.");

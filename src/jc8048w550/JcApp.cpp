@@ -547,7 +547,7 @@ void JcApp::ota_clear_failure() {
 }
 
 void JcApp::ota_restart() {
-    if (!_ota.locked()) _ota_svc.restart();
+    if (!_ota.locked() && !_ota.boot_unsafe()) _ota_svc.restart();
 }
 
 void JcApp::service_ota(uint32_t now) {
