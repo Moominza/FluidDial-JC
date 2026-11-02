@@ -54,7 +54,7 @@ namespace FluidDialUpdater
             Controls.Add(sub);
 
             Label steps = new Label();
-            steps.Text = "1. On the pendant: SETTINGS > FIRMWARE UPDATE > ARM UPDATE (controller must be Idle).   2. Choose firmware.   3. Enter the OTA password.   4. Update.";
+            steps.Text = "1. Pendant: SETTINGS > FIRMWARE UPDATE must say READY (password set, controller Idle).   2. Choose firmware.   3. Enter the OTA password.   4. Update.";
             steps.SetBounds(18, 66, 730, 34);
             steps.ForeColor = Color.DimGray;
             Controls.Add(steps);
@@ -64,7 +64,7 @@ namespace FluidDialUpdater
             _ip.SetBounds(88, 25, 150, 24); g1.Controls.Add(_ip);
             _find.Text = "Find pendant"; _find.SetBounds(250, 23, 110, 28); _find.Click += OnFind; g1.Controls.Add(_find);
             _test.Text = "Test connection"; _test.SetBounds(368, 23, 130, 28); _test.Click += OnTest; g1.Controls.Add(_test);
-            Label hint = new Label(); hint.Text = "Find works while the update is armed."; hint.ForeColor = Color.DimGray; hint.SetBounds(506, 28, 215, 20); g1.Controls.Add(hint);
+            Label hint = new Label(); hint.Text = "Find works while the pendant is READY."; hint.ForeColor = Color.DimGray; hint.SetBounds(506, 28, 215, 20); g1.Controls.Add(hint);
 
             GroupBox g2 = Group("Firmware", 16, 176, 728, 196);
             _fw.DropDownStyle = ComboBoxStyle.DropDownList; _fw.SetBounds(12, 24, 598, 24); _fw.SelectedIndexChanged += delegate { SelectFirmware(); };
@@ -86,6 +86,10 @@ namespace FluidDialUpdater
 
             _log.Multiline = true; _log.ReadOnly = true; _log.ScrollBars = ScrollBars.Vertical; _log.SetBounds(16, 556, 728, 130);
             _log.BackColor = Color.White; Controls.Add(_log);
+
+            Controls.Add(g1);
+            Controls.Add(g2);
+            Controls.Add(g3);
 
             _ip.Text = LoadIp();
             _manifest = Manifest.Load(Program.FirmwareDir());
@@ -248,7 +252,7 @@ namespace FluidDialUpdater
                     else
                     {
                         Log("fluiddial-jc.local did not resolve.");
-                        Result("Pendant not found by name. It is only visible while the update is ARMED; otherwise type the IP shown on its FIRMWARE UPDATE page.", Color.DarkOrange);
+                        Result("Pendant not found by name. It is only visible while the pendant is READY; otherwise type the IP shown on its FIRMWARE UPDATE page.", Color.DarkOrange);
                     }
                     UpdateButtons();
                 });
@@ -272,9 +276,9 @@ namespace FluidDialUpdater
                 BeginInvoke((Action)delegate
                 {
                     _busy = false;
-                    if (o.Ok) Result("Pendant reachable and ARMED. It is waiting for the password.", Color.DarkGreen);
+                    if (o.Ok) Result("Pendant reachable and READY. It is waiting for the password.", Color.DarkGreen);
                     else if (!ping.StartsWith("reply")) Result("The pendant does not answer on the network (" + ping + "). Check power, Wi-Fi and the address.", Color.Firebrick);
-                    else Result("The pendant is on the network but the update is not armed. Arm it on the touchscreen.", Color.DarkOrange);
+                    else Result("The pendant is on the network but is not offering the update. Open SETTINGS > FIRMWARE UPDATE on it: it says why (no password, controller not Idle, no fresh status).", Color.DarkOrange);
                     UpdateButtons();
                 });
             });

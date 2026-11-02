@@ -25,6 +25,7 @@ namespace jc8048w550 {
 #define JC_OTA_IMAGE_MARKER "FDJC-IMAGE-TARGET:JC8048W550C_I:ESP32-S3:V1"
 
 constexpr uint32_t kJcOtaCooldownMs = 5u * 60u * 1000u;   // service pause after too many wrong passwords
+constexpr uint32_t kJcOtaFailureShowMs = 60u * 1000u;     // a failed update stays on screen this long, then the service is offered again
 constexpr uint32_t kJcOtaRestartDelayMs = 3000;            // lets the screen show "restarting"
 constexpr uint8_t  kJcOtaMaxAuthFailures = 5;              // wrong passwords before the service pauses
 constexpr uint8_t  kJcOtaMinPassword = 8;
@@ -136,6 +137,12 @@ public:
                 set_message("");
             }
         }
+        if (_state == JcOtaState::Failed) {
+            if (!_fail_seen) { _fail_seen = true; _fail_at = now; }
+            else if (static_cast<int32_t>(now - _fail_at) >= static_cast<int32_t>(kJcOtaFailureShowMs)) acknowledge_failure();
+        } else {
+            _fail_seen = false;
+        }
         if (_state == JcOtaState::Off) {
             if (!_paused && jc_ota_blocker(in) == nullptr) {
                 _state = JcOtaState::Ready;
@@ -157,6 +164,7 @@ public:
     void acknowledge_failure() {
         if (_state == JcOtaState::Failed) {
             _state = JcOtaState::Off;
+            _fail_seen = false;
             set_message("");
         }
     }
@@ -234,6 +242,8 @@ private:
     JcOtaState _state = JcOtaState::Off;
     uint32_t   _pause_until = 0;
     bool       _paused = false, _pause_set = false;
+    bool       _fail_seen = false;
+    uint32_t   _fail_at = 0;
     uint32_t   _restart_at = 0;
     uint32_t   _done = 0, _total = 0;
     uint8_t    _auth_failures = 0;

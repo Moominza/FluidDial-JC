@@ -21,7 +21,7 @@ namespace FluidDialUpdater
     public enum OtaResult
     {
         Success,
-        NoAnswer,        // no reply to the invitation: not armed / wrong address / unreachable
+        NoAnswer,        // no reply to the invitation: service not offered / wrong address / unreachable
         AuthFailed,
         BadAnswer,
         DeviceNoConnect, // authenticated, but the pendant never connected back (firewall / refused image)
@@ -89,7 +89,7 @@ namespace FluidDialUpdater
             return host != null && host.Trim().Length > 0 && ParseAddress(host.Trim()) != null;
         }
 
-        /// <summary>Resolve fluiddial-jc.local (the pendant advertises it only while OTA is armed).</summary>
+        /// <summary>Resolve fluiddial-jc.local (the pendant advertises it only while the update service is offered).</summary>
         public static string Discover(string hostName)
         {
             try
@@ -166,9 +166,9 @@ namespace FluidDialUpdater
                 string reply = Invite(udp, new IPEndPoint(ip, port), "0 40000 " + size + " " + md5 + "\n", 3, 2000, null, status);
                 if (reply == null)
                     return OtaOutcome.Make(OtaResult.NoAnswer,
-                        "No answer from the OTA service. The update is not armed (or the 5-minute window ended), the controller is not Idle, or the address is wrong.");
+                        "No answer from the OTA service. The pendant is not offering the update (no password set, the controller is not Idle or has no fresh status, or Wi-Fi is down), or the address is wrong.");
                 if (reply.StartsWith("AUTH"))
-                    return OtaOutcome.Make(OtaResult.Success, "The pendant is armed and asked for the password.");
+                    return OtaOutcome.Make(OtaResult.Success, "The pendant is READY and asked for the password.");
                 return OtaOutcome.Make(OtaResult.BadAnswer, "Unexpected answer from the pendant: " + Clean(reply));
             }
         }
@@ -213,8 +213,8 @@ namespace FluidDialUpdater
                     if (cancel != null && cancel.Requested) return OtaOutcome.Make(OtaResult.Cancelled, "Cancelled before the transfer started.");
                     if (reply == null)
                         return OtaOutcome.Make(OtaResult.NoAnswer,
-                            "No answer from the pendant. Check that the update is ARMED on the touchscreen (SETTINGS > FIRMWARE UPDATE > ARM UPDATE), " +
-                            "that the 5-minute window has not ended, that the controller is Idle, and that the address is right.");
+                            "No answer from the pendant. Check that SETTINGS > FIRMWARE UPDATE on the pendant says READY (a password is set, Wi-Fi is up and the controller is Idle " +
+                            "with fresh status) and that the address is right.");
 
                     if (reply.StartsWith("AUTH"))
                     {

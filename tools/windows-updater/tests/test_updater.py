@@ -196,7 +196,7 @@ def main():
     # --- readiness probe does not authenticate and does not start a transfer ---
     fp = FakePendant(); fp.start()
     rc, out = run_exe(["--cli", "--ip", "127.0.0.1", "--port", str(fp.port), "--file", GOOD, "--probe"])
-    check("probe: armed pendant detected, no transfer, no auth attempt", rc == 0 and "PROBE OK" in out and fp.fails == 0 and not fp.completed, out)
+    check("probe: ready pendant detected, no transfer, no auth attempt", rc == 0 and "PROBE OK" in out and fp.fails == 0 and not fp.completed, out)
     rc, out = run_exe(upload_args(fp.port, GOOD))
     check("probe followed by update still works (dropped invitation is retried)", rc == 0 and fp.completed == [good_sha], out + str(fp.events))
     check("stand-in did drop an invitation after the probe (library behaviour reproduced)", fp.dropped_invites >= 1, str(fp.dropped_invites))
@@ -221,7 +221,7 @@ def main():
     fp = FakePendant("unarmed"); fp.start()
     t0 = time.time()
     rc, out = run_exe(upload_args(fp.port, GOOD))
-    check("unarmed service: clear 'not armed' failure within ~20 s", rc == 1 and "ARMED" in out and time.time() - t0 < 40, out)
+    check("unavailable service: clear not-offered failure within ~20 s", rc == 1 and "READY" in out and time.time() - t0 < 40, out)
     fp.stop = True
 
     # --- disconnected pendant (nothing on the address) ---

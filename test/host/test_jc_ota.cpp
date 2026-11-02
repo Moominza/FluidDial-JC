@@ -181,8 +181,15 @@ static void test_wrong_target_image_rejected() {
     CHECK(c.state() == JcOtaState::Failed && !c.locked() && !c.restart_due(100000));
     CHECK(strstr(c.message(), "REJECTED") != nullptr && strstr(c.message(), "kept") != nullptr);
     c.tick(quiet(), 300);
-    CHECK(c.state() == JcOtaState::Failed && !c.service_wanted());   // a failure is shown until the operator clears it
-    c.acknowledge_failure();
+    CHECK(c.state() == JcOtaState::Failed && !c.service_wanted());   // a failure stays on screen...
+    c.tick(quiet(), 300 + kJcOtaFailureShowMs - 1);
+    CHECK(c.state() == JcOtaState::Failed);
+    c.tick(quiet(), 300 + kJcOtaFailureShowMs);                      // ...then clears by itself
+    CHECK(c.state() == JcOtaState::Ready);
+    CHECK(c.on_start());
+    c.on_transfer_complete(); c.on_validated(false, 400);
+    CHECK(c.state() == JcOtaState::Failed);
+    c.acknowledge_failure();                                          // or the operator dismisses it
     CHECK(c.state() == JcOtaState::Off);
     c.tick(quiet(), 400);
     CHECK(c.state() == JcOtaState::Ready);
