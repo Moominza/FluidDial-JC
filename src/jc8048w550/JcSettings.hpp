@@ -198,6 +198,14 @@ struct JcSettingsBlobV1 {
     uint32_t         crc;
 };
 
+static_assert(sizeof(JcSettingsBlob) != sizeof(JcSettingsBlobV1), "the stored length must identify the settings format");
+
+// The stored lengths the application accepts for decoding: the current format and the previous (migrated) one.
+// Anything else is not a settings blob of ours and the defaults are used (the stored bytes are left alone).
+inline bool jc_settings_stored_length_ok(size_t stored) {
+    return stored == sizeof(JcSettingsBlob) || stored == sizeof(JcSettingsBlobV1);
+}
+
 inline JcSettingsBlob jc_settings_encode(const JcUserSettings& s) {
     JcSettingsBlob blob;
     memset(&blob, 0, sizeof(blob));

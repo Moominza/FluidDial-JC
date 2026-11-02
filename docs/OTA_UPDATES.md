@@ -1,4 +1,4 @@
-# Wi-Fi firmware updates (OTA) - FluidDial-JC 1.5.1
+﻿# Wi-Fi firmware updates (OTA) - FluidDial-JC 1.5.1
 
 Update the pendant from a Windows PC over the local network, with the touchscreen left mounted and no USB cable. Applies to the two JC images (`jc8048w550_fullcontrol_test`, `jc8048w550`). It does not exist in the `m5dial` or `cyddial` builds.
 
@@ -67,7 +67,7 @@ pio run -e jc8048w550_fullcontrol_ota
 pio run -e jc8048w550_fullcontrol_ota -t upload --upload-port 192.168.0.135    # or fluiddial-jc.local
 ```
 
-`jc8048w550_fullcontrol_ota` builds the same firmware as `jc8048w550_fullcontrol_test` and differs only in using the espota upload protocol (`jc8048w550_ota` does the same for the diagnostic image). The password is read from the environment, never from the repository. On the pendant: connect to Wi-Fi, the controller Idle, SETTINGS > FIRMWARE UPDATE > ARM UPDATE > ARM, then run the upload command within 5 minutes. The progress bar moves, the pendant checks the image and restarts by itself.
+`jc8048w550_fullcontrol_ota` builds the same sources and flags as `jc8048w550_fullcontrol_test` (not byte-identical: build paths are embedded; the release files come from the base environments) and differs only in using the espota upload protocol (`jc8048w550_ota` does the same for the diagnostic image). The password is read from the environment, never from the repository. On the pendant: connect to Wi-Fi, the controller Idle, SETTINGS > FIRMWARE UPDATE > ARM UPDATE > ARM, then run the upload command within 5 minutes. The progress bar moves, the pendant checks the image and restarts by itself.
 
 Without PlatformIO: `python "%USERPROFILE%\.platformio\packages\framework-arduinoespressif32\tools\espota.py" -i 192.168.0.135 -p 3232 --auth=<password> -f firmware.bin`.
 

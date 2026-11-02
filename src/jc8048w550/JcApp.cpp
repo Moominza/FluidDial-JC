@@ -73,10 +73,12 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
 
     Preferences prefs;
     if (prefs.begin(kPrefsNamespace, true)) {
-        uint8_t buffer[sizeof(JcSettingsBlob)];
+        uint8_t buffer[sizeof(JcSettingsBlob) > sizeof(JcSettingsBlobV1) ? sizeof(JcSettingsBlob) : sizeof(JcSettingsBlobV1)];
         const size_t stored = prefs.getBytesLength(kPrefsKey);
-        if (stored == sizeof(buffer) && prefs.getBytes(kPrefsKey, buffer, sizeof(buffer)) == sizeof(buffer)
-            && jc_settings_decode(buffer, sizeof(buffer), _settings)) {
+        // The current format or the previous one (migrated by jc_settings_decode: saved preferences are kept).
+        if (jc_settings_stored_length_ok(stored) && stored <= sizeof(buffer)
+            && prefs.getBytes(kPrefsKey, buffer, stored) == stored && jc_settings_decode(buffer, stored, _settings)) {
+            if (stored == sizeof(JcSettingsBlobV1)) Serial.println("app: saved settings migrated from format 1");
             Serial.println("app: user settings loaded from NVS");
         } else {
             _settings = jc_settings_defaults();

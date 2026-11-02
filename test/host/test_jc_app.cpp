@@ -255,6 +255,8 @@ static void test_settings_persistence() {
         CHECK(m.rotary_steps[0] == 0.2f && m.rotary_steps[1] == 2.0f && m.rotary_steps[5] == 90.0f);  // customised kept
         CHECK(m.linear_feeds[0] == 300.0f && m.rotary_feeds[2] == 1000.0f);
         CHECK(m.brightness_percent == 55 && m.transport == 1 && m.uart_baud == 57600 && m.uart_rx_pin == 5 && m.uart_tx_pin == 6 && m.probe_feed == 77.0f);
+        CHECK(jc_settings_stored_length_ok(sizeof(JcSettingsBlobV1)) && jc_settings_stored_length_ok(sizeof(JcSettingsBlob)));
+        CHECK(!jc_settings_stored_length_ok(0) && !jc_settings_stored_length_ok(sizeof(JcSettingsBlob) + 1));
         v1.crc ^= 1u;
         CHECK(!jc_settings_decode(&v1, sizeof(v1), m));
     }
