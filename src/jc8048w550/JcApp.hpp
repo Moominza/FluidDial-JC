@@ -42,8 +42,7 @@ public:
     bool ota_locked() const override { return _ota.locked(); }
     const char* ota_set_password(const char* password) override;
     void ota_clear_password() override;
-    const char* ota_arm() override;
-    void ota_disarm() override;
+    void ota_clear_failure() override;
     void ota_restart() override;
     bool job_simulated() const override;   // the job shown is the rehearsal on the SIMULATED controller (ordinary firmware)
 #if JC_AUTHORITY

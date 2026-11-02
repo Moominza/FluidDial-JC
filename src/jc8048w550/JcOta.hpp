@@ -4,11 +4,12 @@
 // Wi-Fi OTA update policy (Instruction 020). Pure logic: no I/O, no Arduino. The platform glue
 // (JcOtaService.cpp) feeds it events from the stock ArduinoOTA library and acts on its decisions.
 //
-// Model: the OTA service is OFF by default. The operator arms it deliberately on the pendant
-// (SETTINGS > FIRMWARE UPDATE). Arming is refused unless the controller is verifiably quiet. While
-// armed (and during the transfer) every machine-changing command is locked out on every transport.
-// If the controller stops being quiet while armed, the service is withdrawn. Nothing here sends a
-// CNC command, and nothing here is a second motion controller.
+// Model (revised at the owner's request: no manual arming). The update service is available whenever an OTA
+// password is set and the controller is verifiably quiet (Wi-Fi up, fresh status, exactly Idle, nothing pending);
+// it closes by itself the moment that stops being true. A password is always required. Machine-changing commands
+// are locked out on every transport only from the moment an authenticated transfer starts. Five wrong passwords
+// pause the service for a cool-down. Nothing here sends a CNC command, and nothing here is a second motion
+// controller.
 
 #pragma once
 
@@ -23,18 +24,18 @@ namespace jc8048w550 {
 // not a signature: it does not authenticate who built the image.
 #define JC_OTA_IMAGE_MARKER "FDJC-IMAGE-TARGET:JC8048W550C_I:ESP32-S3:V1"
 
-constexpr uint32_t kJcOtaArmWindowMs = 5u * 60u * 1000u;   // the armed window: 5 minutes, then the service is withdrawn
+constexpr uint32_t kJcOtaCooldownMs = 5u * 60u * 1000u;   // service pause after too many wrong passwords
 constexpr uint32_t kJcOtaRestartDelayMs = 3000;            // lets the screen show "restarting"
-constexpr uint8_t  kJcOtaMaxAuthFailures = 5;              // wrong passwords before the service is withdrawn
+constexpr uint8_t  kJcOtaMaxAuthFailures = 5;              // wrong passwords before the service pauses
 constexpr uint8_t  kJcOtaMinPassword = 8;
 constexpr uint8_t  kJcOtaMaxPassword = 32;
 
-enum class JcOtaState : uint8_t { Off, Armed, Receiving, Validating, PendingRestart, Failed };
+enum class JcOtaState : uint8_t { Off, Ready, Receiving, Validating, PendingRestart, Failed };
 
 inline const char* jc_ota_state_name(JcOtaState s) {
     switch (s) {
-        case JcOtaState::Off: return "OFF";
-        case JcOtaState::Armed: return "ARMED - waiting for upload";
+        case JcOtaState::Off: return "UNAVAILABLE";
+        case JcOtaState::Ready: return "READY - waiting for upload";
         case JcOtaState::Receiving: return "RECEIVING FIRMWARE";
         case JcOtaState::Validating: return "VALIDATING";
         case JcOtaState::PendingRestart: return "UPDATE OK - RESTARTING";
@@ -56,7 +57,7 @@ struct JcOtaInputs {
     bool        command_pending = false;     // a machine command awaiting its reply
 };
 
-// nullptr = OTA may be armed. Otherwise the reason, in words for the operator. Missing status is never Idle.
+// nullptr = OTA may be offered. Otherwise the reason, in words for the operator. Missing status is never Idle.
 inline const char* jc_ota_blocker(const JcOtaInputs& in) {
     if (!in.wifi_up) return "Wi-Fi is not connected";
     if (!in.password_set) return "set an OTA password first";
@@ -113,72 +114,64 @@ private:
 class JcOtaController {
 public:
     JcOtaState state() const { return _state; }
-    bool locked() const {   // machine-changing commands are refused while true
-        return _state == JcOtaState::Armed || _state == JcOtaState::Receiving
-            || _state == JcOtaState::Validating || _state == JcOtaState::PendingRestart;
+    bool locked() const {   // machine-changing commands are refused while true (only once a transfer has begun)
+        return _state == JcOtaState::Receiving || _state == JcOtaState::Validating || _state == JcOtaState::PendingRestart;
     }
-    bool service_wanted() const { return _state == JcOtaState::Armed || _state == JcOtaState::Receiving; }
+    bool service_wanted() const { return _state == JcOtaState::Ready || _state == JcOtaState::Receiving; }
     const char* message() const { return _msg; }
     uint32_t progress_done() const { return _done; }
     uint32_t progress_total() const { return _total; }
     uint8_t percent() const { return _total == 0 ? 0 : static_cast<uint8_t>((static_cast<uint64_t>(_done) * 100u) / _total); }
     uint8_t auth_failures() const { return _auth_failures; }
-    uint32_t armed_remaining_ms(uint32_t now) const {
-        if (_state != JcOtaState::Armed) return 0;
-        const uint32_t used = now - _armed_at;
-        return used >= kJcOtaArmWindowMs ? 0 : kJcOtaArmWindowMs - used;
-    }
+    bool paused() const { return _paused; }
 
-    // Deliberate operator action. nullptr = armed; else why not (state unchanged apart from the message).
-    const char* arm(const JcOtaInputs& in, uint32_t now) {
-        if (_state == JcOtaState::Receiving || _state == JcOtaState::Validating || _state == JcOtaState::PendingRestart) {
-            return "an update is in progress";
-        }
-        const char* why = jc_ota_blocker(in);
-        if (why != nullptr) {
-            set_message(why);
-            return why;
-        }
-        _state = JcOtaState::Armed;
-        _armed_at = now;
-        _done = _total = 0;
-        _auth_failures = 0;
-        set_message("Ready: upload from the PC now");
-        return nullptr;
-    }
-
-    // Operator cancel / clear. Not possible once the transfer has begun (the flash write cannot be abandoned half way).
-    bool disarm() {
-        if (_state == JcOtaState::Receiving || _state == JcOtaState::Validating || _state == JcOtaState::PendingRestart) return false;
-        _state = JcOtaState::Off;
-        set_message("OTA off");
-        return true;
-    }
-
-    // Every pass. Withdraws the service when the window ends or the controller stops being quiet.
+    // Every pass. Offers the service while the controller is quiet and withdraws it the moment it is not.
     void tick(const JcOtaInputs& in, uint32_t now) {
-        if (_state != JcOtaState::Armed) return;
-        if (now - _armed_at >= kJcOtaArmWindowMs) {
-            _state = JcOtaState::Off;
-            set_message("Window ended: OTA withdrawn");
+        if (_paused) {
+            if (!_pause_set) { _pause_until = now + kJcOtaCooldownMs; _pause_set = true; }
+            else if (static_cast<int32_t>(now - _pause_until) >= 0) {
+                _paused = false;
+                _pause_set = false;
+                _auth_failures = 0;
+                set_message("");
+            }
+        }
+        if (_state == JcOtaState::Off) {
+            if (!_paused && jc_ota_blocker(in) == nullptr) {
+                _state = JcOtaState::Ready;
+                set_message("Send the firmware from the PC (FluidDial Updater)");
+            }
             return;
         }
+        if (_state != JcOtaState::Ready) return;
         JcOtaInputs quiet = in;
-        quiet.password_applied = true;   // the password was fine when armed
+        quiet.password_applied = true;   // the library already holds the password it was started with
         const char* why = jc_ota_blocker(quiet);
         if (why != nullptr) {
             _state = JcOtaState::Off;
-            snprintf_msg("OTA withdrawn: ", why);
+            set_message("");
+        }
+    }
+
+    // Operator action: nothing to arm any more; this only clears a failure message so the service is offered again.
+    void acknowledge_failure() {
+        if (_state == JcOtaState::Failed) {
+            _state = JcOtaState::Off;
+            set_message("");
         }
     }
 
     // ---- events from the platform OTA library -------------------------------------------------------------
 
-    void on_start() {
-        if (_state != JcOtaState::Armed) return;   // cannot happen while the service only runs when armed
+    // An authenticated transfer begins. false = refuse it (the platform glue aborts the write): the service was not
+    // being offered, so the controller was not quiet.
+    bool on_start() {
+        if (_state != JcOtaState::Ready) return false;
         _state = JcOtaState::Receiving;
         _done = _total = 0;
+        _auth_failures = 0;
         set_message("Receiving firmware...");
+        return true;
     }
     void on_progress(uint32_t done, uint32_t total) {
         if (_state != JcOtaState::Receiving) return;
@@ -206,9 +199,11 @@ public:
         if (e == JcOtaError::Auth) {
             ++_auth_failures;
             if (_auth_failures >= kJcOtaMaxAuthFailures) {
-                _state = JcOtaState::Off;
-                set_message("Too many wrong passwords: OTA withdrawn");
-            } else if (_state == JcOtaState::Armed) {
+                _paused = true;
+                _pause_set = false;
+                if (_state == JcOtaState::Ready) _state = JcOtaState::Off;
+                set_message("Too many wrong passwords: update paused for 5 minutes");
+            } else if (_state == JcOtaState::Ready) {
                 set_message("Wrong password refused");
             }
             return;
@@ -221,13 +216,6 @@ public:
             case JcOtaError::Receive: set_message("Transfer interrupted. Old firmware kept."); break;
             case JcOtaError::End: set_message("Image failed verification. Old firmware kept."); break;
             default: set_message("Update failed. Old firmware kept."); break;
-        }
-    }
-    // Clears a failure so the operator can arm again.
-    void acknowledge_failure() {
-        if (_state == JcOtaState::Failed) {
-            _state = JcOtaState::Off;
-            set_message("");
         }
     }
     bool restart_due(uint32_t now) const {
@@ -244,7 +232,8 @@ private:
     }
 
     JcOtaState _state = JcOtaState::Off;
-    uint32_t   _armed_at = 0;
+    uint32_t   _pause_until = 0;
+    bool       _paused = false, _pause_set = false;
     uint32_t   _restart_at = 0;
     uint32_t   _done = 0, _total = 0;
     uint8_t    _auth_failures = 0;
@@ -255,13 +244,12 @@ private:
 struct JcOtaView {
     JcOtaState state = JcOtaState::Off;
     char       message[72] = "";
-    char       blocker[64] = "";     // why arming is refused right now; empty = ready
+    char       blocker[64] = "";     // why the update is not offered right now; empty = offered
     char       ip[20] = "";
     char       host[24] = "";
     char       rollback[40] = "";
     uint8_t    percent = 0;
     uint8_t    auth_failures = 0;
-    uint32_t   remaining_ms = 0;
     bool       wifi_up = false;
     bool       password_set = false;
     bool       locked = false;

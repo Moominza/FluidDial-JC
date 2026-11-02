@@ -39,7 +39,13 @@ bool new_image_has_marker(const esp_partition_t* part, uint32_t length) {
 
 struct JcOtaCallbacks {
     static void on_start() {
-        if (g_svc && g_svc->_ctl) g_svc->_ctl->on_start();
+        if (g_svc && g_svc->_ctl && !g_svc->_ctl->on_start()) {
+            // The controller is no longer quiet (or the service was not being offered): refuse. The partly begun
+            // write is abandoned before any byte is accepted; the running image is untouched.
+            Update.abort();
+            Serial.println("ota: transfer refused (controller not quiet)");
+            return;
+        }
         Serial.println("ota: transfer started");
         if (g_svc && g_svc->_draw) g_svc->_draw(g_svc->_draw_user);
     }

@@ -469,7 +469,6 @@ protected:
     void on_draw() override;
     void on_touch(uint16_t x, uint16_t y) override;
     void on_tick(uint32_t now) override;
-    void on_custom_confirm() override;
 
 private:
     void draw_dynamic(bool force);

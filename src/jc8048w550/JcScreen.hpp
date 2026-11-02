@@ -86,8 +86,7 @@ public:
     virtual bool ota_locked() const = 0;                       // machine-changing commands are locked out
     virtual const char* ota_set_password(const char* password) = 0;   // nullptr = stored
     virtual void ota_clear_password() = 0;
-    virtual const char* ota_arm() = 0;                         // nullptr = armed, else why not
-    virtual void ota_disarm() = 0;                             // cancel / clear a failure
+    virtual void ota_clear_failure() = 0;                      // acknowledge a failed update
     virtual void ota_restart() = 0;
     virtual bool job_simulated() const = 0;   // the job on screen is a rehearsal on the SIMULATED controller
 #if JC_AUTHORITY

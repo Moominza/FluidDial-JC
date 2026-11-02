@@ -1,9 +1,9 @@
 // Copyright (c) 2026 FluidDial-JC contributors
 // Use of this source code is governed by a GPLv3 license in the project root.
 
-// SETTINGS > FIRMWARE UPDATE (Instruction 020). The page shows what is installed, whether an update could be
-// armed right now and why not, and the progress and result of a transfer. Arming is a deliberate, confirmed
-// action; nothing on this page can send a CNC command.
+// SETTINGS > FIRMWARE UPDATE. The page shows what is installed, whether the update service is available right now
+// and why not, and the progress and result of a transfer. There is no arming step: the service is offered while the
+// controller is Idle and a password is set. Nothing on this page can send a CNC command.
 
 #include "JcScreens.hpp"
 
@@ -17,9 +17,8 @@ namespace jc8048w550 {
 namespace {
 constexpr ui::Rect kSetPassword { 16, 250, 250, 52 };
 constexpr ui::Rect kClearPassword { 274, 250, 130, 52 };
-constexpr ui::Rect kArm { 16, 312, 250, 58 };
-constexpr ui::Rect kCancel { 274, 312, 250, 58 };
-constexpr ui::Rect kRestart { 532, 312, 252, 58 };
+constexpr ui::Rect kClearFailure { 16, 312, 250, 58 };
+constexpr ui::Rect kRestart { 274, 312, 252, 58 };
 constexpr ui::Rect kBar { 16, 380, 768, 22 };
 
 const char* build_mode_text() {
@@ -73,39 +72,38 @@ void JcOtaScreen::draw_dynamic(bool force) {
     _info[3].draw(sv.display, { 16, 142, 768, 22 }, line, FontId::Body16, v.password_set ? WHITE : ui::kWarn, ui::kBg);
     snprintf(line, sizeof(line), "Boot image: %s", v.rollback);
     _info[4].draw(sv.display, { 16, 166, 768, 22 }, line, FontId::Body16, ui::kMuted, ui::kBg);
-    // The state line is the one the operator must not misread: armed / active / done / failed.
+    // The state line is the one the operator must not misread: ready / active / done / failed.
     uint16_t colour = WHITE;
-    if (v.state == JcOtaState::Armed || v.state == JcOtaState::Receiving || v.state == JcOtaState::Validating) colour = ui::kWarn;
-    else if (v.state == JcOtaState::PendingRestart) colour = ui::kGood;
+    if (v.state == JcOtaState::Receiving || v.state == JcOtaState::Validating) colour = ui::kWarn;
+    else if (v.state == JcOtaState::Ready || v.state == JcOtaState::PendingRestart) colour = ui::kGood;
     else if (v.state == JcOtaState::Failed) colour = RED;
-    if (v.state == JcOtaState::Armed) {
-        snprintf(line, sizeof(line), "UPDATE: %s  (%lu s left)  COMMANDS LOCKED", jc_ota_state_name(v.state),
-                 static_cast<unsigned long>(v.remaining_ms / 1000u));
-    } else if (v.locked) {
-        snprintf(line, sizeof(line), "UPDATE: %s  COMMANDS LOCKED", jc_ota_state_name(v.state));
-    } else {
-        snprintf(line, sizeof(line), "UPDATE: %s", jc_ota_state_name(v.state));
-    }
+    if (v.locked) snprintf(line, sizeof(line), "UPDATE: %s  COMMANDS LOCKED", jc_ota_state_name(v.state));
+    else snprintf(line, sizeof(line), "UPDATE: %s", jc_ota_state_name(v.state));
     _state.draw(sv.display, { 16, 196, 768, 44 }, line, FontId::Button20, colour, ui::kBg);
 
-    const bool ready = v.blocker[0] == '\0' && v.state == JcOtaState::Off;
+    const bool ready = v.state == JcOtaState::Ready;
     const bool busy = v.state == JcOtaState::Receiving || v.state == JcOtaState::Validating || v.state == JcOtaState::PendingRestart;
     if (force || ready != _drawn_ready || v.state != _drawn_state) {
-        ui::button(sv.display, kArm, "ARM UPDATE", ready ? ui::Btn::Good : ui::Btn::Disabled);
-        const char* cancel = v.state == JcOtaState::Failed ? "CLEAR FAILURE" : (v.state == JcOtaState::Armed ? "CANCEL OTA" : "OTA OFF");
-        ui::button(sv.display, kCancel, cancel,
-                   (v.state == JcOtaState::Armed || v.state == JcOtaState::Failed) ? ui::Btn::Danger : ui::Btn::Disabled);
-        ui::button(sv.display, kRestart, "RESTART PENDANT", (busy || v.state == JcOtaState::Armed) ? ui::Btn::Disabled : ui::Btn::Normal);
+        ui::button(sv.display, kClearFailure, "CLEAR FAILURE", v.state == JcOtaState::Failed ? ui::Btn::Danger : ui::Btn::Disabled);
+        ui::button(sv.display, kRestart, "RESTART PENDANT", busy ? ui::Btn::Disabled : ui::Btn::Normal);
         _drawn_ready = ready;
         _drawn_state = v.state;
     }
     // Progress bar.
     if (busy) {
         if (force || _bar != v.percent) {
-            sv.display.drawRect(kBar.x, kBar.y, kBar.w, kBar.h, WHITE);
-            const int16_t w = static_cast<int16_t>((static_cast<int32_t>(kBar.w - 2) * v.percent) / 100);
-            sv.display.fillRect(kBar.x + 1, kBar.y + 1, kBar.w - 2, kBar.h - 2, ui::kBg);
-            sv.display.fillRect(kBar.x + 1, kBar.y + 1, w, kBar.h - 2, ui::kGood);
+            const int32_t inner = kBar.w - 2;
+            const int16_t w = static_cast<int16_t>((inner * v.percent) / 100);
+            if (force || _bar == 255 || v.percent < _bar) {
+                // Full draw only when the bar first appears; afterwards only the newly filled part is painted, so
+                // the panel is not flickered once per percent while the flash is being written.
+                sv.display.drawRect(kBar.x, kBar.y, kBar.w, kBar.h, WHITE);
+                sv.display.fillRect(kBar.x + 1, kBar.y + 1, kBar.w - 2, kBar.h - 2, ui::kBg);
+                sv.display.fillRect(kBar.x + 1, kBar.y + 1, w, kBar.h - 2, ui::kGood);
+            } else {
+                const int16_t old_w = static_cast<int16_t>((inner * _bar) / 100);
+                if (w > old_w) sv.display.fillRect(kBar.x + 1 + old_w, kBar.y + 1, w - old_w, kBar.h - 2, ui::kGood);
+            }
             _bar = v.percent;
         }
     } else if (_bar != 255) {
@@ -114,10 +112,10 @@ void JcOtaScreen::draw_dynamic(bool force) {
     }
     if (v.message[0] != '\0') {
         snprintf(line, sizeof(line), "%s", v.message);
-    } else if (!ready && v.state == JcOtaState::Off && v.blocker[0] != '\0') {
-        snprintf(line, sizeof(line), "Cannot arm: %s", v.blocker);
+    } else if (v.state == JcOtaState::Off && v.blocker[0] != '\0') {
+        snprintf(line, sizeof(line), "Not available: %s", v.blocker);
     } else {
-        snprintf(line, sizeof(line), "An idle controller and a password are required to arm.");
+        snprintf(line, sizeof(line), "Available whenever a password is set and the controller is Idle.");
     }
     _message.draw(sv.display, { 16, 408, 768, 22 }, line, FontId::Body16,
                   v.state == JcOtaState::Failed ? RED : WHITE, ui::kBg);
@@ -144,22 +142,13 @@ void JcOtaScreen::password_done(bool ok, const char* text) {
     }
 }
 
-void JcOtaScreen::on_custom_confirm() {
-    const char* why = sv.host.ota_arm();
-    if (why != nullptr) {
-        show_message("CANNOT ARM UPDATE", why);
-    } else {
-        draw();
-    }
-}
-
 void JcOtaScreen::on_touch(uint16_t x, uint16_t y) {
     JcOtaView v;
     sv.host.ota_view(v);
     const bool busy = v.state == JcOtaState::Receiving || v.state == JcOtaState::Validating || v.state == JcOtaState::PendingRestart;
     if (ui::hit(kSetPassword, x, y)) {
-        if (v.state == JcOtaState::Armed || busy) {
-            show_message("UPDATE ACTIVE", "Cancel the update first.");
+        if (busy) {
+            show_message("UPDATE ACTIVE", "Wait for the update to finish.");
             return;
         }
         JcInputRequest r {};
@@ -170,32 +159,19 @@ void JcOtaScreen::on_touch(uint16_t x, uint16_t y) {
         r.user = this;
         sv.host.request_input(r);
     } else if (ui::hit(kClearPassword, x, y)) {
-        if (v.state == JcOtaState::Armed || busy) {
-            show_message("UPDATE ACTIVE", "Cancel the update first.");
+        if (busy) {
+            show_message("UPDATE ACTIVE", "Wait for the update to finish.");
             return;
         }
         sv.host.ota_clear_password();
         draw();
-    } else if (ui::hit(kArm, x, y)) {
-        if (v.blocker[0] != '\0' || v.state != JcOtaState::Off) {
-            show_message("CANNOT ARM UPDATE", v.blocker[0] != '\0' ? v.blocker : jc_ota_state_name(v.state));
-            return;
-        }
-        open_custom_confirm("ARM FIRMWARE UPDATE?", "ARM");
-        dialog.add_line("While armed, ALL machine-changing commands", ui::kWarn);
-        dialog.add_line("are LOCKED on every connection.", ui::kWarn);
-        dialog.add_line("The controller must stay Idle; if it does not,", ui::kWarn);
-        dialog.add_line("the update is withdrawn.");
-        dialog.add_line("Upload from the PC within 5 minutes.");
-        dialog.add_line("Feed hold / reset here are NOT an E-stop.");
-        draw();
-    } else if (ui::hit(kCancel, x, y)) {
-        if (v.state == JcOtaState::Armed || v.state == JcOtaState::Failed) {
-            sv.host.ota_disarm();
+    } else if (ui::hit(kClearFailure, x, y)) {
+        if (v.state == JcOtaState::Failed) {
+            sv.host.ota_clear_failure();
             draw();
         }
     } else if (ui::hit(kRestart, x, y)) {
-        if (!busy && v.state != JcOtaState::Armed) {
+        if (!busy) {
             sv.host.ota_restart();
         }
     }

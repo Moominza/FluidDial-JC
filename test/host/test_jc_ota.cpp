@@ -1,7 +1,7 @@
 // Copyright (c) 2026 FluidDial-JC contributors
 // Use of this source code is governed by a GPLv3 license in the project root.
 //
-// Host tests for the Wi-Fi OTA policy (Instruction 020): the update state machine, the controller-state
+// Host tests for the Wi-Fi OTA policy: the update state machine (no manual arming: offered while the controller is Idle), the controller-state
 // interlocks (a missing status is never Idle), authentication handling, the image-target check, the
 // machine-command lockout at the ONE shared transmit point (so it holds on Wi-Fi, UART and BLE alike), and that
 // the lockout does not weaken the existing command policy (no program start / resume / macros).
@@ -56,6 +56,13 @@ static void test_interlocks() {
     in = quiet(); in.command_pending = true;              CHECK(jc_ota_blocker(in) != nullptr);
 }
 
+// A controller that has seen a quiet pass is offering the service.
+static JcOtaController ready_controller(uint32_t now = 100) {
+    JcOtaController c;
+    c.tick(quiet(), now);
+    return c;
+}
+
 static void test_password_rules() {
     CHECK(!jc_ota_password_valid(nullptr));
     CHECK(!jc_ota_password_valid(""));
@@ -67,36 +74,47 @@ static void test_password_rules() {
     CHECK(!jc_ota_password_valid("has space 123"));
     CHECK(!jc_ota_password_valid("tab\there123"));
     CHECK(!jc_ota_password_valid("caf\xC3\xA9-password"));
-    // No built-in password exists: a controller that was never given one cannot be armed.
+    // No built-in password exists: a pendant that was never given one never offers the service.
     JcOtaController c;
     JcOtaInputs in = quiet(); in.password_set = false;
-    CHECK(c.arm(in, 100) != nullptr && c.state() == JcOtaState::Off && !c.locked());
+    c.tick(in, 100);
+    CHECK(c.state() == JcOtaState::Off && !c.locked() && !c.service_wanted());
+    in.password_set = true; in.password_applied = false;   // a password changed since the library started
+    c.tick(in, 200);
+    CHECK(c.state() == JcOtaState::Off && !c.service_wanted());
 }
 
-static void test_arm_lock_and_timeout() {
+static void test_offered_only_when_quiet_and_never_locks_by_itself() {
     JcOtaController c;
     CHECK(c.state() == JcOtaState::Off && !c.locked() && !c.service_wanted());
-    CHECK(c.arm(quiet(), 1000) == nullptr);
-    CHECK(c.state() == JcOtaState::Armed && c.locked() && c.service_wanted());
-    CHECK(c.armed_remaining_ms(1000) == kJcOtaArmWindowMs);
-    c.tick(quiet(), 1000 + kJcOtaArmWindowMs - 1);
-    CHECK(c.state() == JcOtaState::Armed);
-    c.tick(quiet(), 1000 + kJcOtaArmWindowMs);
-    CHECK(c.state() == JcOtaState::Off && !c.locked());   // the window closes by itself
-    // Operator cancel.
-    CHECK(c.arm(quiet(), 5000) == nullptr);
-    CHECK(c.disarm() && c.state() == JcOtaState::Off && !c.locked());
-    // The window survives a tick counter wrap.
-    JcOtaController w;
-    CHECK(w.arm(quiet(), 0xFFFFFF00u) == nullptr);
-    w.tick(quiet(), 0x00000100u);
-    CHECK(w.state() == JcOtaState::Armed);
+    c.tick(quiet(), 1000);
+    CHECK(c.state() == JcOtaState::Ready && c.service_wanted());
+    CHECK(!c.locked());                                       // READY does not touch the operator's commands
+    for (uint32_t t = 2000; t < 2000 + 3600u * 1000u; t += 60000u) c.tick(quiet(), t);
+    CHECK(c.state() == JcOtaState::Ready);                    // no timeout: it stays offered while the controller is quiet
+    // Every unsafe condition keeps it unavailable.
+    for (int why = 0; why < 8; ++why) {
+        JcOtaController d;
+        JcOtaInputs in = quiet();
+        switch (why) {
+            case 0: in.machine_state = "Run"; break;
+            case 1: in.machine_state = ""; break;
+            case 2: in.status_fresh = false; break;
+            case 3: in.workflow_active = true; break;
+            case 4: in.command_pending = true; break;
+            case 5: in.wifi_up = false; break;
+            case 6: in.jog_unresolved = true; break;
+            default: in.machine_state = "Alarm"; break;
+        }
+        d.tick(in, 100);
+        CHECK(d.state() == JcOtaState::Off && !d.service_wanted() && !d.locked());
+    }
 }
 
 static void test_withdrawn_when_controller_not_quiet() {
     for (int why = 0; why < 6; ++why) {
-        JcOtaController c;
-        CHECK(c.arm(quiet(), 100) == nullptr);
+        JcOtaController c = ready_controller();
+        CHECK(c.state() == JcOtaState::Ready);
         JcOtaInputs in = quiet();
         switch (why) {
             case 0: in.machine_state = "Run"; break;
@@ -107,26 +125,32 @@ static void test_withdrawn_when_controller_not_quiet() {
             default: in.wifi_up = false; break;
         }
         c.tick(in, 200);
-        CHECK(c.state() == JcOtaState::Off && !c.locked());   // withdrawn, lock released
-        CHECK(strstr(c.message(), "withdrawn") != nullptr);
+        CHECK(c.state() == JcOtaState::Off && !c.locked() && !c.service_wanted());   // closed at once
+        c.tick(quiet(), 300);
+        CHECK(c.state() == JcOtaState::Ready);                                       // and back when quiet again
     }
-    // A password changed after arming does not withdraw an already-armed session.
-    JcOtaController c;
-    CHECK(c.arm(quiet(), 100) == nullptr);
+    // A password changed while the service is offered does not withdraw it.
+    JcOtaController c = ready_controller();
     JcOtaInputs in = quiet(); in.password_applied = false;
     c.tick(in, 200);
-    CHECK(c.state() == JcOtaState::Armed);
+    CHECK(c.state() == JcOtaState::Ready);
 }
 
 static void test_transfer_lifecycle() {
     JcOtaController c;
-    // Events outside an armed session are ignored: an unsolicited transfer cannot move the state.
-    c.on_start(); c.on_progress(5, 10); c.on_transfer_complete(); c.on_validated(true, 0);
-    CHECK(c.state() == JcOtaState::Off);
-    CHECK(c.arm(quiet(), 100) == nullptr);
-    c.on_start();
+    // Events while the service is not being offered are ignored: an unsolicited transfer cannot move the state,
+    // and the glue is told to refuse it.
+    CHECK(!c.on_start());
+    c.on_progress(5, 10); c.on_transfer_complete(); c.on_validated(true, 0);
+    CHECK(c.state() == JcOtaState::Off && !c.locked());
+    c.tick(quiet(), 100);
+    CHECK(c.on_start());
     CHECK(c.state() == JcOtaState::Receiving && c.locked() && c.percent() == 0);
-    CHECK(!c.disarm());                                    // cannot abandon a flash write half way
+    c.tick(quiet(), 101);
+    CHECK(c.state() == JcOtaState::Receiving);                // ticks never abandon a flash write half way
+    JcOtaInputs run = quiet(); run.machine_state = "Run";
+    c.tick(run, 102);
+    CHECK(c.state() == JcOtaState::Receiving && c.locked());  // even if the controller reports something else
     c.on_progress(250, 1000);
     CHECK(c.percent() == 25);
     c.on_progress(1000, 1000);
@@ -137,57 +161,82 @@ static void test_transfer_lifecycle() {
     CHECK(c.state() == JcOtaState::PendingRestart && c.locked());
     CHECK(!c.restart_due(5000 + kJcOtaRestartDelayMs - 1));
     CHECK(c.restart_due(5000 + kJcOtaRestartDelayMs));
+    c.tick(quiet(), 6000);
+    CHECK(c.state() == JcOtaState::PendingRestart);            // nothing re-offers the service while a restart is pending
     // Only a PendingRestart asks for a restart.
     JcOtaController d;
     CHECK(!d.restart_due(0xFFFFFFFFu));
+    // The start while the controller is not quiet is refused (the service had been withdrawn).
+    JcOtaController e = ready_controller();
+    e.tick(run, 150);
+    CHECK(!e.on_start() && !e.locked());
 }
 
 static void test_wrong_target_image_rejected() {
-    JcOtaController c;
-    CHECK(c.arm(quiet(), 100) == nullptr);
-    c.on_start();
+    JcOtaController c = ready_controller();
+    CHECK(c.on_start());
     c.on_progress(10, 10);
     c.on_transfer_complete();
     c.on_validated(false, 200);                            // image without the JC marker
     CHECK(c.state() == JcOtaState::Failed && !c.locked() && !c.restart_due(100000));
     CHECK(strstr(c.message(), "REJECTED") != nullptr && strstr(c.message(), "kept") != nullptr);
+    c.tick(quiet(), 300);
+    CHECK(c.state() == JcOtaState::Failed && !c.service_wanted());   // a failure is shown until the operator clears it
     c.acknowledge_failure();
     CHECK(c.state() == JcOtaState::Off);
+    c.tick(quiet(), 400);
+    CHECK(c.state() == JcOtaState::Ready);
 }
 
 static void test_errors() {
     struct { JcOtaError e; } cases[] = { { JcOtaError::Begin }, { JcOtaError::Connect }, { JcOtaError::Receive }, { JcOtaError::End } };
     for (auto& k : cases) {
-        JcOtaController c;
-        CHECK(c.arm(quiet(), 100) == nullptr);
-        c.on_start();
+        JcOtaController c = ready_controller();
+        CHECK(c.on_start());
         c.on_progress(3, 10);
         c.on_error(k.e);
         CHECK(c.state() == JcOtaState::Failed && !c.locked() && !c.restart_due(1u << 30));
         CHECK(strstr(c.message(), "kept") != nullptr);     // the operator is told the old firmware is untouched
     }
+    // A refused image (too large) is reported before any transfer began.
+    JcOtaController b = ready_controller();
+    b.on_error(JcOtaError::Begin);
+    CHECK(b.state() == JcOtaState::Failed && !b.locked());
     // An interrupted transfer cannot be restarted by replaying events.
-    JcOtaController c;
-    CHECK(c.arm(quiet(), 100) == nullptr);
-    c.on_start(); c.on_error(JcOtaError::Receive);
+    JcOtaController c = ready_controller();
+    CHECK(c.on_start()); c.on_error(JcOtaError::Receive);
     c.on_progress(9, 10); c.on_transfer_complete(); c.on_validated(true, 1);
     CHECK(c.state() == JcOtaState::Failed);
 }
 
 static void test_authentication() {
-    JcOtaController c;
-    CHECK(c.arm(quiet(), 100) == nullptr);
+    JcOtaController c = ready_controller(100);
     for (int i = 1; i < kJcOtaMaxAuthFailures; ++i) {
         c.on_error(JcOtaError::Auth);
-        CHECK(c.state() == JcOtaState::Armed && c.auth_failures() == i);   // refused, still locked and waiting
-        CHECK(c.locked());
+        CHECK(c.state() == JcOtaState::Ready && c.auth_failures() == i);   // refused, still offered, commands untouched
+        CHECK(!c.locked());
     }
     c.on_error(JcOtaError::Auth);
-    CHECK(c.state() == JcOtaState::Off && !c.locked());                    // brute force: the service is withdrawn
+    CHECK(c.state() == JcOtaState::Off && !c.locked() && c.paused());      // brute force: the service pauses
     CHECK(strstr(c.message(), "wrong passwords") != nullptr);
-    // A new arm starts the count again.
-    CHECK(c.arm(quiet(), 900) == nullptr);
-    CHECK(c.auth_failures() == 0);
+    // Paused: not re-offered even though the controller is quiet.
+    c.tick(quiet(), 1000);
+    c.tick(quiet(), 1000 + kJcOtaCooldownMs - 1);
+    CHECK(c.state() == JcOtaState::Off && !c.service_wanted());
+    // The cool-down ends by itself and the count starts again.
+    c.tick(quiet(), 1000 + kJcOtaCooldownMs);
+    CHECK(!c.paused() && c.auth_failures() == 0);
+    c.tick(quiet(), 1001 + kJcOtaCooldownMs);
+    CHECK(c.state() == JcOtaState::Ready);
+    // A correct login resets the count (a transfer starts).
+    c.on_error(JcOtaError::Auth); c.on_error(JcOtaError::Auth);
+    CHECK(c.on_start() && c.auth_failures() == 0);
+    // The cool-down survives a tick-counter wrap.
+    JcOtaController w = ready_controller(0xFFFFFF00u);
+    for (int i = 0; i < kJcOtaMaxAuthFailures; ++i) w.on_error(JcOtaError::Auth);
+    w.tick(quiet(), 0xFFFFFF10u);
+    w.tick(quiet(), 0x00000100u);
+    CHECK(w.paused());
 }
 
 static void test_marker_scanner() {
@@ -257,17 +306,21 @@ static void test_lockout_follows_ota_state() {
     JcOtaController c;
     auto pass = [&](const JcOtaInputs& in, uint32_t now) { c.tick(in, now); sys.set_locked(c.locked()); };
     pass(quiet(), 10);
-    CHECK(!sys.locked());
-    CHECK(c.arm(quiet(), 20) == nullptr); pass(quiet(), 21);
-    CHECK(sys.locked());
-    c.on_start(); pass(quiet(), 22); CHECK(sys.locked());
+    CHECK(c.state() == JcOtaState::Ready);
+    CHECK(!sys.locked());                                   // offering the service does NOT lock the operator out
+    CHECK(JcCommandSystem::session_tx(&sys, "$J=G91G21F100X1.000\n", 20));   // jogging still works while READY
+    CHECK(w.sent.size() == 1);
+    CHECK(c.on_start()); pass(quiet(), 22);
+    CHECK(sys.locked());                                    // the transfer locks everything
+    CHECK(!JcCommandSystem::session_tx(&sys, "$X\n", 3));
     c.on_transfer_complete(); pass(quiet(), 23); CHECK(sys.locked());
     c.on_validated(false, 24); pass(quiet(), 25);
     CHECK(!sys.locked());                                   // a failed update gives the pendant back
+    c.acknowledge_failure(); pass(quiet(), 26);
+    CHECK(c.state() == JcOtaState::Ready && !sys.locked());
     JcOtaInputs run = quiet(); run.machine_state = "Run";
-    CHECK(c.arm(quiet(), 30) == nullptr); pass(quiet(), 31); CHECK(sys.locked());
     pass(run, 32);
-    CHECK(!sys.locked());                                   // controller started something: withdrawn, commands restored
+    CHECK(c.state() == JcOtaState::Off && !sys.locked());   // controller started something: service closed, nothing locked
 }
 
 // ---- the lockout never opens a program-start path ----------------------------------------------------------
@@ -290,7 +343,7 @@ static void test_command_policy_unchanged() {
 int main() {
     test_interlocks();
     test_password_rules();
-    test_arm_lock_and_timeout();
+    test_offered_only_when_quiet_and_never_locks_by_itself();
     test_withdrawn_when_controller_not_quiet();
     test_transfer_lifecycle();
     test_wrong_target_image_rejected();

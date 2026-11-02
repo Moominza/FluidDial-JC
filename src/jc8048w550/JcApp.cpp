@@ -529,7 +529,6 @@ void JcApp::ota_view(JcOtaView& v) const {
     snprintf(v.rollback, sizeof(v.rollback), "%s", _ota_svc.rollback_text());
     v.percent = _ota.percent();
     v.auth_failures = _ota.auth_failures();
-    v.remaining_ms = _ota.armed_remaining_ms(millis());
     v.password_set = _ota_svc.password_set();
     v.locked = _ota.locked();
 }
@@ -543,16 +542,8 @@ void JcApp::ota_clear_password() {
     if (!_ota.locked()) _ota_svc.clear_password();
 }
 
-const char* JcApp::ota_arm() {
-    return _ota.arm(ota_inputs(), millis());
-}
-
-void JcApp::ota_disarm() {
-    if (_ota.state() == JcOtaState::Failed) _ota.acknowledge_failure();
-    else _ota.disarm();
-#if JC_AUTHORITY
-    _cmd.set_locked(_ota.locked());
-#endif
+void JcApp::ota_clear_failure() {
+    _ota.acknowledge_failure();
 }
 
 void JcApp::ota_restart() {
