@@ -94,5 +94,6 @@ Windows firewall: the pendant opens a TCP connection **back to the PC** to pull 
 | Settings page layouts and hitboxes, all OTA states | **Host-rendered** (not the physical panel) |
 | Static guards: no literal password, lockout present, OTA code only in the JC sources, markers only in JC binaries | **Tool-verified** on the built images |
 | Partition table / bootloader / otadata on the pendant equal the build; NVS untouched by the app-only flash | **Device-read** |
-| First OTA-capable image installed over USB, boots, Wi-Fi, LIVE, OTA service present and off | see COMMISSIONING.md for the recorded result |
+| First OTA-capable image installed over USB (app + boot selector only, `esptool verify_flash` matched); boots, FULL CONTROL banner, saved calibration, saved Wi-Fi, TCP, LIVE; OTA service present and OFF; no OTA password yet | **Device-tested** (2026-11-02) |
+| Saved settings of the previous format are migrated at start-up | **Device-tested** - a first install showed the old settings being ignored (a defect: the start-up length check rejected them); fixed, then the log shows "saved settings migrated from format 1" |
 | A real wireless update, wrong password, update while the controller is not Idle, corrupt / wrong-target / oversize / interrupted transfers, power loss, rollback after a crashing image | **NOT tested on hardware** (need the owner at the pendant to set the password and arm it) |

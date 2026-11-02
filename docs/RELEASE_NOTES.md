@@ -42,9 +42,14 @@ Everything in the owner's acceptance table (X, Y, Z, A, jog cancel, homing, prob
 - UART and BLE hardware results are operator-reported only; repository tests use a mock radio and a simulator.
 - FEED HOLD, CANCEL JOG and RESET are not an emergency stop.
 
-## Checksums (source commit 3c76461, tag v1.5.1, reproducible: two clean builds matched)
+## Checksums (source commit a53211e = tag v1.5.1, local; reproducible: two clean builds matched)
 
 ```
-c8789e72f5f8d14cbfc52f3fc9e495c832f85a9b9e4d114b884e05e02746f99d  fluiddial-jc-1.5.1-diagnostic-motion-disabled.bin
-db29f6bac963211442ed10fa0ca2b5440847614dc41d3996e8c717393c88c23c  fluiddial-jc-1.5.1-fullcontrol.bin
+0431c7cd1a77c31ae8af005aadabc6c3a11526ce30f4a8565ea273f6df33815a  fluiddial-jc-1.5.1-diagnostic-motion-disabled.bin
+16fd0db3e9663b5a6983ed169dc9dbb9dc8510ebd5072f7fbe07819142d26bd8  fluiddial-jc-1.5.1-fullcontrol.bin
+f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0  fluiddial-jc-1.5.1-usb-boot_app0.bin
+2a71d69b471e20c2bac7fb469f3c6a807b3ebee780e348e5889db0da849ca363  fluiddial-jc-1.5.1-usb-bootloader.bin
+1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c  fluiddial-jc-1.5.1-usb-partitions.bin
 ```
+
+The full-control image above is what is installed on the pendant (USB, app only; esptool verify matched). The diagnostic image has not been flashed.

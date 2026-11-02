@@ -74,6 +74,8 @@ Re-read on 2026-11-02 ([evidence](development/evidence/2026-11-02-controller-rea
 
 ## Wi-Fi OTA (Instruction 020)
 
+On 2026-11-02 the first OTA-capable full-control image (tag v1.5.1, source a53211e) was installed over COM3 (app + boot selector; verify matched; the partition table, bootloader and otadata on the pendant already equalled the build, so no partition migration; NVS was not erased) and the pendant came up with its calibration, Wi-Fi, settings (migrated) and LIVE status; no OTA password has been set yet. Note: after a pendant reset FluidNC can keep the previous telnet session for a while, so the TCP reconnect took 9 attempts (~2 minutes) before LIVE; this is existing reconnect behaviour, not an OTA effect.
+
 Software implemented; **hardware acceptance of a real wireless update is PENDING** (it needs the owner at the pendant to set the OTA password and arm the update). Nothing in the hardware-acceptance table above changed. Facts established on the device without the owner: the partition table, bootloader and otadata on the pendant equal the build (no partition migration); the app-only USB install leaves NVS untouched. See [OTA_UPDATES.md](OTA_UPDATES.md) for exactly what is host-tested, device-tested and not tested.
 
 ## Program execution policy
