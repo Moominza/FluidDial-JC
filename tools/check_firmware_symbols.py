@@ -59,6 +59,28 @@ for env in ("jc8048w550", "jc8048w550_fullcontrol_test", "jc8048w550_livejog_tes
         fail.append(f"{env}: carries the full-control banner")
     if env == "jc8048w550_fullcontrol_test" and not banner:
         fail.append("full-control image lacks its banner")
+# Wi-Fi OTA (Instruction 020): every JC image carries the image-target marker and the OTA service; the M5Dial / CYD images
+# carry neither (OTA is isolated to the JC targets), so an OTA image of theirs can never pass the JC target check.
+MARKER = b"FDJC-IMAGE-TARGET:JC8048W550C_I:ESP32-S3:V1"
+for env in ("jc8048w550", "jc8048w550_fullcontrol_test", "jc8048w550_livejog_test"):
+    try:
+        data = binary(env)
+    except OSError:
+        continue
+    if MARKER not in data:
+        fail.append(f"{env}: lacks the OTA image-target marker")
+    if b"ArduinoOTA" not in data and b"OTA server at" not in data:
+        fail.append(f"{env}: lacks the OTA service")
+    if b"verifyRollbackLater" not in data and b"cancel_rollback" not in data and b"rollback" not in data.lower():
+        print(f"note: {env}: no rollback string found")
+for env in ("m5dial", "cyddial"):
+    try:
+        data = binary(env)
+    except OSError:
+        continue
+    if MARKER in data or b"OTA server at" in data:
+        fail.append(f"{env}: contains JC OTA code (OTA must stay isolated to the JC targets)")
+print("OTA: marker present in the JC images, absent from m5dial/cyddial" if not [m for m in fail if "OTA" in m or "marker" in m] else "OTA: FAILED")
 print("ordinary: send_command_bytes", "ABSENT" if ordinary is not None and "send_command_bytes" not in ordinary else "PRESENT/unknown")
 print("full-control: Wi-Fi send_command_bytes", "present" if full and "JcReadOnlyFluidNc::send_command_bytes" in full else "MISSING",
       "| UART send_command_bytes", "present" if full and "JcUartLink::send_command_bytes" in full else "MISSING")

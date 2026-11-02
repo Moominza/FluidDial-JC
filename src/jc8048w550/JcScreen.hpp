@@ -29,6 +29,7 @@
 #include "JcJogTest.hpp"
 #include "JcMachineModel.hpp"
 #include "JcNav.hpp"
+#include "JcOta.hpp"
 #include "JcReadOnlyFluidNc.hpp"
 #include "JcSdBrowser.hpp"
 #include "JcSettings.hpp"
@@ -49,6 +50,7 @@ struct JcInputRequest {
     const char* prompt;
     char        initial[64];
     bool        numeric;
+    bool        secret;    // typed characters are shown as '*' and wiped when the page closes
     uint8_t     max_len;
     // Called after the input page has closed. ok=false on cancel.
     void (*done)(void* user, bool ok, const char* text);
@@ -79,6 +81,14 @@ public:
     virtual bool ble_connect(const char* addr, const char* name) = 0;
     virtual void ble_disconnect() = 0;
     virtual void ble_forget() = 0;
+    // Wi-Fi firmware update (Instruction 020). The policy lives in JcOtaController; these are the operator actions.
+    virtual void ota_view(JcOtaView& view) const = 0;
+    virtual bool ota_locked() const = 0;                       // machine-changing commands are locked out
+    virtual const char* ota_set_password(const char* password) = 0;   // nullptr = stored
+    virtual void ota_clear_password() = 0;
+    virtual const char* ota_arm() = 0;                         // nullptr = armed, else why not
+    virtual void ota_disarm() = 0;                             // cancel / clear a failure
+    virtual void ota_restart() = 0;
     virtual bool job_simulated() const = 0;   // the job on screen is a rehearsal on the SIMULATED controller
 #if JC_AUTHORITY
     // Prepares a positioning / probing routine (reads $G and $# first). See JcApp::workflow_prepare.

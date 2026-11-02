@@ -31,12 +31,17 @@ Transports: Wi-Fi TCP (auto-connects at boot; verified on hardware), wired UART 
 (compatible UART-style BLE module; implemented and tested with mocks, **hardware not yet
 verified**). Only one transport is active at a time.
 
-Docs: [User guide](docs/USER_GUIDE.md), [commissioning](docs/COMMISSIONING.md),
+**Wi-Fi firmware updates (OTA):** with the pendant mounted, update it from a Windows PC over the local network, no USB:
+password-protected, armed on the touchscreen, refused unless the controller is Idle, and all machine commands are locked
+while it is armed. See [OTA_UPDATES.md](docs/OTA_UPDATES.md) and [OTA_INSTALL_GUIDE.md](docs/OTA_INSTALL_GUIDE.md) (the upload
+is password-protected, not encrypted or signed). Settings, calibration and Wi-Fi survive updates.
+
+Docs: [User guide](docs/USER_GUIDE.md), [OTA updates](docs/OTA_UPDATES.md), [commissioning](docs/COMMISSIONING.md),
 [release notes](docs/RELEASE_NOTES.md), [architecture](docs/development/jc-architecture.md),
 [command safety](docs/development/jc-command-safety.md).
 
 Build: `pio run -e jc8048w550_fullcontrol_test` (also `jc8048w550`, `jc8048w550_livejog_test`,
-`m5dial`, `cyddial`). Flash with `pio run -e <env> -t upload --upload-port COMx`. Host tests:
+`m5dial`, `cyddial`; `jc8048w550_fullcontrol_ota` / `jc8048w550_ota` build the same firmware but upload over Wi-Fi). Flash with `pio run -e <env> -t upload --upload-port COMx`. Host tests:
 `python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`); static checks:
 `python tools/check_no_sink.py`, `python tools/check_firmware_symbols.py`.
 

@@ -30,7 +30,7 @@ SOURCES = [os.path.join(HOST, "ui_render.cpp")] + [
         "JcFontRenderer.cpp", "JcUiKit.cpp", "JcScreen.cpp", "JcScreenUtil.cpp", "JcScreenJog.cpp",
         "JcScreenLimits.cpp", "JcScreenCapabilities.cpp", "JcScreenMenu.cpp", "JcScreenSettings.cpp",
         "JcScreenDryRun.cpp", "JcScreenJogPreview.cpp", "JcScreenWorkflow.cpp", "JcScreenHoming.cpp", "JcScreenMacros.cpp", "JcScreenFiles.cpp", "JcScreenTools.cpp",
-        "JcScreenBle.cpp")]
+        "JcScreenBle.cpp", "JcScreenOta.cpp")]
 
 
 def find_cxx():

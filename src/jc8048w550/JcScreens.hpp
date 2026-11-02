@@ -456,6 +456,31 @@ private:
     ui::Slot _history, _dispatch;
 };
 
+// SETTINGS > FIRMWARE UPDATE (Instruction 020): readiness, arming, progress and result of a Wi-Fi OTA update.
+class JcOtaScreen : public JcScreen {
+public:
+    using JcScreen::JcScreen;
+    JcPage page() const override { return JcPage::Ota; }
+    void refresh();                                  // redraws the changing parts (also called while a transfer runs)
+    void password_done(bool ok, const char* text);
+
+protected:
+    void on_enter() override;
+    void on_draw() override;
+    void on_touch(uint16_t x, uint16_t y) override;
+    void on_tick(uint32_t now) override;
+    void on_custom_confirm() override;
+
+private:
+    void draw_dynamic(bool force);
+    uint32_t _last = 0;
+    ui::Slot _info[6];
+    ui::Slot _state, _message, _hint;
+    uint8_t _bar = 255;
+    bool _drawn_ready = false;
+    JcOtaState _drawn_state = JcOtaState::Off;
+};
+
 class JcInputScreen : public JcScreen {
 public:
     using JcScreen::JcScreen;

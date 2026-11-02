@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(cmd, check=True)
         rc |= subprocess.run([exe]).returncode
     # Unified command interface and guided routines (Instructions 009 / 009A): the controller-authoritative policy.
-    for name in ("test_jc_commands.cpp", "test_jc_workflow.cpp", "test_jc_sdjob.cpp", "test_jc_ble.cpp"):
+    for name in ("test_jc_commands.cpp", "test_jc_workflow.cpp", "test_jc_sdjob.cpp", "test_jc_ble.cpp", "test_jc_ota.cpp"):
         exe = os.path.join(tmp, "t" + name + ".exe")
         subprocess.run(cxx + ["-std=c++17", "-Wall", "-Wextra", "-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_FULL_CONTROL_TEST=1",
                               os.path.join(root, "test", "host", name), "-o", exe], check=True)

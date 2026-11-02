@@ -58,7 +58,14 @@ void JcInputScreen::begin(const JcInputRequest& request) {
 void JcInputScreen::draw_value() {
     ui::panel(sv.display, kValueBox, ui::kPanelLight);
     char shown[72];
-    snprintf(shown, sizeof(shown), "%s_", _value);
+    if (_request.secret) {
+        const uint8_t n = _length < sizeof(shown) - 2 ? _length : static_cast<uint8_t>(sizeof(shown) - 2);
+        memset(shown, '*', n);
+        shown[n] = '_';
+        shown[n + 1] = '\0';
+    } else {
+        snprintf(shown, sizeof(shown), "%s_", _value);
+    }
     ui::text(sv.display, kValueBox.x + 12, kValueBox.y + 12, shown, FontId::Heading24, WHITE, ui::kPanelLight);
 }
 
@@ -101,10 +108,16 @@ void JcInputScreen::finish(bool ok) {
     char text[64];
     strncpy(text, _value, sizeof(text) - 1);
     text[sizeof(text) - 1] = '\0';
+    const bool secret = _request.secret;
+    if (secret) {   // the password does not stay in the input page
+        memset(_value, 0, sizeof(_value));
+        _length = 0;
+    }
     sv.host.back();
     if (done != nullptr) {
         done(user, ok, text);
     }
+    if (secret) memset(text, 0, sizeof(text));
 }
 
 void JcInputScreen::press(const char* key) {

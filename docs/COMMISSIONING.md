@@ -72,6 +72,10 @@ Re-read on 2026-11-02 ([evidence](development/evidence/2026-11-02-controller-rea
 - **A axis** has no homing and no limit input.
 - Machine position is reported in MPos only; the pendant derives work coordinates from the offsets.
 
+## Wi-Fi OTA (Instruction 020)
+
+Software implemented; **hardware acceptance of a real wireless update is PENDING** (it needs the owner at the pendant to set the OTA password and arm the update). Nothing in the hardware-acceptance table above changed. Facts established on the device without the owner: the partition table, bootloader and otadata on the pendant equal the build (no partition migration); the app-only USB install leaves NVS untouched. See [OTA_UPDATES.md](OTA_UPDATES.md) for exactly what is host-tested, device-tested and not tested.
+
 ## Program execution policy
 
 No program start, resume, user macro or auto-restart on any transport or build. Proven by the shared command gate and policy, the static guard (`tools/check_no_sink.py`), the symbol check (`tools/check_firmware_symbols.py`) and the absence of `SD/Run`, `Localfs/Run` and `SD/Resume` from every binary.

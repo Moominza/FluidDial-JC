@@ -2,12 +2,18 @@
 
 Target: Guition JC8048W550C_I (ESP32-S3, 800x480, GT911) with an MKS DLC32 MAX V1.2 running FluidNC v4.1.1, four axes (X/Y/Z mm, A degrees).
 
+## Wi-Fi OTA (new in this release)
+
+Password-protected, deliberately armed Wi-Fi firmware update from a Windows PC (stock Arduino OTA / `Update` / `esp_ota`), dual-slot with bootloader rollback, image-target check, controller-Idle interlock and a machine-command lockout on every transport while armed. Settings, calibration and Wi-Fi survive updates; no partition migration is needed. **Security limits:** password only - the transfer is not encrypted and the firmware is not signed. **Not yet tested on hardware:** a real wireless update, rollback and the negative/interrupted-transfer cases (see [OTA_UPDATES.md](OTA_UPDATES.md)). The stable tag stays unpublished until that acceptance test is done.
+
 ## Firmware images
 
 | Artifact | Environment | Purpose |
 |---|---|---|
 | `fluiddial-jc-1.5.1-fullcontrol.bin` | `jc8048w550_fullcontrol_test` | **Operational JC firmware.** Red "FULL CONTROL" banner. Sends operator-confirmed commands. |
 | `fluiddial-jc-1.5.1-diagnostic-motion-disabled.bin` | `jc8048w550` | Ordinary diagnostic/preview firmware. **Motion-disabled**; blue PREVIEW banner; sends only `?`. |
+
+Also shipped for the USB install/recovery path (not stand-alone images): `fluiddial-jc-1.5.1-usb-bootloader.bin`, `-usb-partitions.bin`, `-usb-boot_app0.bin`, with `OTA_INSTALL_GUIDE.md`. The `.bin` application images are written to 0x10000 only, never to 0x0.
 
 The live-jog test image (`jc8048w550_livejog_test`, X/Y 1 mm only), `m5dial` and `cyddial` build but are not release artifacts for the JC hardware. Checksums and build metadata are in `SHA256SUMS.txt` and `BUILD_INFO.txt` (release assets, and recorded at the end of this file). Each image's version string embeds the source commit it was built from. The packaging step did not flash either image.
 

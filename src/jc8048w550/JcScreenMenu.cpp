@@ -66,7 +66,13 @@ void JcMenuScreen::on_draw() {
 void JcMenuScreen::on_touch(uint16_t x, uint16_t y) {
     for (uint8_t i = 0; i < 9; ++i) {
         if (ui::hit(tile_rect(i), x, y)) {
-            if (kTiles[i].page == JcPage::Count) {
+            const JcPage p = kTiles[i].page;
+            const bool motion_page = p == JcPage::Jog || p == JcPage::Homing || p == JcPage::Probing || p == JcPage::Offsets
+                                     || p == JcPage::Macros || p == JcPage::Tools;
+            if (motion_page && sv.host.ota_locked()) {
+                show_message("FIRMWARE UPDATE ACTIVE", "Machine pages are locked while an update", "is armed or running.",
+                             "Cancel it in SETTINGS > FIRMWARE UPDATE.");
+            } else if (kTiles[i].page == JcPage::Count) {
                 sv.host.leave(JcLeaveTarget::Dashboard);
             } else {
                 sv.host.go(kTiles[i].page);

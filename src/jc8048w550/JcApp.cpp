@@ -4,6 +4,7 @@
 #include "JcApp.hpp"
 
 #include <Preferences.h>
+#include <WiFi.h>
 
 namespace jc8048w550 {
 
@@ -49,6 +50,7 @@ JcApp::JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, co
       _tools(_sv),
       _ble_screen(_sv),
       _settings_screen(_sv),
+      _ota_screen(_sv),
       _connections(_sv, uart),
       _display_settings(_sv),
       _jog_settings(_sv),
@@ -86,6 +88,7 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
         Serial.println("app: no stored user settings yet; defaults in use");
     }
     refresh_profile();
+    _ota_svc.begin(&_ota, &JcApp::ota_draw_thunk, this);
     _link.set_line_listener(&JcApp::line_thunk, this);
     _uart.set_line_listener(&JcApp::line_thunk, this);
     // BLE UART (Instruction 010): the same parser and the same command policy as the other transports.
@@ -197,6 +200,7 @@ JcScreen* JcApp::screen_for(JcPage page) {
         case JcPage::JogPreview: return &_menu;
 #endif
         case JcPage::Diagnostics: return &_diagnostics;
+        case JcPage::Ota: return &_ota_screen;
         case JcPage::Input: return &_input;
         case JcPage::Count: break;
     }
@@ -482,6 +486,9 @@ void JcApp::on_controller_line(const char* line) {
 
 #if JC_LIVE_JOG_TEST
 bool JcApp::send_jog(const char* bytes, size_t length) {
+    if (_ota.locked()) {
+        return false;   // firmware update armed or running: nothing leaves
+    }
     if (uart_active()) {
         return false;  // the wired link has no jog path in this build
     }
@@ -489,8 +496,80 @@ bool JcApp::send_jog(const char* bytes, size_t length) {
 }
 #endif
 
+JcOtaInputs JcApp::ota_inputs() const {
+    JcOtaInputs in;
+    in.wifi_up = _ota_svc.wifi_up();
+    in.password_set = _ota_svc.password_set();
+    in.password_applied = _ota_svc.password_applied();
+    in.status_fresh = _sv.live_mode && _model.fresh();   // demo data is never "the controller is Idle"
+    in.machine_state = _model.state();
+    in.jog_unresolved = _jogs.unresolved();
+#if JC_AUTHORITY
+    in.workflow_active = _wf.running();
+    in.command_pending = _cmd.busy();
+#endif
+    return in;
+}
+
+void JcApp::ota_draw_thunk(void* user) {
+    JcApp* a = static_cast<JcApp*>(user);
+    if (a->_nav.current() == JcPage::Ota) a->_ota_screen.refresh();
+}
+
+void JcApp::ota_view(JcOtaView& v) const {
+    v.state = _ota.state();
+    snprintf(v.message, sizeof(v.message), "%s", _ota.message());
+    const char* why = jc_ota_blocker(ota_inputs());
+    snprintf(v.blocker, sizeof(v.blocker), "%s", why ? why : "");
+    v.wifi_up = _ota_svc.wifi_up();
+    snprintf(v.ip, sizeof(v.ip), "%s", v.wifi_up ? WiFi.localIP().toString().c_str() : "");
+    snprintf(v.host, sizeof(v.host), "%s", _ota_svc.hostname());
+    snprintf(v.rollback, sizeof(v.rollback), "%s", _ota_svc.rollback_text());
+    v.percent = _ota.percent();
+    v.auth_failures = _ota.auth_failures();
+    v.remaining_ms = _ota.armed_remaining_ms(millis());
+    v.password_set = _ota_svc.password_set();
+    v.locked = _ota.locked();
+}
+
+const char* JcApp::ota_set_password(const char* password) {
+    if (_ota.locked()) return "cancel the update first";
+    return _ota_svc.set_password(password);
+}
+
+void JcApp::ota_clear_password() {
+    if (!_ota.locked()) _ota_svc.clear_password();
+}
+
+const char* JcApp::ota_arm() {
+    return _ota.arm(ota_inputs(), millis());
+}
+
+void JcApp::ota_disarm() {
+    if (_ota.state() == JcOtaState::Failed) _ota.acknowledge_failure();
+    else _ota.disarm();
+#if JC_AUTHORITY
+    _cmd.set_locked(_ota.locked());
+#endif
+}
+
+void JcApp::ota_restart() {
+    if (!_ota.locked()) _ota_svc.restart();
+}
+
+void JcApp::service_ota(uint32_t now) {
+    _ota.tick(ota_inputs(), now);
+#if JC_AUTHORITY
+    _cmd.set_locked(_ota.locked());   // every transport goes through _cmd's one transmit point
+#endif
+    _ota_svc.service(now);
+    _ota_svc.confirm_boot_if_healthy(now);
+    if (_ota.restart_due(now)) _ota_svc.restart();
+}
+
 void JcApp::service() {
     const uint32_t now = millis();
+    service_ota(now);
     _jogs.set_clock(now);
     _sd.service(now);
     _tool_reader.service(now);

@@ -146,6 +146,12 @@ public:
     JcHomedTracker& homed() { return _homed; }
     const JcHomedTracker& homed() const { return _homed; }
     JcCommandLink& link() { return _link; }
+    // OTA update session (Instruction 020): while locked NOTHING leaves, on any transport - not a jog, not a hold,
+    // not a reset. The OTA service is only armed while the controller is Idle and is withdrawn (lock released) the
+    // moment that stops being true.
+    void set_locked(bool locked) { _locked = locked; }
+    bool locked() const { return _locked; }
+    uint32_t refused_locked() const { return _refused_locked; }
     uint32_t refused_policy() const { return _refused_policy; }
     uint32_t refused_busy() const { return _refused_busy; }
     uint32_t transmitted_bytes_calls() const { return _tx_calls; }
@@ -153,6 +159,7 @@ public:
 private:
     bool route(JcCommandClass cls, const char* text) {
         harvest();   // a finished real-time byte or reply must not block the next command
+        if (_locked) { ++_refused_locked; return false; }
         if (text == nullptr || !jc_command_line_allowed(cls, text)) {
             ++_refused_policy;   // not a line the builders generate for this class
             return false;
@@ -182,6 +189,7 @@ private:
     static bool checked_tx(void* self, const char* bytes, size_t n) {
         JcCommandSystem* s = static_cast<JcCommandSystem*>(self);
         ++s->_tx_calls;
+        if (s->_locked) { ++s->_refused_locked; return false; }
         if (s->_send == nullptr || !jc_command_bytes_allowed(bytes, n)) { ++s->_refused_policy; return false; }
         return s->_send(s->_user, bytes, n);
     }
@@ -200,6 +208,8 @@ private:
     uint32_t        _now = 0;
     uint32_t        _refused_policy = 0;
     uint32_t        _refused_busy = 0;
+    uint32_t        _refused_locked = 0;
+    bool            _locked = false;
     uint32_t        _tx_calls = 0;
 };
 

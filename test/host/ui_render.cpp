@@ -41,6 +41,8 @@ using namespace jc8048w550;
 
 static int g_problems = 0, g_frames = 0;
 static const char* g_outdir = nullptr;
+const char* git_info = "v1.5.1-host-render";
+
 static const char* g_tag = JC_JOG_PREVIEW ? "preview" : (JC_LIVE_JOG_TEST ? "live" : "ordinary");
 
 // ---- the rig: the services a page needs, with simulated controller state ----------------------------
@@ -76,6 +78,35 @@ public:
     void ble_disconnect() override { ++ble_disconnects; if (ble != nullptr) ble->disconnect(g_stub_millis); }
     void ble_forget() override { ++ble_forgets; if (ble != nullptr) ble->forget(); }
     bool job_simulated() const override { return simulated_job; }
+    // Instruction 020: the firmware-update page against the real policy object.
+    JcOtaController ota;
+    JcOtaInputs ota_in;
+    int restarts = 0;
+    void ota_view(JcOtaView& v) const override {
+        v.state = ota.state();
+        snprintf(v.message, sizeof(v.message), "%s", ota.message());
+        const char* why = jc_ota_blocker(ota_in);
+        snprintf(v.blocker, sizeof(v.blocker), "%s", why ? why : "");
+        v.wifi_up = ota_in.wifi_up;
+        snprintf(v.ip, sizeof(v.ip), "%s", "192.168.0.135");
+        snprintf(v.host, sizeof(v.host), "%s", "fluiddial-jc");
+        snprintf(v.rollback, sizeof(v.rollback), "%s", "USB-installed (no rollback)");
+        v.percent = ota.percent();
+        v.remaining_ms = ota.armed_remaining_ms(g_stub_millis);
+        v.password_set = ota_in.password_set;
+        v.locked = ota.locked();
+        v.auth_failures = ota.auth_failures();
+    }
+    bool ota_locked() const override { return ota.locked(); }
+    const char* ota_set_password(const char* p) override {
+        if (!jc_ota_password_valid(p)) return "8-32 characters, no spaces";
+        ota_in.password_set = true;
+        return nullptr;
+    }
+    void ota_clear_password() override { ota_in.password_set = false; }
+    const char* ota_arm() override { return ota.arm(ota_in, g_stub_millis); }
+    void ota_disarm() override { if (ota.state() == JcOtaState::Failed) ota.acknowledge_failure(); else ota.disarm(); }
+    void ota_restart() override { ++restarts; }
 #if JC_AUTHORITY
     void workflow_open(JcWfKind k) override { opened = k; }
     bool workflow_clear_tlo() override { ++clears; return true; }
@@ -1062,6 +1093,65 @@ static void scenarios() {
     check_frame(r.gfx, "menu", false);
     settings_page.enter();
     check_frame(r.gfx, "settings", false);
+
+    printf("[firmware update page]\n");
+    {
+        JcOtaScreen ota_page(r.sv);
+        const ui::Rect set_pw { 16, 250, 250, 52 }, clear_pw { 274, 250, 130, 52 }, arm_b { 16, 312, 250, 58 };
+        const ui::Rect cancel_b { 274, 312, 250, 58 }, restart_b { 532, 312, 252, 58 };
+        for (const ui::Rect& b : { set_pw, clear_pw, arm_b, cancel_b, restart_b }) {
+            check(b.h >= 38 && b.x >= 0 && b.x + b.w <= 800 && b.y >= 64 && b.y + b.h <= 480, "OTA page: every button is large enough and on screen");
+        }
+        check(!(set_pw.x < clear_pw.x + clear_pw.w && set_pw.x + set_pw.w > clear_pw.x) && !(arm_b.x < cancel_b.x + cancel_b.w && arm_b.x + arm_b.w > cancel_b.x)
+              && !(cancel_b.x < restart_b.x + restart_b.w && cancel_b.x + cancel_b.w > restart_b.x), "OTA page: buttons do not overlap");
+        r.host.ota_in.wifi_up = true;
+        r.host.ota_in.status_fresh = true;
+        r.host.ota_in.machine_state = "Idle";
+        ota_page.enter();
+        check_frame(r.gfx, "ota_no_password", false);
+        check(r.host.ota.state() == JcOtaState::Off, "OTA: nothing is armed without a password");
+        touch_center(ota_page, arm_b);
+        check_frame(r.gfx, "ota_cannot_arm_dialog", true);
+        touch_center(ota_page, ui::kDialogOk);
+        check(r.host.ota.state() == JcOtaState::Off, "OTA: a refused arm leaves the service off");
+        ota_page.password_done(true, "correct-horse-1");
+        check(r.host.ota_in.password_set, "OTA: a valid password is stored");
+        check_frame(r.gfx, "ota_ready", false);
+        r.host.ota_in.machine_state = "Run";
+        ota_page.enter();
+        check_frame(r.gfx, "ota_blocked_not_idle", false);
+        r.host.ota_in.machine_state = "Idle";
+        ota_page.enter();
+        touch_center(ota_page, arm_b);
+        check_frame(r.gfx, "ota_arm_dialog", true);
+        touch_center(ota_page, ui::kDialogCancel);
+        check(r.host.ota.state() == JcOtaState::Off, "OTA: cancelling the dialog arms nothing");
+        touch_center(ota_page, arm_b);
+        touch_center(ota_page, ui::kDialogConfirm);
+        check(r.host.ota.state() == JcOtaState::Armed && r.host.ota.locked(), "OTA: confirming arms and locks machine commands");
+        check_frame(r.gfx, "ota_armed", false);
+        r.host.ota.on_start();
+        r.host.ota.on_progress(450000, 1000000);
+        ota_page.refresh();
+        check_frame(r.gfx, "ota_receiving", false);
+        r.host.ota.on_transfer_complete();
+        r.host.ota.on_validated(false, g_stub_millis);
+        ota_page.enter();
+        check_frame(r.gfx, "ota_failed", false);
+        check(!r.host.ota.locked(), "OTA: a failed update releases the command lock");
+        touch_center(ota_page, cancel_b);
+        check(r.host.ota.state() == JcOtaState::Off, "OTA: CLEAR FAILURE returns to off");
+        r.host.ota.arm(r.host.ota_in, g_stub_millis);
+        r.host.ota.on_start();
+        r.host.ota.on_progress(10, 10);
+        r.host.ota.on_transfer_complete();
+        r.host.ota.on_validated(true, g_stub_millis);
+        ota_page.enter();
+        check_frame(r.gfx, "ota_done_restarting", false);
+        touch_center(ota_page, restart_b);
+        check(r.host.restarts == 0, "OTA: RESTART is refused while an installed update is restarting");
+        r.host.ota = JcOtaController();
+    }
 
     printf("[jog page: nothing read yet]\n");
     r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);

@@ -362,5 +362,21 @@ for name in ("JcCommandBuilder.hpp", "JcCommandPolicy.hpp"):
     if re.search(r'"M6|"T%|"T[0-9]', t):
         fail(f"{name}: an M6 / T tool-change word must never be generated")
 
+# Wi-Fi OTA (Instruction 020): no built-in password, a lockout at the one transmit point, OTA only in the JC sources.
+ota_svc = strip_comments(read(os.path.join(SRC, "JcOtaService.cpp")))
+if re.search(r'set[Pp]assword(Hash)?\(\s*"', ota_svc):
+    fail("JcOtaService.cpp: the OTA password must come from the operator (NVS), never from a literal")
+if "setPassword(_pw)" not in ota_svc or "password_set()" not in ota_svc:
+    fail("JcOtaService.cpp: the OTA service must start only with an operator-set password")
+cs_code = strip_comments(read(os.path.join(SRC, "JcCommandSystem.hpp")))
+if not re.search(r"checked_tx\([^)]*\) \{[^}]*?_locked", cs_code, re.S) or "route(" not in cs_code or "if (_locked)" not in cs_code:
+    fail("JcCommandSystem.hpp: the OTA lockout must sit in route() and checked_tx()")
+app_code = strip_comments(read(os.path.join(SRC, "JcApp.cpp")))
+if "_cmd.set_locked(_ota.locked())" not in app_code or "_ota.locked()" not in app_code:
+    fail("JcApp.cpp: the application must apply the OTA lockout every pass")
+for dirpath, _, names in os.walk(os.path.join(ROOT, "src")):
+    for n in names:
+        if "Ota" in n and "jc8048w550" not in dirpath:
+            fail(f"{os.path.join(dirpath, n)}: OTA code must stay inside src/jc8048w550")
 print("check_no_sink:", "FAIL" if failures else "PASS")
 sys.exit(1 if failures else 0)

@@ -32,6 +32,7 @@ enum class JcPage : uint8_t {
     JogPreview,    // non-motion jog test mode: simulated-controller scenario and counters
     Workflow,      // guided positioning, probing and tool-length routines
     Ble,           // BLE UART: scan, devices, connect, diagnostics (Instruction 010)
+    Ota,           // Wi-Fi firmware update (Instruction 020)
     Input,  // modal text / numeric entry; returns to its caller
     Count,
 };
@@ -58,6 +59,7 @@ inline const char* jc_page_title(JcPage p) {
         case JcPage::JogPreview: return "JOG PREVIEW TEST";
         case JcPage::Workflow: return "POSITIONING / PROBING";
         case JcPage::Ble: return "BLUETOOTH LE";
+        case JcPage::Ota: return "FIRMWARE UPDATE";
         case JcPage::Input: return "ENTER VALUE";
         case JcPage::Count: break;
     }
@@ -78,7 +80,8 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
             return to == JcPage::Workflow;
         case JcPage::Settings:
             return to == JcPage::SetConnections || to == JcPage::SetDisplay || to == JcPage::SetJogging
-                || to == JcPage::SetMachine || to == JcPage::Diagnostics || to == JcPage::JogPreview;
+                || to == JcPage::SetMachine || to == JcPage::Diagnostics || to == JcPage::JogPreview
+                || to == JcPage::Ota;
         case JcPage::SetMachine:
             return to == JcPage::Capabilities;
         case JcPage::Capabilities:
@@ -94,6 +97,7 @@ inline bool jc_nav_allowed(JcPage from, JcPage to) {
         case JcPage::Probing:
         case JcPage::Offsets:
         case JcPage::Ble:
+        case JcPage::Ota:
         case JcPage::SetDisplay:
         case JcPage::SetJogging:
         case JcPage::Diagnostics:

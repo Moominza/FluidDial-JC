@@ -42,6 +42,10 @@ PROBING offers guided inside/outside edge and centre routines, the rotary centre
 
 FILES / JOBS lists the controller SD card and shows job name, state and progress. The pendant **cannot start, resume or restart a program** on any transport, and cannot run macros. Use the PC. Available: **FEED HOLD (PAUSE)** and a confirmed **RESET (ENDS THE JOB)**.
 
+## Firmware update over Wi-Fi
+
+SETTINGS > FIRMWARE UPDATE. Set an OTA password once (SET PASSWORD; it is never shown again). To update: the controller must be Idle with fresh status; tap ARM UPDATE and confirm. While armed (5 minutes) ALL machine-changing commands are locked and the machine pages are blocked; if the controller leaves Idle the update is withdrawn automatically. Then run the upload on the PC (see [OTA_UPDATES.md](OTA_UPDATES.md)). The bar shows progress; after the image is checked the pendant restarts by itself. A rejected or failed update keeps the old firmware and says so. The update path is password-protected but not encrypted or signed: use it on your own network.
+
 ## Errors
 
 Controller `error:N` and `ALARM:N` are shown with their numbers. After an alarm or reset the pendant needs your explicit action (unlock/re-arm); it never re-arms or replays anything by itself. If the link drops, in-flight operations end as "unknown" and the display marks coordinates stale.

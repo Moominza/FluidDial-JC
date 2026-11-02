@@ -17,7 +17,7 @@ struct HubTile {
     const char* title;
     const char* subtitle;
 };
-constexpr HubTile kHub[8] = {
+constexpr HubTile kHub[9] = {
     { "CONNECTIONS", "Transport selection" },
     { "DISPLAY", "Brightness, precision" },
     { "JOG PRESETS", "Steps and feeds" },
@@ -25,17 +25,21 @@ constexpr HubTile kHub[8] = {
     { "DIAGNOSTICS", "Firmware, link, memory" },
     { "WI-FI SETUP", "SSID, password, host" },
     { "TOUCH CALIBRATION", "Five-point guided" },
+    { "FIRMWARE UPDATE", "Wi-Fi OTA, password" },
     { "JOG PREVIEW TEST", "Simulated controller" },
 };
 #if JC_JOG_PREVIEW
-constexpr uint8_t kHubCount = 8;
+constexpr uint8_t kHubCount = 9;    // the diagnostic image also keeps its simulator page
+constexpr uint8_t kHubCols = 5;
 #else
-constexpr uint8_t kHubCount = 7;
+constexpr uint8_t kHubCount = 8;
+constexpr uint8_t kHubCols = 4;
 #endif
+constexpr int16_t kHubW = (768 - (kHubCols - 1) * 8) / kHubCols;
 ui::Rect hub_rect(uint8_t i) {
-    const uint8_t col = i < 4 ? i : i - 4;
-    const uint8_t row = i < 4 ? 0 : 1;
-    return { static_cast<int16_t>(16 + col * 194), static_cast<int16_t>(84 + row * 170), 186, 160 };
+    const uint8_t col = i % kHubCols;
+    const uint8_t row = i / kHubCols;
+    return { static_cast<int16_t>(16 + col * (kHubW + 8)), static_cast<int16_t>(84 + row * 170), kHubW, 160 };
 }
 
 }  // namespace
@@ -44,19 +48,19 @@ void JcSettingsScreen::on_draw() {
     for (uint8_t i = 0; i < kHubCount; ++i) {
         const ui::Rect r = hub_rect(i);
         ui::panel(sv.display, r, ui::kPanelLight);
-        ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 16), 162, 70 },
+        ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 16), static_cast<int16_t>(r.w - 24), 70 },
                  kHub[i].title, FontId::Button20, WHITE, ui::kPanelLight);
-        ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 98), 162, 56 },
+        ui::wrap(sv.display, { static_cast<int16_t>(r.x + 12), static_cast<int16_t>(r.y + 98), static_cast<int16_t>(r.w - 24), 56 },
                  kHub[i].subtitle, FontId::Body16, ui::kMuted, ui::kPanelLight);
     }
 #if JC_JOG_PREVIEW
     ui::text(sv.display, 16, 440, "Firmware: PREVIEW ONLY - MOTION DISABLED (jog is simulated)", FontId::Body16, RED, ui::kBg);
 #elif JC_FULL_CONTROL_TEST
-    ui::text(sv.display, 400, 322, "Firmware: FULL CONTROL (no program start/resume/macros)", FontId::Body16, RED, ui::kBg);
+    ui::text(sv.display, 16, 440, "Firmware: FULL CONTROL (no program start/resume/macros)", FontId::Body16, RED, ui::kBg);
 #elif JC_JOG_UI
-    ui::text(sv.display, 400, 322, "Firmware: LIVE JOG TEST BUILD (restricted jog enabled)", FontId::Body16, RED, ui::kBg);
+    ui::text(sv.display, 16, 440, "Firmware: LIVE JOG TEST BUILD (restricted jog enabled)", FontId::Body16, RED, ui::kBg);
 #else
-    ui::text(sv.display, 400, 322, "Firmware: experimental, machine control disabled", FontId::Body16, ui::kWarn, ui::kBg);
+    ui::text(sv.display, 16, 440, "Firmware: experimental, machine control disabled", FontId::Body16, ui::kWarn, ui::kBg);
 #endif
 }
 
@@ -73,6 +77,8 @@ void JcSettingsScreen::on_touch(uint16_t x, uint16_t y) {
             sv.host.leave(JcLeaveTarget::WifiSettings);
         } else if (i == 6) {
             sv.host.leave(JcLeaveTarget::Calibration);
+        } else if (i == 7) {
+            sv.host.go(JcPage::Ota);
         } else {
             sv.host.go(JcPage::JogPreview);
         }

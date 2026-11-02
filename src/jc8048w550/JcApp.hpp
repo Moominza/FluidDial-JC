@@ -9,6 +9,7 @@
 #pragma once
 
 #include "JcBleLink.hpp"
+#include "JcOtaService.hpp"
 #include "JcScreens.hpp"
 
 namespace jc8048w550 {
@@ -36,6 +37,14 @@ public:
     JcDispatcher& dispatcher() { return _dispatcher; }
     JcBleUart& ble() { return _ble; }
     const JcBleUart& ble() const { return _ble; }
+    // Wi-Fi firmware update (Instruction 020)
+    void ota_view(JcOtaView& view) const override;
+    bool ota_locked() const override { return _ota.locked(); }
+    const char* ota_set_password(const char* password) override;
+    void ota_clear_password() override;
+    const char* ota_arm() override;
+    void ota_disarm() override;
+    void ota_restart() override;
     bool job_simulated() const override;   // the job shown is the rehearsal on the SIMULATED controller (ordinary firmware)
 #if JC_AUTHORITY
     // Prepares a routine: reads $G / $# (read-only), then the preview is shown. In the preview build the
@@ -64,6 +73,9 @@ public:
 
 private:
     JcScreen* screen_for(JcPage page);
+    JcOtaInputs ota_inputs() const;
+    void service_ota(uint32_t now);
+    static void ota_draw_thunk(void* user);
     bool send_query(const char* line);
     void refresh_profile();
     void on_caps_finished();
@@ -137,6 +149,8 @@ private:
     bool _wf_cmd_inflight = false;       // the command awaiting its reply belongs to the routine
     uint32_t _wf_seq = 0, _wf_last_frame = 0;
 #endif
+    JcOtaController _ota;
+    JcOtaService _ota_svc;
     JcNav _nav;
     JcAppServices _sv;
     JcMenuScreen _menu;
@@ -149,6 +163,7 @@ private:
     JcToolsScreen _tools;
     JcBleScreen _ble_screen;
     JcSettingsScreen _settings_screen;
+    JcOtaScreen _ota_screen;
     JcConnectionsScreen _connections;
     JcDisplaySettingsScreen _display_settings;
     JcJogSettingsScreen _jog_settings;
