@@ -565,7 +565,7 @@ static void pure_checks() {
     {
         std::vector<ui::Rect> btn;
         for (uint8_t i = 0; i < 4; ++i) btn.push_back(jl::axis_rect(i));
-        for (uint8_t i = 0; i < kJcStepPresets; ++i) btn.push_back(jl::step_rect(i));
+        for (uint8_t i = 0; i < jc_step_count(3); ++i) btn.push_back(jl::step_rect(i));  // rotary axis shows six
         for (uint8_t i = 0; i < kJcFeedPresets; ++i) btn.push_back(jl::feed_rect(i));
         for (const ui::Rect& r : { jl::kIncremental, jl::kArm, jl::kJogNeg, jl::kJogStop, jl::kJogPos, jl::kDro }) btn.push_back(r);
         auto hit = [](const ui::Rect& a, const ui::Rect& b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; };

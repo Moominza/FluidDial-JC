@@ -64,7 +64,7 @@ const char* live_jog_label(uint8_t axis, bool negative) {
 
 float JcJogScreen::step_value() const {
     const float* steps = _axis == 3 ? sv.settings.rotary_steps : sv.settings.linear_steps;
-    return steps[_step < kJcStepPresets ? _step : 0];
+    return steps[_step < jc_step_count(_axis) ? _step : 0];
 }
 
 float JcJogScreen::feed_value() const {
@@ -92,7 +92,7 @@ void JcJogScreen::draw_axes() {
 void JcJogScreen::draw_steps() {
     ui::text(sv.display, 16, 138, "STEP", FontId::Body16, ui::kMuted, ui::kBg);
     const float* steps = _axis == 3 ? sv.settings.rotary_steps : sv.settings.linear_steps;
-    for (uint8_t i = 0; i < kJcStepPresets; ++i) {
+    for (uint8_t i = 0; i < jc_step_count(_axis); ++i) {
         char label[24];
         jc_format_step(label, sizeof(label), steps[i], _axis);
         ui::Btn style = _continuous ? ui::Btn::Disabled : (i == _step ? ui::Btn::Selected : ui::Btn::Normal);
@@ -569,6 +569,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
     for (uint8_t i = 0; i < 4; ++i) {
         if (ui::hit(axis_rect(i), x, y)) {
             _axis = i;
+            if (_step >= jc_step_count(_axis)) _step = 2;  // a rotary-only step button does not exist on a linear axis
             if (_axis == 3) {
                 _continuous = false;  // continuous jog is never generated for the rotary axis
             }
@@ -588,7 +589,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             return;
         }
     }
-    for (uint8_t i = 0; i < kJcStepPresets; ++i) {
+    for (uint8_t i = 0; i < jc_step_count(_axis); ++i) {
         if (ui::hit(step_rect(i), x, y) && !_continuous) {
             _step = i;
             draw_steps();

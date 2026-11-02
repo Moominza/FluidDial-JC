@@ -236,7 +236,28 @@ static void test_navigation() {
 static void test_settings_persistence() {
     JcUserSettings d = jc_settings_defaults();
     CHECK(d.linear_steps[0] == 0.01f && d.linear_steps[3] == 10.0f && d.linear_steps[4] == 100.0f);
-    CHECK(d.rotary_steps[2] == 5.0f && d.rotary_steps[3] == 45.0f && d.rotary_steps[4] == 90.0f);
+    CHECK(d.rotary_steps[2] == 5.0f && d.rotary_steps[3] == 15.0f && d.rotary_steps[4] == 45.0f && d.rotary_steps[5] == 90.0f);
+    CHECK(jc_step_count(0) == 5 && jc_step_count(2) == 5 && jc_step_count(3) == 6);
+    {   // saved v1 settings (five presets) migrate without losing operator preferences
+        JcSettingsBlobV1 v1; memset(&v1, 0, sizeof(v1));
+        v1.magic = kJcSettingsMagic; v1.version = 1; v1.size = sizeof(JcUserSettingsV1);
+        const float ol[5] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f }, orot[5] = { 0.2f, 2.0f, 10.0f, 45.0f, 90.0f };
+        memcpy(v1.settings.linear_steps, ol, sizeof(ol)); memcpy(v1.settings.rotary_steps, orot, sizeof(orot));
+        const float lf[3] = { 100.0f, 500.0f, 1000.0f }, rf[3] = { 600.0f, 1800.0f, 3600.0f };
+        memcpy(v1.settings.linear_feeds, lf, sizeof(lf)); memcpy(v1.settings.rotary_feeds, rf, sizeof(rf));
+        v1.settings.brightness_percent = 55; v1.settings.coordinate_decimals = 2; v1.settings.default_reference = 0;
+        v1.settings.transport = 1; v1.settings.uart_baud = 57600; v1.settings.uart_rx_pin = 5; v1.settings.uart_tx_pin = 6;
+        v1.settings.probe_feed = 77.0f;
+        v1.crc = jc_crc32(reinterpret_cast<const uint8_t*>(&v1), offsetof(JcSettingsBlobV1, crc));
+        JcUserSettings m;
+        CHECK(jc_settings_decode(&v1, sizeof(v1), m));
+        CHECK(m.linear_steps[0] == 0.01f && m.linear_steps[3] == 10.0f);                 // untouched factory values -> new factory values
+        CHECK(m.rotary_steps[0] == 0.2f && m.rotary_steps[1] == 2.0f && m.rotary_steps[5] == 90.0f);  // customised kept
+        CHECK(m.linear_feeds[0] == 300.0f && m.rotary_feeds[2] == 1000.0f);
+        CHECK(m.brightness_percent == 55 && m.transport == 1 && m.uart_baud == 57600 && m.uart_rx_pin == 5 && m.uart_tx_pin == 6 && m.probe_feed == 77.0f);
+        v1.crc ^= 1u;
+        CHECK(!jc_settings_decode(&v1, sizeof(v1), m));
+    }
     CHECK(!d.a_axis_has_homing && d.transport == 0 && d.uart_rx_pin == -1);
 
     // Round trip of a customized configuration.

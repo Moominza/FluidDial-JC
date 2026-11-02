@@ -5,7 +5,7 @@
 This community repository preserves the upstream FluidDial history and adds
 an opt-in port for the **Guition JC8048W550C_I** (ESP32-S3, 800x480 capacitive
 touchscreen, GT911). The JC target is separate from the M5Dial and CYD targets.
-Release candidate: `1.5.1-rc1` (feature branch only; no stable release).
+Version 1.5.1 (stable tag prepared locally; publication needs owner approval).
 
 FluidDial-JC is a four-axis (X/Y/Z linear mm, A rotary degrees) touchscreen pendant for
 **FluidNC v4.1.1** (tested on an MKS DLC32 MAX V1.2). It is only the operator interface:

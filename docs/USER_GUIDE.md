@@ -15,12 +15,12 @@ For the Guition JC8048W550C_I running `jc8048w550_fullcontrol_test` against Flui
 ## Jogging (X, Y, Z in mm; A in degrees)
 
 1. MENU > JOGGING. Choose the axis (X, Y, Z, A).
-2. Choose the **STEP** (distance per press): linear 0.01 / 0.1 / 1 / 10 / 100 mm; A 0.1 / 1 / 5 / 45 / 90 degrees. The default is the 1 mm / 5 degree button.
+2. Choose the **STEP** (distance per press): linear 0.01 / 0.1 / 1 / 10 / 100 mm; A 0.1 / 1 / 5 / 15 / 45 / 90 degrees (six buttons on the A axis, five on X/Y/Z). The default selection is the third button (1 mm, or 5 degrees on A).
 3. Choose the **FEED** (speed, per minute): linear 300 / 1000 / 3000 mm/min, A 200 / 500 / 1000 deg/min. A feed above the axis' controller limit is greyed out. Step and feed are separate controls: a 100 mm step is not a 100 mm/min feed.
 4. Press **ARM JOG** once per session and confirm. Then JOG - / JOG + send one incremental `$J=` jog each. **CANCEL JOG** sends the jog-cancel byte.
 5. The result line shows FluidNC's reply (ok, error:N, alarm) and the position display shows the actual movement. "ok" means the jog was accepted, not finished; completion is the return to Idle.
 
-Presets can be edited under SETTINGS > JOG PRESETS. Presets saved on the device from an older firmware stay until edited.
+Presets can be edited under SETTINGS > JOG PRESETS. Presets you saved with an earlier firmware are kept; only values still equal to the old factory presets move to the new factory presets.
 
 ## Work coordinates
 

@@ -17,7 +17,8 @@
 
 namespace jc8048w550 {
 
-constexpr uint8_t kJcStepPresets = 5;
+constexpr uint8_t kJcStepPresets = 6;      // array size; linear axes use 5, the rotary axis 6
+constexpr uint8_t jc_step_count(uint8_t axis) { return axis == 3 ? 6 : 5; }
 constexpr uint8_t kJcFeedPresets = 3;
 constexpr uint8_t kJcMacroSlots = 6;
 
@@ -50,8 +51,8 @@ struct JcUserSettings {
 
 inline JcUserSettings jc_settings_defaults() {
     JcUserSettings s {};
-    const float lin[kJcStepPresets] = { 0.01f, 0.1f, 1.0f, 10.0f, 100.0f };
-    const float rot[kJcStepPresets] = { 0.1f, 1.0f, 5.0f, 45.0f, 90.0f };
+    const float lin[kJcStepPresets] = { 0.01f, 0.1f, 1.0f, 10.0f, 100.0f, 100.0f };  // [5] unused for linear axes
+    const float rot[kJcStepPresets] = { 0.1f, 1.0f, 5.0f, 15.0f, 45.0f, 90.0f };
     memcpy(s.linear_steps, lin, sizeof(lin));
     memcpy(s.rotary_steps, rot, sizeof(rot));
 #if defined(JC_LIVE_JOG_TEST) && JC_LIVE_JOG_TEST
@@ -147,7 +148,7 @@ inline JcMachineProfile jc_profile_from_settings(const JcUserSettings& s) {
 // ---- Versioned, checksummed encoding -------------------------------------
 
 constexpr uint32_t kJcSettingsMagic = 0x4A435331u;  // "JCS1"
-constexpr uint16_t kJcSettingsVersion = 1;
+constexpr uint16_t kJcSettingsVersion = 2;  // v2: six rotary step presets; v1 blobs are migrated, not discarded
 
 struct JcSettingsBlob {
     uint32_t       magic;
@@ -168,6 +169,35 @@ inline uint32_t jc_crc32(const uint8_t* data, size_t n) {
     return ~crc;
 }
 
+// Version 1 layout (five step presets per axis), kept only to migrate saved settings.
+struct JcUserSettingsV1 {
+    float   linear_steps[5];
+    float   rotary_steps[5];
+    float   linear_feeds[kJcFeedPresets];
+    float   rotary_feeds[kJcFeedPresets];
+    uint8_t brightness_percent;
+    uint8_t coordinate_decimals;
+    uint8_t default_reference;
+    uint8_t transport;
+    uint32_t uart_baud;
+    int8_t  uart_rx_pin;
+    int8_t  uart_tx_pin;
+    bool    a_axis_has_homing;
+    float   probe_feed;
+    float   probe_travel;
+    float   probe_retract;
+    float   plate_thickness;
+    float   tool_diameter;
+    JcMacroSlot macros[kJcMacroSlots];
+};
+struct JcSettingsBlobV1 {
+    uint32_t         magic;
+    uint16_t         version;
+    uint16_t         size;
+    JcUserSettingsV1 settings;
+    uint32_t         crc;
+};
+
 inline JcSettingsBlob jc_settings_encode(const JcUserSettings& s) {
     JcSettingsBlob blob;
     memset(&blob, 0, sizeof(blob));
@@ -183,6 +213,46 @@ inline JcSettingsBlob jc_settings_encode(const JcUserSettings& s) {
 // Accepted settings are sanitized before being returned.
 inline bool jc_settings_decode(const void* data, size_t length, JcUserSettings& out) {
     out = jc_settings_defaults();
+    if (data != nullptr && length == sizeof(JcSettingsBlobV1)) {
+        JcSettingsBlobV1 old;
+        memcpy(&old, data, sizeof(old));
+        if (old.magic != kJcSettingsMagic || old.version != 1 || old.size != sizeof(JcUserSettingsV1)
+            || old.crc != jc_crc32(reinterpret_cast<const uint8_t*>(&old), offsetof(JcSettingsBlobV1, crc))) {
+            return false;
+        }
+        // Keep every saved preference. Step presets still equal to the old factory values move to the new
+        // factory values; anything the operator customised is kept.
+        static const float old_lin[5] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f };
+        static const float old_rot[5] = { 0.1f, 1.0f, 10.0f, 45.0f, 90.0f };
+        static const float old_lf[3] = { 100.0f, 500.0f, 1000.0f };
+        static const float old_rf[3] = { 600.0f, 1800.0f, 3600.0f };
+        const JcUserSettings d = jc_settings_defaults();
+        const JcUserSettingsV1& o = old.settings;
+        out = d;
+        if (memcmp(o.linear_steps, old_lin, sizeof(old_lin)) != 0) memcpy(out.linear_steps, o.linear_steps, sizeof(o.linear_steps));
+        if (memcmp(o.rotary_steps, old_rot, sizeof(old_rot)) != 0) {
+            memcpy(out.rotary_steps, o.rotary_steps, sizeof(o.rotary_steps));
+            out.rotary_steps[5] = d.rotary_steps[5];
+        }
+        if (memcmp(o.linear_feeds, old_lf, sizeof(old_lf)) != 0) memcpy(out.linear_feeds, o.linear_feeds, sizeof(o.linear_feeds));
+        if (memcmp(o.rotary_feeds, old_rf, sizeof(old_rf)) != 0) memcpy(out.rotary_feeds, o.rotary_feeds, sizeof(o.rotary_feeds));
+        out.brightness_percent = o.brightness_percent;
+        out.coordinate_decimals = o.coordinate_decimals;
+        out.default_reference = o.default_reference;
+        out.transport = o.transport;
+        out.uart_baud = o.uart_baud;
+        out.uart_rx_pin = o.uart_rx_pin;
+        out.uart_tx_pin = o.uart_tx_pin;
+        out.a_axis_has_homing = o.a_axis_has_homing;
+        out.probe_feed = o.probe_feed;
+        out.probe_travel = o.probe_travel;
+        out.probe_retract = o.probe_retract;
+        out.plate_thickness = o.plate_thickness;
+        out.tool_diameter = o.tool_diameter;
+        memcpy(out.macros, o.macros, sizeof(out.macros));
+        jc_settings_sanitize(out);
+        return true;
+    }
     if (data == nullptr || length != sizeof(JcSettingsBlob)) return false;
     JcSettingsBlob blob;
     memcpy(&blob, data, sizeof(blob));

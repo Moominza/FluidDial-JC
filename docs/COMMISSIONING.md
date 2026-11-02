@@ -42,6 +42,36 @@ All **PENDING** on hardware (simulator-tested only). Before using them: establis
 - UART: implemented, host-tested; cable and wiring **not verified**.
 - BLE: implemented against a UART-style BLE module (e.g. HM-10/CC2541 class), host-tested with a mock radio; **no hardware verified**. A classic-Bluetooth HC-06 is not compatible with the ESP32-S3.
 
+## Owner acceptance, 2026-11-02 (Instruction 019)
+
+**Every PASS below is "PASS - operator-reported, observations not supplied."** It is the owner's acceptance, not instrumented validation: no distances, angles, homing accuracy, stopping distances, probe repeatability, electrical measurements, controller logs or module identities were supplied, and none are claimed.
+
+| Item | Result |
+|---|---|
+| X-axis movement (reported earlier: correct direction, 100 mm, Idle) | PASS - operator-reported, observations not supplied |
+| Y-axis movement (reported earlier) | PASS - operator-reported, observations not supplied |
+| Z-axis jogging | PASS - operator-reported, observations not supplied |
+| A-axis rotation | PASS - operator-reported, observations not supplied |
+| Jog cancellation | PASS - operator-reported, observations not supplied |
+| Limit switches and homing | PASS - operator-reported, observations not supplied |
+| Probe input | PASS - operator-reported, observations not supplied |
+| Work-zero positioning | PASS - operator-reported, observations not supplied |
+| Tool and rotary workflows | PASS - operator-reported, observations not supplied |
+| Connection-loss recovery | PASS - operator-reported, observations not supplied |
+| Physical touchscreen | PASS - operator-reported, observations not supplied (no panel photos in the repository) |
+| UART and BLE | PASS - operator-reported, observations not supplied (wiring, adapter and BLE module identity not supplied) |
+| Physical E-stop (2026-11-01, six checks) | PASS - operator-reported, no date/name recorded |
+
+## Controller limitations that remain on record
+
+Re-read on 2026-11-02 ([evidence](development/evidence/2026-11-02-controller-readonly-019.md)); the configuration was unchanged:
+
+- **Z homing:** `positive_direction=true` while the only Z limit input is `limit_neg_pin gpio.39`. No available evidence reconciles this, and the "limit switches and homing" PASS does not explain it. It is not claimed to be corrected.
+- **Soft limits OFF and hard limits OFF** on all axes. The E-stop is the only travel protection.
+- **No dedicated tool setter** is configured (`toolsetter_pin=NO_PIN`); tool measurement is manual-probe based.
+- **A axis** has no homing and no limit input.
+- Machine position is reported in MPos only; the pendant derives work coordinates from the offsets.
+
 ## Program execution policy
 
 No program start, resume, user macro or auto-restart on any transport or build. Proven by the shared command gate and policy, the static guard (`tools/check_no_sink.py`), the symbol check (`tools/check_firmware_symbols.py`) and the absence of `SD/Run`, `Localfs/Run` and `SD/Resume` from every binary.

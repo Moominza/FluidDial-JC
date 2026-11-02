@@ -160,8 +160,8 @@ void PendantUi::handle_app_leave(JcLeaveTarget target) {
 }
 
 float PendantUi::step_value(uint8_t index, uint8_t axis) {
-    static constexpr float linear[kStepCount] = { 0.01f, 0.1f, 1.0f, 10.0f, 100.0f };
-    static constexpr float rotary[kStepCount] = { 0.1f, 1.0f, 5.0f, 45.0f, 90.0f };
+    static constexpr float linear[kStepCount] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f };
+    static constexpr float rotary[kStepCount] = { 0.1f, 1.0f, 10.0f, 45.0f, 90.0f };
     const float* values = axis == 3 ? rotary : linear;
     return values[index < kStepCount ? index : 0];
 }

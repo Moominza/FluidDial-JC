@@ -151,7 +151,7 @@ void JcDisplaySettingsScreen::on_touch(uint16_t x, uint16_t y) {
 namespace {
 
 ui::Rect preset_rect(uint8_t row, uint8_t i) {
-    return { static_cast<int16_t>(200 + i * 116), static_cast<int16_t>(80 + row * 70), 108, 52 };
+    return { static_cast<int16_t>(200 + i * 98), static_cast<int16_t>(80 + row * 70), 92, 52 };
 }
 constexpr ui::Rect kResetDefaults { 16, 380, 300, 56 };
 
@@ -173,7 +173,7 @@ float* JcJogSettingsScreen::value_ptr(uint8_t row, uint8_t index) {
 
 void JcJogSettingsScreen::draw_values() {
     for (uint8_t row = 0; row < 4; ++row) {
-        const uint8_t count = row < 2 ? kJcStepPresets : kJcFeedPresets;
+        const uint8_t count = row == 0 ? jc_step_count(0) : (row == 1 ? jc_step_count(3) : kJcFeedPresets);
         for (uint8_t i = 0; i < count; ++i) {
             char v[20];
             snprintf(v, sizeof(v), "%g", static_cast<double>(*value_ptr(row, i)));
@@ -213,7 +213,7 @@ void JcJogSettingsScreen::edit_done(bool ok, const char* text) {
 
 void JcJogSettingsScreen::on_touch(uint16_t x, uint16_t y) {
     for (uint8_t row = 0; row < 4; ++row) {
-        const uint8_t count = row < 2 ? kJcStepPresets : kJcFeedPresets;
+        const uint8_t count = row == 0 ? jc_step_count(0) : (row == 1 ? jc_step_count(3) : kJcFeedPresets);
         for (uint8_t i = 0; i < count; ++i) {
             if (ui::hit(preset_rect(row, i), x, y)) {
                 _edit_row = row;

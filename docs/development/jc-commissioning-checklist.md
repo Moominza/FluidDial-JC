@@ -75,3 +75,7 @@ Automatic tool changer or M6 macro (never assumed), rotary-axis probing, outside
 - [ ] Owner authorization to flash full-control
 - [ ] Axis X / Y / Z / A tests, homing, work positioning, probe/tool, hardware connection-loss: not started
 
+
+## Instruction 019 (2026-11-02): owner acceptance
+All physical items (X, Y, Z, A, jog cancel, homing, probe, work-zero positioning, tool and rotary workflows, connection-loss recovery, touchscreen, UART, BLE) reported PASS by the owner - operator-reported, observations not supplied. Z positive_direction/negative-limit-pin configuration unchanged and unreconciled. See docs/COMMISSIONING.md.
+
