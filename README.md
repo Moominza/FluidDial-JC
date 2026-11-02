@@ -31,10 +31,14 @@ Transports: Wi-Fi TCP (auto-connects at boot; verified on hardware), wired UART 
 (compatible UART-style BLE module; implemented and tested with mocks, **hardware not yet
 verified**). Only one transport is active at a time.
 
-**Wi-Fi firmware updates (OTA):** with the pendant mounted, update it from a Windows PC over the local network, no USB:
-password-protected, armed on the touchscreen, refused unless the controller is Idle, and all machine commands are locked
-while it is armed. See [OTA_UPDATES.md](docs/OTA_UPDATES.md) and [OTA_INSTALL_GUIDE.md](docs/OTA_INSTALL_GUIDE.md) (the upload
-is password-protected, not encrypted or signed). Settings, calibration and Wi-Fi survive updates.
+**Wi-Fi firmware updates (OTA), no PC tools needed:** download `FluidDial-Updater-v1.5.1-win-x64.zip`, extract it,
+open `FluidDialUpdater.exe`, enter the pendant IP, choose the firmware, type the OTA password, click Update. The pendant must
+show SETTINGS > FIRMWARE UPDATE > READY (a password set, the controller Idle with fresh status; there is no arming step).
+Password-protected, refused unless the controller is Idle, and all machine commands are locked while a transfer runs.
+The updater needs no Python, PlatformIO, VS Code or administrator rights. The upload is password-protected, **not encrypted
+or signed**: use it on a trusted LAN. Settings, calibration and Wi-Fi survive updates. See
+[OTA_UPDATES.md](docs/OTA_UPDATES.md) and [OTA_INSTALL_GUIDE.md](docs/OTA_INSTALL_GUIDE.md); source in
+[tools/windows-updater/](tools/windows-updater/).
 
 Docs: [User guide](docs/USER_GUIDE.md), [OTA updates](docs/OTA_UPDATES.md), [commissioning](docs/COMMISSIONING.md),
 [release notes](docs/RELEASE_NOTES.md), [architecture](docs/development/jc-architecture.md),
@@ -43,7 +47,7 @@ Docs: [User guide](docs/USER_GUIDE.md), [OTA updates](docs/OTA_UPDATES.md), [com
 Build: `pio run -e jc8048w550_fullcontrol_test` (also `jc8048w550`, `jc8048w550_livejog_test`,
 `m5dial`, `cyddial`; `jc8048w550_fullcontrol_ota` / `jc8048w550_ota` build the same firmware but upload over Wi-Fi). Flash with `pio run -e <env> -t upload --upload-port COMx`. Host tests:
 `python tools/run_host_tests.py` (needs g++, clang++ or `pip install ziglang`); static checks:
-`python tools/check_no_sink.py`, `python tools/check_firmware_symbols.py`.
+`python tools/check_no_sink.py`, `python tools/check_firmware_symbols.py`. Windows updater: `tools/windows-updater/build.ps1` (uses the C# compiler included in Windows), `package.ps1`, tests in `tools/windows-updater/tests/`.
 
 Contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md) and the project
 rules in [AGENTS.md](AGENTS.md).
