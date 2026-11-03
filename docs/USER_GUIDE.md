@@ -1,4 +1,4 @@
-# FluidDial-JC user guide (full-control image)
+# FluidDial-JC user guide (v1.5.2, full-control image)
 
 For the Guition JC8048W550C_I running `jc8048w550_fullcontrol_test` against FluidNC v4.1.1. FluidNC does all motion; the pendant sends operator-confirmed commands and shows the controller's replies.
 
@@ -9,18 +9,21 @@ For the Guition JC8048W550C_I running `jc8048w550_fullcontrol_test` against Flui
 - Power-up: the pendant loads its saved calibration, joins the saved Wi-Fi, opens the TCP link to FluidNC and enters **LIVE** only after a valid, fresh status arrives. Until then it shows DEMO or "connecting". Nothing is sent to move the machine at start-up or after a reconnect.
 - **Dashboard** shows X, Y, Z (mm) and A (degrees), machine/work position selection, the active WCS, the controller state, and link freshness. Stale or missing data is shown as stale, never invented.
 - **MENU** tiles: JOGGING, HOMING, PROBING, WORK OFFSETS, FILES / JOBS, MACROS (work positioning), TOOLS, SETTINGS. **BACK** returns.
-- Red "FULL CONTROL" banner = commands can be sent. The ordinary `jc8048w550` image has a blue PREVIEW banner and sends nothing.
+- The operational (full-control) firmware has no mode banner; its build mode is shown under SETTINGS > DIAGNOSTICS. The ordinary `jc8048w550` diagnostic image keeps a blue PREVIEW - MOTION DISABLED banner and sends nothing, so it cannot be mistaken for it.
+- The MENU footer shows the connection and the controller state (CONNECTED / DISCONNECTED, Idle / Run / Hold / Alarm).
 - Settings: CONNECTIONS (Wi-Fi / UART / BLE, DISCONNECT, DEMO), DISPLAY, JOG PRESETS, MACHINE (read-only controller settings), DIAGNOSTICS, WI-FI SETUP, TOUCH CALIBRATION.
 
 ## Jogging (X, Y, Z in mm; A in degrees)
 
 1. MENU > JOGGING. Choose the axis (X, Y, Z, A).
 2. Choose the **STEP** (distance per press): linear 0.01 / 0.1 / 1 / 10 / 100 mm; A 0.1 / 1 / 5 / 15 / 45 / 90 degrees (six buttons on the A axis, five on X/Y/Z). The default selection is the third button (1 mm, or 5 degrees on A).
-3. Choose the **FEED** (speed, per minute): linear 300 / 1000 / 3000 mm/min, A 200 / 500 / 1000 deg/min. A feed above the axis' controller limit is greyed out. Step and feed are separate controls: a 100 mm step is not a 100 mm/min feed.
-4. Press **ARM JOG** once per session and confirm. Then JOG - / JOG + send one incremental `$J=` jog each. **CANCEL JOG** sends the jog-cancel byte.
-5. The result line shows FluidNC's reply (ok, error:N, alarm) and the position display shows the actual movement. "ok" means the jog was accepted, not finished; completion is the return to Idle.
+3. Choose the **FEED** (speed, per minute), four presets per axis group: X/Y 300 / 1000 / 3000 / 6000 mm/min, Z 100 / 300 / 750 / 1500 mm/min, A 100 / 250 / 500 / 1000 deg/min (these are the maxima of the owner's machine, not mandatory speeds). A feed above the axis limit is greyed out and cannot be selected: the limit is the controller's own maximum rate once the pendant has read it (the page shows "Feed limit ... from the controller"), and a selected feed above a newly read lower limit moves down, never up. Step and feed are separate controls: a 100 mm step is not a 100 mm/min feed. Switching between a linear axis and A selects 1 mm or 1 degree, never a tiny step.
+4. Tap **JOG -** or **JOG +**. **One tap sends one incremental `$J=` jog straight to FluidNC**: there is no ARM button, no arming timeout and no confirmation dialog (an intentional production change in v1.5.2). Holding the button does not repeat. Taps while a jog is still unresolved are ignored; nothing is queued. **CANCEL JOG** sends the jog-cancel byte and, like FEED HOLD, needs nothing.
+5. The panel shows SELECTED (axis, step, feed), RESULT (JOG REQUESTED, MOTION ACTIVE, Last jog completed, or the controller's error/alarm), MACHINE (state and connection) and the feed limit. Completion is judged from the controller's status (Idle again and the position moved as asked), not from the "ok". A failed or uncertain jog stays on screen until you tap ACKNOWLEDGE RESULT. Jogging is refused (and the reason shown) when the connection is stale or lost, the controller is in Alarm, Hold or Run, another operation is in progress, or a firmware update is running. A jog is never replayed after a reconnect.
 
-Presets can be edited under SETTINGS > JOG PRESETS. Presets you saved with an earlier firmware are kept; only values still equal to the old factory presets move to the new factory presets.
+Presets can be edited under SETTINGS > JOG PRESETS (X/Y, Z and A feeds are separate rows). Presets you saved with an earlier firmware are kept: only sets still equal to the old factory values move to the new factory values, customised feeds are kept as they were (a fourth preset is added) and no selected feed is ever raised. Going back to v1.5.1 afterwards resets the jog presets to its defaults (everything else is kept).
+
+Other consequential operations keep their confirmation: work offsets, tool length offset, probing and positioning routines, controller reset/unlock and firmware updates. Only the routine jog lost its extra steps.
 
 ## Work coordinates
 

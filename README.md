@@ -5,7 +5,7 @@
 This community repository preserves the upstream FluidDial history and adds
 an opt-in port for the **Guition JC8048W550C_I** (ESP32-S3, 800x480 capacitive
 touchscreen, GT911). The JC target is separate from the M5Dial and CYD targets.
-Version 1.5.1 (stable tag prepared locally; publication needs owner approval).
+Version 1.5.2 release candidate (v1.5.1 is the published stable release; v1.5.2 stable needs owner approval).
 
 FluidDial-JC is a four-axis (X/Y/Z linear mm, A rotary degrees) touchscreen pendant for
 **FluidNC v4.1.1** (tested on an MKS DLC32 MAX V1.2). It is only the operator interface:
@@ -17,7 +17,7 @@ never replays a command after a reconnect.
 
 | Environment | Purpose | Machine commands |
 |---|---|---|
-| `jc8048w550_fullcontrol_test` | **Full-control pendant** (banner FULL CONTROL, red) | Jog (X/Y/Z mm, A degrees), jog cancel, homing, WCS G54-G59, work offsets, work positioning, probing, tool length, feed hold, confirmed reset/unlock |
+| `jc8048w550_fullcontrol_test` | **Full-control pendant (production firmware, v1.5.2)**; no test banner; one tap = one jog, no arming | Jog (X/Y/Z mm, A degrees), jog cancel, homing, WCS G54-G59, work offsets, work positioning, probing, tool length, feed hold, confirmed reset/unlock |
 | `jc8048w550` | Ordinary diagnostic/preview image | None. Simulated controller; only `?` is sent |
 | `jc8048w550_livejog_test` | Restricted commissioning image (X/Y 1 mm jog only), never flashed by default | One restricted jog + cancel |
 
@@ -31,7 +31,7 @@ Transports: Wi-Fi TCP (auto-connects at boot; verified on hardware), wired UART 
 (compatible UART-style BLE module; implemented and tested with mocks, **hardware not yet
 verified**). Only one transport is active at a time.
 
-**Wi-Fi firmware updates (OTA), no PC tools needed:** download `FluidDial-Updater-v1.5.1-win-x64.zip`, extract it,
+**Wi-Fi firmware updates (OTA), no PC tools needed:** download `FluidDial-Updater-v1.5.2-win-x64.zip`, extract it,
 open `FluidDialUpdater.exe`, enter the pendant IP, choose the firmware, type the OTA password, click Update. The pendant must
 show SETTINGS > FIRMWARE UPDATE > READY (a password set, the controller Idle with fresh status; there is no arming step).
 Password-protected, refused unless the controller is Idle, and all machine commands are locked while a transfer runs.

@@ -1,3 +1,23 @@
+# FluidDial-JC 1.5.2 release notes (release candidate)
+
+Production polish on top of the published v1.5.1 (immutable, commit 82ffd31). Same hardware, same FluidNC v4.1.1 controller, same OTA protocol; the pendant is still only the HMI and FluidNC plans and executes every move.
+
+## What changed (full-control firmware only)
+
+- **Jogging no longer needs arming.** ARM JOGGING, the arming dialog, the 120 s timeout and the re-arm after leaving the page or reconnecting are gone, and so are per-jog confirmations. One deliberate tap on JOG - / JOG + submits one incremental jog; a held touch does not repeat; no second jog is accepted until the first is resolved; the next one is possible as soon as FluidNC reports it complete. This is an **intentional production interaction change**, implemented as a new gate policy (`JcGatePolicy::Production`) in the shared dispatcher, not as a bypass. Kept: LIVE transport, fresh status and fresh command (no stale replay), no Alarm, Idle/Jog controller state, single-operation tracking, the OTA transfer lock, and FluidNC's authority to accept or reject. JOG CANCEL and FEED HOLD stay available without arming. Every other consequential class (homing, probing, offsets, tool length, reset/unlock, positioning routines) keeps its arming and confirmation, and program start/resume, user macros and command replay stay prohibited.
+- **Jog feeds**: four presets per axis group: X/Y 300 / 1000 / 3000 / 6000 mm/min, Z 100 / 300 / 750 / 1500 mm/min, A 100 / 250 / 500 / 1000 deg/min (the A unit is degrees on this machine, as commissioned). A preset above the axis limit is disabled and the selection moves down to the largest allowed one when the controller reports a lower maximum; the limit shown on the page says whether it comes from the controller. Saved settings are migrated from format 1 and 2 (format 3 now): customised values are kept and never raised. Step presets are unchanged; switching between a linear axis and A selects 1 mm / 1 degree.
+- **Jog page**: ARM and INCREMENTAL removed; the feed row uses the whole width; panel rows SELECTED / RESULT / MACHINE / feed limit; states Ready, Jog requested, Motion active, Completed, controller error, Disconnected; no popup on a successful jog; errors and blocked jogs are explained.
+- **Production look**: no FULL CONTROL / TEST BUILD banners, no red commissioning footer on the menu, settings or connection pages; the MENU footer is a compact connection + controller-state line; firmware version and mode are under SETTINGS > DIAGNOSTICS. Red is kept for alarms, stop controls and genuine errors. The ordinary diagnostic image still shows PREVIEW - MOTION DISABLED. `tools/check_production_wording.py` guards the screens of the production build.
+- **OTA**: unchanged protocol, interlocks and rollback. New: the backlight is switched off while the update image is written and comes back when the transfer ends, because flash writes disturb the RGB panel (the screen flashed during v1.5.1 and during the first v1.5.2 test upload). The updater program is the same engine (version 1.5.2) and installs this image.
+
+## Verification (host, 2026-11-03)
+
+Host suites 0 failed (command interface 928 checks incl. the production gate/flow tests: unarmed jog allowed, one tap = one line, unresolved/duplicate refused, stale/alarm/Hold/Run refused, OTA lock, no replay after link loss, other classes still need arming, program start blocked); settings migration v1/v2/v3; UI renderer ordinary 48, preview 96, live-jog 72, production 95 frames, 0 layout problems; simulator integration PASS; `check_no_sink.py`, `check_firmware_symbols.py`, `check_production_wording.py` PASS; all five PlatformIO environments build; updater protocol tests 25/25 against the new package. The renderer shows page code, not the panel.
+
+## On the pendant
+
+See the end of this section for what was and was not observed on the physical pendant; nothing about the physical screen is claimed beyond that.
+
 # FluidDial-JC 1.5.1 release notes
 
 Target: Guition JC8048W550C_I (ESP32-S3, 800x480, GT911) with an MKS DLC32 MAX V1.2 running FluidNC v4.1.1, four axes (X/Y/Z mm, A degrees).
