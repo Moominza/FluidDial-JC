@@ -1,6 +1,6 @@
-# FluidDial-JC 1.5.2 release notes (release candidate)
+# FluidDial-JC 1.5.2 release notes (production release)
 
-Production polish on top of the published v1.5.1 (immutable, commit 82ffd31). Same hardware, same FluidNC v4.1.1 controller, same OTA protocol; the pendant is still only the HMI and FluidNC plans and executes every move.
+Production release. Polish on top of the published v1.5.1 (immutable, commit 82ffd31). Same hardware, same FluidNC v4.1.1 controller, same OTA protocol; the pendant is still only the HMI and FluidNC plans and executes every move.
 
 ## What changed (full-control firmware only)
 
@@ -14,7 +14,19 @@ Production polish on top of the published v1.5.1 (immutable, commit 82ffd31). Sa
 
 Host suites 0 failed (command interface 928 checks incl. the production gate/flow tests: unarmed jog allowed, one tap = one line, unresolved/duplicate refused, stale/alarm/Hold/Run refused, OTA lock, no replay after link loss, other classes still need arming, program start blocked); settings migration v1/v2/v3; UI renderer ordinary 48, preview 96, live-jog 72, production 95 frames, 0 layout problems; simulator integration PASS; `check_no_sink.py`, `check_firmware_symbols.py`, `check_production_wording.py` PASS; all five PlatformIO environments build; updater protocol tests 25/25 against the new package. The renderer shows page code, not the panel.
 
-## On the pendant
+## Hardware acceptance
+
+PASS - operator-reported, observations not supplied: display and backlight, production home screen, jogging interface, direct jogging without ARM, higher jogging speeds, saved settings preserved. Independently seen in logs: the RC2 image uploaded over Wi-Fi, booted, confirmed itself (rollback cancelled), and the pendant reconnected to Wi-Fi and FluidNC. The OTA transfer-time flicker was not directly observed after the RC2 correction. The 30 s health sample after boot (one sample, not a soak test): 1297 polls, slowest 173 ms, heap 130456 bytes free, PSRAM 7.6 MB free.
+
+## Known limitations
+
+- OTA is password-protected but not encrypted; firmware images are not digitally signed.
+- Rollback after power loss during an update has not been physically verified.
+- Controller (not changed by FluidDial): soft and hard limits were last reported OFF; the Z homing configuration discrepancy remains documented; no dedicated tool setter was configured in the last readback.
+- Some hardware acceptance results are operator-reported.
+- The RC2 firmware images report their build revision as feature/jc8048w550-2d239e1-dirty: they were built from the working tree that became commit 77cdbfe, before it was committed. The release tag contains that exact source; the images were not rebuilt, so the tested and installed binaries are the published ones.
+
+## Installed state of the pendant
 
 ### RC2 (display stability, Instruction 024)
 
