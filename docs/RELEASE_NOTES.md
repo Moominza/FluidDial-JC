@@ -16,7 +16,14 @@ Host suites 0 failed (command interface 928 checks incl. the production gate/flo
 
 ## On the pendant
 
-See the end of this section for what was and was not observed on the physical pendant; nothing about the physical screen is claimed beyond that.
+### RC2 (display stability, Instruction 024)
+
+- Panel configuration found (unchanged): ST7262 RGB, 800x480, one 16-bit frame buffer in PSRAM (Arduino_GFX `fb_in_psram`, no bounce buffer, ESP-IDF 4.4), pixel clock 16 MHz, porches 8/4/8, cache write-back after each draw. Timing was not changed: there is no evidence that it is wrong.
+- The only flicker actually reported is the full-screen flashing during an OTA upload (flash writes stop the cache while the RGB DMA reads PSRAM). Ordinary runtime flicker has not been reported and has not been measured. The screens redraw only changed regions in normal operation; full-screen clears happen on page changes.
+- Change: the OTA backlight-off workaround is now released on every loop pass (not only from the OTA draw callback), so a transfer that ends by timeout, abort or failure cannot leave the panel dark.
+- Change: a `health:` line every 30 s on the serial port (worst poll time, heap, PSRAM free/minimum/largest block).
+- Reconnect delay after a reboot: OTA is offered only when the controller status is fresh and Idle, so it waits for the FluidNC link. The pendant's own retry back-off is capped at 30 s; delays of minutes are therefore most likely a stale session held on the FluidNC side. This is a hypothesis, not demonstrated, and nothing was changed for it.
+- RC2 images: fullcontrol `b28c217ae7e113e17c032a37f519d8449e584bb98894d55c714036b260e21d41`, diagnostic motion-disabled `ea3e9e632df0e022f2a35844d8d4c867f3f8f42d9d1b5c2064b431a31ad8424b`, firmware source 77cdbfe. Physical display behaviour: not verified. See docs/PHYSICAL_TEST_CHECKLIST.md.
 
 # FluidDial-JC 1.5.1 release notes
 
