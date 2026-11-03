@@ -121,6 +121,7 @@ private:
     JcUserSettings _settings;
     JcMachineProfile _profile;
     JcMachineModel _model;
+    bool _ota_dark = false;   // backlight off while an update image is written (flash writes disturb the panel)
     JcDispatcher _dispatcher;   // a transmit sink is installed ONLY in the live-jog test build
     JcCapsLoader _loader;
     JcBleUart _ble;                 // BLE UART transport core (the shared parser, the shared command policy)

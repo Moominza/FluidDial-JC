@@ -153,6 +153,7 @@ void JcApp::begin(LeaveFn leave_fn, void* user) {
 }
 
 void JcApp::apply_brightness() {
+    if (_ota_dark) return;   // restored by ota_draw_thunk when the transfer ends
     const uint32_t duty = (static_cast<uint32_t>(_settings.brightness_percent) * 255u) / 100u;
     ledcWrite(kBacklightChannel, duty);
 }
@@ -516,7 +517,16 @@ JcOtaInputs JcApp::ota_inputs() const {
 
 void JcApp::ota_draw_thunk(void* user) {
     JcApp* a = static_cast<JcApp*>(user);
-    if (a->_nav.current() == JcPage::Ota) a->_ota_screen.refresh();
+    // Writing the flash stops the cache, and the RGB panel's frame buffer lives in PSRAM: the picture tears and
+    // flashes for as long as the image is being written. The backlight is therefore off while data is received
+    // and verified (the PC shows the progress) and comes back as soon as the transfer is over or has failed.
+    const JcOtaState st = a->_ota.state();
+    const bool dark = st == JcOtaState::Receiving || st == JcOtaState::Validating;
+    if (dark != a->_ota_dark) {
+        a->_ota_dark = dark;
+        if (dark) ledcWrite(kBacklightChannel, 0); else a->apply_brightness();
+    }
+    if (!dark && a->_nav.current() == JcPage::Ota) a->_ota_screen.refresh();
 }
 
 void JcApp::ota_view(JcOtaView& v) const {
