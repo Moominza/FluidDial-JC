@@ -2,6 +2,13 @@
 
 Simplified production operation on top of the published v1.5.2. FluidDial is the HMI; FluidNC plans and executes every move.
 
+## RC1 images (firmware source 6a92720, clean build; not published, not yet installed on the pendant)
+
+- fullcontrol: `3897587df3d807f63a844ff93059ace4f4d094bbdcf5f266b87d8610bccfaf4c`
+- diagnostic motion-disabled: `f419ff3434f167ccb6d14a7830e63dedde78324fd07ef2a7808b81b453f0888c`
+- FluidDial-Updater-v1.5.3-win-x64.zip: `6330e6ed9c8f642e0c9b22ac6b465727f7d0652062552d8e6d94c9dc8ebeb29e`
+- OTA compatible: same espota protocol and updater engine as 1.5.2 (updater version string 1.5.3). Physical behaviour of the no-arming flow is not verified yet.
+
 ## What changed (full-control firmware only)
 
 - **No arming anywhere.** The production command gate (`JcGatePolicy::Production`) no longer requires an armed state for any command class, so homing (per axis), work-coordinate selection, work offsets and work zero, work-zero positioning, probing, centre finding, rotary centreline, tool measurement, tool-length offset and unlock work without an ARM step. The code that armed per routine (workflow start, tool-offset clear, controller reset confirmation) is compiled out of the production image, and so is the arming-scope enforcement. The authorization still goes through the shared dispatcher; it is not bypassed.
