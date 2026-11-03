@@ -622,7 +622,7 @@ void JcApp::service() {
     if (!_sv.live_mode && _jogs.unresolved()) {
         _jogs.on_link_lost(now, false);  // DEMO mode has no controller
     }
-#if JC_JOG_UI
+#if JC_JOG_UI && !JC_FULL_CONTROL_TEST
     // Arming (and its acknowledgement) only exists on the jog page (or an input dialog opened
     // from it), in LIVE mode and inside its time window; anything else drops both.
     const JcDisarmReason dropped = _dispatcher.enforce_arming_scope(
@@ -849,9 +849,13 @@ void JcApp::workflow_open(JcWfKind kind) {
 bool JcApp::workflow_clear_tlo() {
     const uint32_t now = millis();
     if (_nav.current() != JcPage::Workflow && !_nav.go(JcPage::Workflow)) return false;
+#if !JC_FULL_CONTROL_TEST
     _dispatcher.arm_for(now, 15u * 60u * 1000u, 0x0F);
+#endif
     if (!_wf.request_clear_tlo(now)) {
+#if !JC_FULL_CONTROL_TEST
         _dispatcher.disarm();
+#endif
         return false;
     }
     _workflow_screen.show_active();

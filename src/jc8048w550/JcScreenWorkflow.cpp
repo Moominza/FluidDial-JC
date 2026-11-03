@@ -413,7 +413,9 @@ void JcWorkflowScreen::on_custom_confirm() {
     const uint32_t now = millis();
     // The operator's confirmation arms command sending for this routine only (15 minutes at most); it is dropped
     // when the routine ends, when the page is left and on any loss of the connection.
+#if !JC_FULL_CONTROL_TEST   // production: the confirmation is the only gate, nothing is armed
     sv.dispatcher.arm_for(now, 15u * 60u * 1000u, 0x0F);
+#endif
     const uint8_t pending = _action_pending;
     _action_pending = 0;
     if (pending == 1) {
@@ -512,9 +514,11 @@ void JcWorkflowScreen::on_tick(uint32_t now) {
     if (now - _last_tick < 250) return;
     _last_tick = now;
     const JcWfState st = sv.wf.state();
+#if !JC_FULL_CONTROL_TEST
     if ((st == JcWfState::Done || st == JcWfState::Failed || st == JcWfState::Cancelled || st == JcWfState::Planned) && sv.dispatcher.armed()) {
         sv.dispatcher.disarm();   // nothing stays armed once the routine is over
     }
+#endif
     if (_mode == Mode::Active) {
         if (_drawn_state != static_cast<uint8_t>(sv.wf.state()) || _drawn_step != sv.wf.step_index()) draw();
         if (st == JcWfState::Running || st == JcWfState::WaitOperator) {   // the probe pin, live: contact verification is by hand

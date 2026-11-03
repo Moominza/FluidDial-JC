@@ -213,10 +213,14 @@ void JcFilesScreen::ask_reset() {
 void JcFilesScreen::on_custom_confirm() {
     const JcCommand c = jc_soft_reset();
     if (!c.ok) { show_message("CANNOT PREPARE COMMAND", jc_cmd_error_name(c.error)); return; }
+#if !JC_FULL_CONTROL_TEST
     // The operator's confirmation arms ONE submission: the arming is dropped again straight away.
     sv.dispatcher.arm_for(millis(), 5000, 0x0F);
+#endif
     const JcAuthDecision d = sv.dispatcher.submit(c, sv.dispatch_context(true));
+#if !JC_FULL_CONTROL_TEST
     sv.dispatcher.disarm();
+#endif
     if (d != JcAuthDecision::Allowed) {
         show_message("NOT SENT", jc_auth_name(d), "Nothing was transmitted to the controller.");
     }

@@ -23,7 +23,7 @@ For the Guition JC8048W550C_I running `jc8048w550_fullcontrol_test` against Flui
 
 Presets can be edited under SETTINGS > JOG PRESETS (X/Y, Z and A feeds are separate rows). Presets you saved with an earlier firmware are kept: only sets still equal to the old factory values move to the new factory values, customised feeds are kept as they were (a fourth preset is added) and no selected feed is ever raised. Going back to v1.5.1 afterwards resets the jog presets to its defaults (everything else is kept).
 
-Other consequential operations keep their confirmation: work offsets, tool length offset, probing and positioning routines, controller reset/unlock and firmware updates. Only the routine jog lost its extra steps.
+Other consequential operations keep their confirmation: work offsets, tool length offset, probing and positioning routines, controller reset/unlock and firmware updates. Since v1.5.3 **no function needs a separate ARM step**: homing, work-coordinate selection, work offsets and work zero, work-zero positioning, probing and centre finding, tool measurement and offsets, and unlock work as select -> confirm (once) -> FluidNC executes. A sent command closes its confirmation without a second popup; a refused one says why. Nothing is armed and nothing expires. The safety checks stay: LIVE connection, fresh status, no Alarm, the right controller state, one operation at a time, no command replay after a reconnect, no commands during a firmware update, and no program start or resume.
 
 ## Work coordinates
 
@@ -51,4 +51,4 @@ SETTINGS > FIRMWARE UPDATE. Set an OTA password once (SET PASSWORD; it is never 
 
 ## Errors
 
-Controller `error:N` and `ALARM:N` are shown with their numbers. After an alarm or reset the pendant needs your explicit action (unlock/re-arm); it never re-arms or replays anything by itself. If the link drops, in-flight operations end as "unknown" and the display marks coordinates stale.
+Controller `error:N` and `ALARM:N` are shown with their numbers. After an alarm or reset the pendant needs your explicit action (unlock); it never replays anything by itself. If the link drops, in-flight operations end as "unknown" and the display marks coordinates stale.

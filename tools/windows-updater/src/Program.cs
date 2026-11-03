@@ -8,14 +8,14 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("FluidDial Updater")]
 [assembly: AssemblyProduct("FluidDial-JC firmware updater")]
-[assembly: AssemblyVersion("1.5.2.0")]
-[assembly: AssemblyFileVersion("1.5.2.0")]
+[assembly: AssemblyVersion("1.5.3.0")]
+[assembly: AssemblyFileVersion("1.5.3.0")]
 
 namespace FluidDialUpdater
 {
     static class Program
     {
-        public const string Version = "1.5.2";
+        public const string Version = "1.5.3";
 
         [DllImport("kernel32.dll")]
         static extern bool AttachConsole(int pid);

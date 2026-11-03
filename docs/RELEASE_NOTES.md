@@ -1,3 +1,15 @@
+# FluidDial-JC 1.5.3 release notes (release candidate)
+
+Simplified production operation on top of the published v1.5.2. FluidDial is the HMI; FluidNC plans and executes every move.
+
+## What changed (full-control firmware only)
+
+- **No arming anywhere.** The production command gate (`JcGatePolicy::Production`) no longer requires an armed state for any command class, so homing (per axis), work-coordinate selection, work offsets and work zero, work-zero positioning, probing, centre finding, rotary centreline, tool measurement, tool-length offset and unlock work without an ARM step. The code that armed per routine (workflow start, tool-offset clear, controller reset confirmation) is compiled out of the production image, and so is the arming-scope enforcement. The authorization still goes through the shared dispatcher; it is not bypassed.
+- **Confirmations kept, once each.** Consequential commands still need the operator confirmation (`BlockedUnconfirmed` without it): homing, WCS select, offsets, zero, probing, tool offsets and staged positioning (with its clearance and continuation prompts) are refused by the gate without it; the controller reset keeps its explicit confirmation dialog. After a confirmed command is sent the dialog closes without a second result popup; a refused command shows why. A routine jog needs no confirmation (one tap = one jog); JOG CANCEL and FEED HOLD need neither arming nor confirmation.
+- **Unchanged restrictions:** LIVE connection, fresh status, fresh command, no Alarm, Idle (or Jog) state for the class, one operation at a time, no command replay and no confirmation surviving a reconnect, OTA transfer lockout, program start/resume and arbitrary macros prohibited. The motion-disabled diagnostic image and the restricted live-jog image are unchanged and keep their own policies (the diagnostic image still cannot send anything; the preview rehearsal keeps its arming step).
+- Wording: the production screens contain no arm/armed/arming text; `tools/check_production_wording.py` now fails on it.
+- Tests: the gate matrix and the production flow tests were rewritten for the new policy (unarmed + confirmed = allowed; unarmed + unconfirmed = refused; Alarm still refused; no confirmation after a reconnect; the preview gate still requires arming); the renderer drives HOME X through the real homing page without arming.
+
 # FluidDial-JC 1.5.2 release notes (production release)
 
 Production release. Polish on top of the published v1.5.1 (immutable, commit 82ffd31). Same hardware, same FluidNC v4.1.1 controller, same OTA protocol; the pendant is still only the HMI and FluidNC plans and executes every move.

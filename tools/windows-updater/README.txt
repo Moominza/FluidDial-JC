@@ -1,4 +1,4 @@
-FluidDial Updater 1.5.2
+FluidDial Updater 1.5.3
 =======================
 
 Updates the FluidDial-JC pendant (Guition JC8048W550C_I) over your local Wi-Fi network.
@@ -12,7 +12,7 @@ QUICK START
 3. Check the pendant's IP address (default 192.168.0.135; it is shown on the pendant under
    SETTINGS > FIRMWARE UPDATE). Change it if yours is different. "Test connection" checks it.
 4. Choose the firmware. The normal choice is the FULL CONTROL image:
-      fluiddial-jc-1.5.2-fullcontrol.bin
+      fluiddial-jc-1.5.3-fullcontrol.bin
    The DIAGNOSTIC (motion disabled) image is also included. Installing it turns the pendant into a
    read-only one, so the program asks you to confirm.
 5. Type the OTA password (the one you set on the pendant under SETTINGS > FIRMWARE UPDATE >

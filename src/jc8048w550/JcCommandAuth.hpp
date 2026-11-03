@@ -216,12 +216,11 @@ inline bool jc_is_stop_or_recovery(JcCommandClass c) {
 //                      machine state for the class, and the operator's confirmation for consequential
 //                      classes. No capability, homing, travel-envelope or acknowledgement prerequisite.
 //                      (Used by the non-motion preview, whose rehearsal keeps the arming step.)
-//   Production:        The full-control firmware (v1.5.2). Authority, except that a routine incremental
-//                      jog needs no prior arming and no confirmation: one deliberate tap is the request.
-//                      Everything else (LIVE, fresh status and command, no alarm, Idle/Jog state, one
-//                      operation at a time) still applies, and every consequential class keeps its
-//                      arming (the confirmation of its routine) and confirmation. Jog cancel and feed
-//                      hold stay always-allowed.
+//   Production:        The full-control firmware (v1.5.3). Authority without any arming step: a routine
+//                      incremental jog needs no confirmation (one deliberate tap is the request) and every
+//                      consequential class needs only its own confirmation. LIVE, fresh status and command,
+//                      no alarm, Idle/Jog state and one operation at a time still apply. Jog cancel and
+//                      feed hold stay always-allowed. Program start/resume stays prohibited.
 enum class JcGatePolicy : uint8_t { Plain, LiveJogRestricted, Authority, Production };
 
 namespace detail {
@@ -239,9 +238,9 @@ inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& c
     if (jc_is_stop_always_allowed(cls)) {
         return ctx.live ? JcAuthDecision::Allowed : JcAuthDecision::BlockedNotLive;
     }
-    // Production: the tap on JOG + / JOG - is the operator's request. No other class gets this exemption.
-    const bool jog_needs_no_arming = policy == JcGatePolicy::Production && cls == JcCommandClass::Jog;
-    if (!ctx.armed && !jog_needs_no_arming) {
+    // Production (v1.5.3): there is no operator arming step for any class. The tap on JOG + / JOG - is the request for a
+    // jog; every consequential class is still gated by its confirmation (needs_confirmation below).
+    if (!ctx.armed && policy != JcGatePolicy::Production) {
         return JcAuthDecision::BlockedNotArmed;
     }
     if (!ctx.live) {

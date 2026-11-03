@@ -21,8 +21,10 @@ HOST = os.path.join(ROOT, "test", "host")
 BANNED = [
     "FULL CONTROL TEST BUILD", "LIVE JOG TEST BUILD", "TEST BUILD", "ARM JOG", "ARM TEST", "ARM PREVIEW", "ARMED",
     "UNPROTECTED", "RESTRICTED", "CONFIRMED COMMANDS", "ONLY RESTRICTED", "PREVIEW ONLY", "MOTION DISABLED",
-    "FULL CONTROL", "COMMANDS ARE SENT",
+    "FULL CONTROL", "COMMANDS ARE SENT", "NOT ARMED", "ARM EXPIRED", "REARM", "RE-ARM", "ARM MACHINE", "ARM FUNCTION",
+    "ARM HOMING", "ARM PROBING", "ARMING",
 ]
+ARM_WORD = re.compile(r"\barm(?:ed|ing|s)?\b", re.IGNORECASE)   # arm/armed/arming as words (alarm, warm... are not matched)
 SCREEN_EXTRA = ["JcScreens.hpp", "JcScreen.hpp", "JcUiKit.hpp"]
 FILES = [n for n in sorted(os.listdir(SRC)) if n.startswith("JcScreen") and n.endswith(".cpp")] + ["JcPendantUi.cpp", "JcUiKit.cpp"]
 
@@ -81,6 +83,8 @@ def main():
             if "Serial." in line:
                 continue
             for lit in re.findall(r'"((?:[^"\\]|\\.)*)"', line):
+                if ARM_WORD.search(lit):
+                    hits.append((name, "ARM", lit))
                 for b in BANNED:
                     if b in lit:
                         hits.append((name, b, lit))

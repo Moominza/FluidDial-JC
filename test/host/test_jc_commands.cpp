@@ -286,17 +286,24 @@ static void test_authority_gate() {
     // Production (v1.5.2): a routine incremental jog needs no arming; the preview rehearsal keeps it.
     b.armed = false;      CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::Allowed);
                           CHECK(jc_authorize_preview(JcCommandClass::Jog, b) == JcAuthDecision::BlockedNotArmed);
-    // ... and ONLY the jog: every other class still needs its routine's arming (and its confirmation).
+    // v1.5.3: NO class needs arming in the production gate; the consequential ones still need their confirmation.
     {
         JcAuthContext u = a; u.armed = false; u.operator_confirmed = true;
-        CHECK(jc_authorize(JcCommandClass::Home, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::Probe, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::WorkOffset, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::Spindle, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::Macro, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::Other, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::Reset, u) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jc_authorize(JcCommandClass::Unlock, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Home, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::Probe, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::WorkOffset, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::Spindle, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::Macro, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::Other, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::Reset, u) == JcAuthDecision::Allowed);
+        CHECK(jc_authorize(JcCommandClass::Unlock, u) == JcAuthDecision::Allowed);
+        // unarmed AND unconfirmed: the consequential classes are still refused for the missing confirmation
+        JcAuthContext v = a; v.armed = false; v.operator_confirmed = false;
+        CHECK(jc_authorize(JcCommandClass::Home, v) == JcAuthDecision::BlockedUnconfirmed);
+        CHECK(jc_authorize(JcCommandClass::WorkOffset, v) == JcAuthDecision::BlockedUnconfirmed);
+        CHECK(jc_authorize(JcCommandClass::Probe, v) == JcAuthDecision::BlockedUnconfirmed);
+        // the preview rehearsal keeps its arming step
+        CHECK(jc_authorize_preview(JcCommandClass::Home, u) == JcAuthDecision::BlockedNotArmed);
         CHECK(jc_authorize(JcCommandClass::Job, u) == JcAuthDecision::BlockedProgramStart);   // never, armed or not
         // unarmed, a jog is still held to every other rule
         u = a; u.armed = false;
@@ -490,7 +497,7 @@ static void test_rejection_alarm_timeout_loss() {
         CHECK(!r.disp.armed());
         r.run(5000);                 // "reconnected": time passes, status fresh again
         CHECK(r.nc.wire.size() == sent);   // nothing replayed
-        CHECK(r.submit(jc_select_wcs(0)) == JcAuthDecision::BlockedNotArmed);
+        CHECK(r.submit(jc_select_wcs(0), false) == JcAuthDecision::BlockedUnconfirmed);   // no confirmation survives a reconnect
         CHECK(r.sys.homed().mask() == 0);
     }
     {   // transport failure: reported, not retried
@@ -714,16 +721,36 @@ static void test_production_jog_without_arming() {
         CHECK(!jc_jog_incremental(p, 2, 1.0f, 1501.0f).ok == (p.axes[2].max_feed < 1501.0f));   // Z default limit 1500
         CHECK(jc_jog_incremental(p, 2, 1.0f, 1500.0f).ok);
     }
-    {   // the other classes keep their arming and their confirmation
-        Rig r; r.disp.disarm();
-        r.run(800);
-        CHECK(r.submit(jc_home(p, 0xFF), true) == JcAuthDecision::BlockedNotArmed);
-        CHECK(r.submit(jc_zero_axis(p, 0), true) == JcAuthDecision::BlockedNotArmed);
-        CHECK(r.submit(jc_select_wcs(0), true) == JcAuthDecision::BlockedNotArmed);
-        CHECK(jog_lines(r) == 0 && r.nc.wire.empty());
-        r.disp.arm();
-        CHECK(r.submit(jc_zero_axis(p, 0), false) == JcAuthDecision::BlockedUnconfirmed);   // armed, still needs the operator
-        CHECK(r.nc.wire.empty());
+    {   // v1.5.3: no other class needs arming either; the consequential ones need only their confirmation
+        {
+            Rig r; r.disp.disarm();
+            r.run(800);
+            CHECK(r.submit(jc_home(p, 0xFF), false) == JcAuthDecision::BlockedUnconfirmed);   // unconfirmed: refused
+            CHECK(r.submit(jc_zero_axis(p, 0), false) == JcAuthDecision::BlockedUnconfirmed);
+            CHECK(r.submit(jc_select_wcs(0), false) == JcAuthDecision::BlockedUnconfirmed);
+            CHECK(r.nc.wire.empty());
+            CHECK(r.submit(jc_home(p, 0xFF), true) == JcAuthDecision::Allowed);             // confirmed: sent, never armed
+            CHECK(!r.disp.armed() && !r.nc.wire.empty());
+        }
+        {
+            Rig r; r.disp.disarm();
+            r.run(800);
+            CHECK(r.submit(jc_zero_axis(p, 0), true) == JcAuthDecision::Allowed);
+            CHECK(!r.disp.armed());
+        }
+        {
+            Rig r; r.disp.disarm();
+            r.run(800);
+            CHECK(r.submit(jc_select_wcs(0), true) == JcAuthDecision::Allowed);
+            CHECK(!r.disp.armed());
+        }
+        {   // a confirmed command still obeys the state rules: nothing while the controller is in Alarm
+            Rig r; r.disp.disarm();
+            r.run(800);
+            strcpy(r.state_buf, "Alarm");
+            CHECK(r.submit(jc_home(p, 0xFF), true) == JcAuthDecision::BlockedAlarm);
+            CHECK(r.nc.wire.empty());
+        }
     }
     {   // cancel and feed hold need no arming
         Rig r; r.disp.disarm();

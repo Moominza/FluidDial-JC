@@ -187,6 +187,18 @@ void JcScreen::run_pending() {
         dialog.add_line("Any reply shown later comes from the simulation.", ui::kMuted);
     }
     Serial.printf("dispatch: %s%s\n", jc_auth_name(decision), rehearsed ? " (SIMULATED, NOT SENT)" : " (NOT SENT)");
+#elif JC_FULL_CONTROL_TEST
+    // Production: the confirmation just given was the only prompt. A sent command closes the dialog (the pages show
+    // the controller's own state and replies); a refused one says why.
+    const bool sent = sv.dispatcher.sent() != sent_before;
+    Serial.printf("dispatch: %s%s\n", jc_auth_name(decision), sent ? " (SENT)" : "");
+    if (sent) {
+        dialog.close();
+    } else {
+        dialog.open_result("NOT SENT", false);
+        dialog.add_line(jc_auth_name(decision), ui::kWarn);
+        dialog.add_line("Nothing was transmitted to the controller.");
+    }
 #elif JC_JOG_UI
     const bool sent = sv.dispatcher.sent() != sent_before;
     dialog.open_result(sent ? "JOG SENT" : (allowed ? "AUTHORIZED - NOT SENT" : "BLOCKED - NOT SENT"), sent);

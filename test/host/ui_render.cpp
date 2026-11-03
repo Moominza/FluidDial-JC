@@ -1598,7 +1598,11 @@ static void scenarios() {
         touch_center(wfs, ui::Rect { 258, 408, 250, 52 });          // START -> the single confirmation
         check_frame(w.gfx, "workflow_start_confirm", true);
         touch_center(wfs, ui::kDialogConfirm);
+#if JC_FULL_CONTROL_TEST
+        check(!w.dispatcher.armed_at(g_stub_millis), "production: confirming START arms nothing (the confirmation is the only gate)");
+#else
         check(w.dispatcher.armed_at(g_stub_millis), "confirming START arms command sending for this routine");
+#endif
         w.wf_run(900);
         wfs.tick(g_stub_millis);
         check_frame(w.gfx, "workflow_running", false);
@@ -1711,6 +1715,14 @@ static void scenarios() {
         JcHomingScreen hs(h.sv);
         hs.enter();
         check_frame(h.gfx, "homing_state", false);
+#if JC_FULL_CONTROL_TEST
+        // v1.5.3: homing needs no arming; the single confirmation sends it
+        check(!h.dispatcher.armed_at(g_stub_millis), "homing: nothing is armed");
+        touch_center(hs, ui::Rect { 16, 232, 183, 64 });              // HOME X
+        touch_center(hs, ui::kDialogConfirm);
+        check(h.wire.find("$HX") != std::string::npos, "homing: confirming HOME X sends $HX without any arming step");
+        check(!h.dispatcher.armed_at(g_stub_millis), "homing: still nothing armed afterwards");
+#endif
     }
 #endif
 #else

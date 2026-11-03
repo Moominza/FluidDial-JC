@@ -843,7 +843,7 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             if (!JC_AUTHORITY && !armed_here && live_axis_allowed(_axis) && flow.phase != JcCapsPhase::Current) {
                 if (flow.phase == JcCapsPhase::Reading) {
                     show_message("READING MACHINE SETTINGS", "Wait for the read to finish.",
-                                 "ARM stays unavailable until valid, current results are held.");
+                                 "The jog stays unavailable until valid, current results are held.");
                 } else if (flow.can_read) {
                     read_settings();
                 } else {
