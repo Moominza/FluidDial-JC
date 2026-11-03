@@ -16,6 +16,7 @@ namespace jc8048w550 {
 
 class JcApp : public JcAppHost {
 public:
+    void background() { sync_ota_backlight(); }   // every loop pass, on any page: never leaves the panel dark
     using LeaveFn = void (*)(void* user, JcLeaveTarget target);
 
     JcApp(Arduino_GFX& display, JcReadOnlyFluidNc& link, JcUartLink& uart, const bool& live_mode);
@@ -121,6 +122,7 @@ private:
     JcUserSettings _settings;
     JcMachineProfile _profile;
     JcMachineModel _model;
+    bool sync_ota_backlight();
     bool _ota_dark = false;   // backlight off while an update image is written (flash writes disturb the panel)
     JcDispatcher _dispatcher;   // a transmit sink is installed ONLY in the live-jog test build
     JcCapsLoader _loader;

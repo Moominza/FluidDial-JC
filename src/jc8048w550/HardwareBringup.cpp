@@ -98,7 +98,27 @@ void setup() {
 #endif
 }
 
+// Display/loop health, logged every 30 s so a long soak test leaves evidence: the longest poll (redraws included),
+// the heap and PSRAM headroom and any allocation shortfall.
+void report_health(uint32_t now, uint32_t poll_ms) {
+    static uint32_t last_report = 0, worst = 0, polls = 0, slow = 0;
+    ++polls;
+    if (poll_ms > worst) worst = poll_ms;
+    if (poll_ms > 100) ++slow;
+    if (now - last_report < 30000) return;
+    Serial.printf("health: up=%lus polls=%lu worst_poll=%lums slow(>100ms)=%lu heap=%u min_heap=%u psram=%u psram_min=%u psram_largest=%u\n",
+        static_cast<unsigned long>(now / 1000u), static_cast<unsigned long>(polls), static_cast<unsigned long>(worst),
+        static_cast<unsigned long>(slow), ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getFreePsram(),
+        heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    last_report = now;
+    worst = 0;
+    polls = 0;
+    slow = 0;
+}
+
 void loop() {
+    const uint32_t started = millis();
     ui.poll(touch);
+    report_health(started, millis() - started);
     delay(20);
 }

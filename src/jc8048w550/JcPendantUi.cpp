@@ -377,6 +377,7 @@ void PendantUi::poll(TAMC_GT911& touch) {
             _has_displayed_live_axes = false;
         }
     }
+    _app.background();
     if (_page == Page::App) {
         _app.tick();
     }

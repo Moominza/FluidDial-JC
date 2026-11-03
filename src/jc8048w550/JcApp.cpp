@@ -260,6 +260,7 @@ void JcApp::touch(uint16_t x, uint16_t y) {
 }
 
 void JcApp::tick() {
+    sync_ota_backlight();
     screen_for(_nav.current())->tick(millis());
 }
 
@@ -515,17 +516,24 @@ JcOtaInputs JcApp::ota_inputs() const {
     return in;
 }
 
+// True while the backlight is held off for an update. Also called from tick(), so a transfer that ends without a
+// draw callback (timeout, abort, cancellation, failure) can never leave the panel dark.
+bool JcApp::sync_ota_backlight() {
+    const JcOtaState st = _ota.state();
+    const bool dark = st == JcOtaState::Receiving || st == JcOtaState::Validating;
+    if (dark != _ota_dark) {
+        _ota_dark = dark;
+        if (dark) ledcWrite(kBacklightChannel, 0); else apply_brightness();
+    }
+    return dark;
+}
+
 void JcApp::ota_draw_thunk(void* user) {
     JcApp* a = static_cast<JcApp*>(user);
     // Writing the flash stops the cache, and the RGB panel's frame buffer lives in PSRAM: the picture tears and
     // flashes for as long as the image is being written. The backlight is therefore off while data is received
     // and verified (the PC shows the progress) and comes back as soon as the transfer is over or has failed.
-    const JcOtaState st = a->_ota.state();
-    const bool dark = st == JcOtaState::Receiving || st == JcOtaState::Validating;
-    if (dark != a->_ota_dark) {
-        a->_ota_dark = dark;
-        if (dark) ledcWrite(kBacklightChannel, 0); else a->apply_brightness();
-    }
+    const bool dark = a->sync_ota_backlight();
     if (!dark && a->_nav.current() == JcPage::Ota) a->_ota_screen.refresh();
 }
 
