@@ -17,7 +17,7 @@ constexpr Tile kTiles[9] = {
     { "DASHBOARD", "Live X Y Z A", JcPage::Count },
 #if JC_FULL_CONTROL_TEST
     { "JOGGING", "X Y Z mm, A degrees", JcPage::Jog },
-    { "HOMING", "X Y; Z/all pending check", JcPage::Homing },
+    { "HOMING", "Home the axes", JcPage::Homing },
     { "PROBING", "Centre, edge, rotary", JcPage::Probing },
     { "WORK OFFSETS", "G54-G59, zero/set", JcPage::Offsets },
     { "FILES / JOBS", "Monitor only; no start", JcPage::Files },
@@ -52,8 +52,8 @@ void JcMenuScreen::on_draw() {
     ui::text(sv.display, 18, 458, "PREVIEW ONLY - MOTION DISABLED: nothing is sent to the machine. Jogging is simulated.",
              FontId::Body16, RED, ui::kBg);
 #elif JC_FULL_CONTROL_TEST
-    ui::text(sv.display, 18, 458, "FULL CONTROL: confirmed commands ARE SENT to the machine. No program start/resume.",
-             FontId::Body16, RED, ui::kBg);
+    _status.invalidate();
+    draw_status();
 #elif JC_JOG_UI
     ui::text(sv.display, 18, 458, "LIVE JOG TEST BUILD: only a restricted jog can be sent. Other pages are previews only.",
              FontId::Body16, RED, ui::kBg);
@@ -62,6 +62,31 @@ void JcMenuScreen::on_draw() {
              FontId::Body16, ui::kWarn, ui::kBg);
 #endif
 }
+
+#if JC_FULL_CONTROL_TEST
+// Compact connection / controller status. Nothing about the firmware build: that is under SETTINGS > DIAGNOSTICS.
+void JcMenuScreen::draw_status() {
+    char line[80];
+    uint16_t color = ui::kMuted;
+    if (!sv.live_mode) {
+        snprintf(line, sizeof(line), "DEMO  |  no controller connected");
+    } else if (!sv.live_fresh()) {
+        snprintf(line, sizeof(line), "DISCONNECTED  |  waiting for the controller");
+        color = ui::kWarn;
+    } else {
+        snprintf(line, sizeof(line), "CONNECTED  |  %s", sv.model.state());
+        color = sv.model.alarm() ? RED : (sv.model.in_motion() ? ui::kWarn : ui::kGood);
+    }
+    _status.draw(sv.display, { 18, 456, 764, 22 }, line, FontId::Body16, color, ui::kBg);
+}
+
+void JcMenuScreen::on_tick(uint32_t now) {
+    if (now - _last_tick >= 500) {
+        _last_tick = now;
+        draw_status();
+    }
+}
+#endif
 
 void JcMenuScreen::on_touch(uint16_t x, uint16_t y) {
     for (uint8_t i = 0; i < 9; ++i) {

@@ -253,12 +253,59 @@ static void test_settings_persistence() {
         CHECK(jc_settings_decode(&v1, sizeof(v1), m));
         CHECK(m.linear_steps[0] == 0.01f && m.linear_steps[3] == 10.0f);                 // untouched factory values -> new factory values
         CHECK(m.rotary_steps[0] == 0.2f && m.rotary_steps[1] == 2.0f && m.rotary_steps[5] == 90.0f);  // customised kept
-        CHECK(m.linear_feeds[0] == 300.0f && m.rotary_feeds[2] == 1000.0f);
+        // v1 held three feed presets per set: the old factory sets move to the new factory sets, nothing is raised
+        CHECK(m.linear_feeds[0] == 300.0f && m.linear_feeds[3] == 6000.0f && m.rotary_feeds[0] == 100.0f && m.rotary_feeds[3] == 1000.0f);
+        CHECK(m.z_feeds[0] == 100.0f && m.z_feeds[3] == 1500.0f);
         CHECK(m.brightness_percent == 55 && m.transport == 1 && m.uart_baud == 57600 && m.uart_rx_pin == 5 && m.uart_tx_pin == 6 && m.probe_feed == 77.0f);
         CHECK(jc_settings_stored_length_ok(sizeof(JcSettingsBlobV1)) && jc_settings_stored_length_ok(sizeof(JcSettingsBlob)));
         CHECK(!jc_settings_stored_length_ok(0) && !jc_settings_stored_length_ok(sizeof(JcSettingsBlob) + 1));
         v1.crc ^= 1u;
         CHECK(!jc_settings_decode(&v1, sizeof(v1), m));
+    }
+    {   // saved v2 settings (three feed presets) migrate to v3: customised feeds are kept and never raised
+        JcSettingsBlobV2 v2; memset(&v2, 0, sizeof(v2));
+        v2.magic = kJcSettingsMagic; v2.version = 2; v2.size = sizeof(JcUserSettingsV2);
+        const JcUserSettings d = jc_settings_defaults();
+        memcpy(v2.settings.linear_steps, d.linear_steps, sizeof(d.linear_steps));
+        memcpy(v2.settings.rotary_steps, d.rotary_steps, sizeof(d.rotary_steps));
+        const float lf[3] = { 50.0f, 400.0f, 800.0f }, rf[3] = { 200.0f, 500.0f, 1000.0f };   // X/Y customised; A = old factory
+        memcpy(v2.settings.linear_feeds, lf, sizeof(lf)); memcpy(v2.settings.rotary_feeds, rf, sizeof(rf));
+        v2.settings.brightness_percent = 40; v2.settings.coordinate_decimals = 2; v2.settings.default_reference = 0;
+        v2.settings.uart_baud = 115200; v2.settings.uart_rx_pin = -1; v2.settings.uart_tx_pin = -1; v2.settings.probe_feed = 60.0f;
+        v2.settings.probe_travel = 10.0f; v2.settings.probe_retract = 2.0f;
+        v2.crc = jc_crc32(reinterpret_cast<const uint8_t*>(&v2), offsetof(JcSettingsBlobV2, crc));
+        JcUserSettings m;
+        CHECK(jc_settings_stored_length_ok(sizeof(v2)));
+        CHECK(jc_settings_decode(&v2, sizeof(v2), m));
+        CHECK(m.linear_feeds[0] == 50.0f && m.linear_feeds[1] == 400.0f && m.linear_feeds[2] == 800.0f);   // customised: kept as set
+        CHECK(m.linear_feeds[3] == 6000.0f);                                                              // the new fourth preset
+        CHECK(m.rotary_feeds[0] == 100.0f && m.rotary_feeds[1] == 250.0f && m.rotary_feeds[3] == 1000.0f);  // old factory -> new factory
+        CHECK(m.z_feeds[0] == 100.0f && m.z_feeds[1] == 300.0f && m.z_feeds[2] == 750.0f && m.z_feeds[3] == 1500.0f);
+        CHECK(m.brightness_percent == 40 && m.coordinate_decimals == 2 && m.default_reference == 0 && m.probe_feed == 60.0f);
+        CHECK(m.rotary_steps[5] == 90.0f && m.linear_steps[0] == 0.01f);
+        v2.crc ^= 1u;
+        CHECK(!jc_settings_decode(&v2, sizeof(v2), m));
+        // a v3 blob round-trips
+        JcUserSettings s3 = jc_settings_defaults(); s3.z_feeds[1] = 333.0f;
+        const JcSettingsBlob b3 = jc_settings_encode(s3);
+        CHECK(jc_settings_decode(&b3, sizeof(b3), m) && m.z_feeds[1] == 333.0f && m.linear_feeds[3] == 6000.0f);
+        // the stored length alone identifies the format
+        CHECK(sizeof(JcSettingsBlob) != sizeof(JcSettingsBlobV2) && sizeof(JcSettingsBlobV2) != sizeof(JcSettingsBlobV1));
+    }
+    {   // feed presets: per axis group, defaults, selection never rises above an axis limit
+        const JcUserSettings d = jc_settings_defaults();
+        CHECK(jc_feed_presets(d, 0) == d.linear_feeds && jc_feed_presets(d, 1) == d.linear_feeds);
+        CHECK(jc_feed_presets(d, 2) == d.z_feeds && jc_feed_presets(d, 3) == d.rotary_feeds);
+        CHECK(d.linear_feeds[0] == 300.0f && d.linear_feeds[1] == 1000.0f && d.linear_feeds[2] == 3000.0f && d.linear_feeds[3] == 6000.0f);
+        CHECK(d.z_feeds[0] == 100.0f && d.z_feeds[1] == 300.0f && d.z_feeds[2] == 750.0f && d.z_feeds[3] == 1500.0f);
+        CHECK(d.rotary_feeds[0] == 100.0f && d.rotary_feeds[1] == 250.0f && d.rotary_feeds[2] == 500.0f && d.rotary_feeds[3] == 1000.0f);
+        CHECK(kJcFeedPresets == 4);
+        CHECK(jc_feed_choice_within(d.linear_feeds, 3, 6000.0f) == 3);          // allowed: unchanged
+        CHECK(jc_feed_choice_within(d.linear_feeds, 3, 3500.0f) == 2);          // controller says 3500: down to 3000, never up
+        CHECK(jc_feed_choice_within(d.linear_feeds, 1, 3500.0f) == 1);          // a lower selection is left alone
+        CHECK(jc_feed_choice_within(d.linear_feeds, 3, 1200.0f) == 1);
+        CHECK(jc_feed_choice_within(d.linear_feeds, 0, 100.0f) == 0xFF);        // nothing fits: the caller keeps it and the jog is refused
+        CHECK(jc_feed_choice_within(d.z_feeds, 3, 1500.0f) == 3 && jc_feed_choice_within(d.z_feeds, 3, 600.0f) == 1);
     }
     CHECK(!d.a_axis_has_homing && d.transport == 0 && d.uart_rx_pin == -1);
 

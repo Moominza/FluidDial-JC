@@ -23,7 +23,7 @@ constexpr ui::Rect kBar { 16, 380, 768, 22 };
 
 const char* build_mode_text() {
 #if JC_FULL_CONTROL_TEST
-    return "Build: FULL CONTROL (this firmware can send commands)";
+    return "Build: operational (full control) firmware";
 #elif JC_LIVE_JOG_TEST
     return "Build: LIVE JOG TEST (X/Y 1 mm jog only)";
 #else

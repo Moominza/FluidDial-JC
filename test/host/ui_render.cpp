@@ -25,6 +25,10 @@
 #include "../../src/jc8048w550/JcScreens.hpp"
 #include "../../src/jc8048w550/JcSimNc.hpp"
 
+// The renderer pairs the preview build AND the production build with the simulated jog controller (the production
+// build has no transmit path of its own here: the rig's transport is the only peer).
+#define JC_SIM_BRIDGE (JC_JOG_PREVIEW || JC_FULL_CONTROL_TEST)
+
 // ---- stub globals ----------------------------------------------------------------------
 uint32_t g_stub_millis = 100000;
 bool g_stub_serial_echo = false;
@@ -41,9 +45,9 @@ using namespace jc8048w550;
 
 static int g_problems = 0, g_frames = 0;
 static const char* g_outdir = nullptr;
-const char* git_info = "v1.5.1-host-render";
+const char* git_info = "v1.5.2-host-render";
 
-static const char* g_tag = JC_JOG_PREVIEW ? "preview" : (JC_LIVE_JOG_TEST ? "live" : "ordinary");
+static const char* g_tag = JC_JOG_PREVIEW ? "preview" : (JC_FULL_CONTROL_TEST ? "production" : (JC_LIVE_JOG_TEST ? "live" : "ordinary"));
 
 // ---- the rig: the services a page needs, with simulated controller state ----------------------------
 
@@ -129,7 +133,7 @@ struct Rig {
     JcBleUart ble;
     JcBleSaved ble_saved {};
     JcTransportManager tm;
-#if JC_JOG_PREVIEW
+#if JC_SIM_BRIDGE
     JcPreviewBridge bridge;   // the SIMULATED controller: the only place a jog can go
     JcJogStatus real;         // the latest REAL read-only status
 #endif
@@ -234,7 +238,7 @@ struct Rig {
 #endif
     void set_fresh(bool fresh) {
         model.set_fresh(fresh);
-#if JC_JOG_PREVIEW
+#if JC_SIM_BRIDGE
         real.fresh = fresh;
 #endif
     }
@@ -246,7 +250,7 @@ struct Rig {
 #endif
     }
     void advance(uint32_t ms) {
-#if JC_JOG_PREVIEW
+#if JC_SIM_BRIDGE
         for (uint32_t done = 0; done < ms; done += 10) {
             g_stub_millis += (ms - done < 10 ? ms - done : 10);
             jogs.set_clock(g_stub_millis);
@@ -278,7 +282,7 @@ struct Rig {
         v.sequence = s.sequence;
         v.pos_valid = true;
         memcpy(v.pos, s.axes, sizeof(v.pos));
-#if JC_JOG_PREVIEW
+#if JC_SIM_BRIDGE
         real = v;   // the session is fed by the bridge (real status + simulated displacement)
 #else
         jogs.on_status(v, g_stub_millis);
@@ -466,6 +470,17 @@ static void pure_checks() {
           "an extra line would touch the buttons (so kMaxLines is the true capacity)");
     check(lh <= ui::kDialogLineStep, "the dialog line spacing is at least one text line high");
 
+#if JC_FULL_CONTROL_TEST
+    {   // Production: no build banner anywhere (the firmware mode is under SETTINGS > DIAGNOSTICS).
+        bool none = true;
+        for (int p = 0; p < static_cast<int>(JcPage::Count); ++p) {
+            ui::Rect b {};
+            const char* t = nullptr;
+            if (ui::live_jog_banner(jc_page_title(static_cast<JcPage>(p)), b, t)) none = false;
+        }
+        check(none, "the production firmware draws no build banner on any page header");
+    }
+#else
     // Every page title leaves room for the LIVE JOG TEST BUILD banner, which stays clear of the chip.
     bool all_fit = true, none_overlap = true;
     for (int p = 0; p < static_cast<int>(JcPage::Count); ++p) {
@@ -485,6 +500,7 @@ static void pure_checks() {
 
     // The dashboard banner (x 584..) fits in the 800 px header.
     check(584 + text_width(FontId::Body16, JC_JOG_PREVIEW ? "PREVIEW ONLY" : "LIVE JOG TEST BUILD") + 16 <= 796, "the dashboard header banner fits");
+#endif
 #if JC_JOG_PREVIEW
     // Simulated-result lines carry a "SIM: " prefix; the worst case must still fit the 650 px slot.
     {
@@ -595,8 +611,18 @@ static void pure_checks() {
         std::vector<ui::Rect> btn;
         for (uint8_t i = 0; i < 4; ++i) btn.push_back(jl::axis_rect(i));
         for (uint8_t i = 0; i < jc_step_count(3); ++i) btn.push_back(jl::step_rect(i));  // rotary axis shows six
-        for (uint8_t i = 0; i < kJcFeedPresets; ++i) btn.push_back(jl::feed_rect(i));
-        for (const ui::Rect& r : { jl::kIncremental, jl::kArm, jl::kJogNeg, jl::kJogStop, jl::kJogPos, jl::kDro }) btn.push_back(r);
+        for (uint8_t i = 0; i < jl::kFeedCount; ++i) btn.push_back(jl::feed_rect(i));
+        for (const ui::Rect& r : { jl::kIncremental, jl::kArm, jl::kJogNeg, jl::kJogStop, jl::kJogPos, jl::kDro }) {
+            if (r.w > 0 && r.h > 0) btn.push_back(r);   // the production page has no INCREMENTAL / ARM control
+        }
+#if JC_FULL_CONTROL_TEST
+        check(jl::kArm.w == 0 && jl::kIncremental.w == 0, "the production jog page has no ARM or INCREMENTAL control (no blank rectangle either)");
+        {
+            bool row_full = jl::feed_rect(0).x == 84 && jl::feed_rect(3).x + jl::feed_rect(3).w == 784 && jl::kFeedCount == 4;
+            for (uint8_t i = 1; i < 4; ++i) if (jl::feed_rect(i).x - (jl::feed_rect(i - 1).x + jl::feed_rect(i - 1).w) != 8) row_full = false;
+            check(row_full, "four feed presets share the whole row (the space of ARM and INCREMENTAL)");
+        }
+#endif
         auto hit = [](const ui::Rect& a, const ui::Rect& b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; };
         bool overlap = false, onscreen = true;
         for (size_t i = 0; i < btn.size(); ++i) {
@@ -618,10 +644,17 @@ static void pure_checks() {
         for (const ui::Rect& r : btn) if (hit(r, jl::kPanelRect)) above = false;
         check(above, "no control reaches into the status panel");
         // Worst-case labels fit their buttons with the same 20 px margin the button code uses.
+#if JC_FULL_CONTROL_TEST
+        const struct { const char* s; ui::Rect r; } labels[] = {
+            { "JOG X  -", jl::kJogNeg }, { "JOG A  +", jl::kJogPos }, { "CANCEL JOG", jl::kJogStop },
+            { "300 mm/min", jl::feed_rect(0) }, { "6000 mm/min", jl::feed_rect(3) }, { "1500 mm/min", jl::feed_rect(3) },
+            { "1000 deg/min", jl::feed_rect(3) }, { "100 deg/min", jl::feed_rect(0) } };
+#else
         const struct { const char* s; ui::Rect r; } labels[] = {
             { "READ SETTINGS", jl::kArm }, { "READING 55/55", jl::kArm }, { "RETRY READ", jl::kArm }, { "ARM PREVIEW", jl::kArm },
             { "ARMED 120s", jl::kArm }, { "NOT AVAILABLE", jl::kArm }, { "INCREMENTAL", jl::kIncremental },
             { "Z  ON HOLD", jl::kJogNeg }, { "CANCEL JOG", jl::kJogStop }, { "100 /min", jl::feed_rect(0) }, { "1000 /min", jl::feed_rect(2) } };
+#endif
         bool fit = true;
         for (const auto& l : labels) {
             if (text_width(FontId::Button20, l.s) > l.r.w - 20 && text_width(FontId::Body16, l.s) > l.r.w - 20) { fit = false; printf("             label too wide: %s\n", l.s); }
@@ -1301,6 +1334,121 @@ static void scenarios() {
     check_frame(r.gfx, "jog_x_10mm_refused", true);
     touch_center(jog, ui::kDialogOk);
 
+#elif JC_FULL_CONTROL_TEST
+    // Production interface: no arming, no confirmation. One tap on JOG + / JOG - requests one incremental jog; FluidNC decides.
+    {
+        printf("[production jog page: direct jogging, no arming]\n");
+        r.advance(500);
+        r.status("Idle", 10.0f, 20.0f, 5.0f, 0.0f);
+        jog.enter();
+        check_frame(r.gfx, "prod_jog_x_ready", false);
+        check(!r.dispatcher.armed(), "opening the jog page arms nothing");
+        check(r.wire.empty(), "opening the jog page sends nothing");
+        r.advance(1000);
+        touch_center(jog, jog_pos);
+        check(r.wire == "$J=G91G21F300X1.000\n", "ONE tap on JOG X + sent exactly one incremental jog (1 mm @ 300), with no arming and no dialog");
+        check(!r.dispatcher.armed() && r.dispatcher.sent() == 1, "the jog went through the shared dispatcher; nothing was armed");
+        check_frame(r.gfx, "prod_jog_x_requested", false);
+        touch_center(jog, jog_pos);
+        touch_center(jog, jog_pos);
+        check(r.wire == "$J=G91G21F300X1.000\n", "further taps while the jog is unresolved send nothing (no queue, no repeat)");
+        r.advance(200);
+        jog.enter();
+        check_frame(r.gfx, "prod_jog_x_moving", false);
+        r.advance(2500);
+        jog.enter();
+        check(r.jogs.result() == JcJogResult::Completed, "the jog is completed from controller feedback (Idle again, position as asked)");
+        check_frame(r.gfx, "prod_jog_x_completed", false);
+        r.advance(600);
+        touch_center(jog, jog_neg);
+        check(r.wire.find("X-1.000") != std::string::npos, "the next jog is possible straight away after completion, no acknowledgement");
+        r.advance(3000);
+        touch_center(jog, ui::kDialogOk);   // (no dialog is open: a stray touch must not jog or crash)
+
+        // Feed presets: four per axis group, Z and A have their own sets, selection stays independent of the step.
+        printf("[production jog page: feeds, axes, units]\n");
+        touch_center(jog, jl::feed_rect(3));
+        check_frame(r.gfx, "prod_jog_x_feed6000", false);
+        r.wire.clear();
+        r.advance(800);
+        touch_center(jog, jog_pos);
+        check(r.wire == "$J=G91G21F6000X1.000\n", "feed 6000 mm/min jogs X at 6000");
+        r.advance(3000);
+        jog.enter();
+        touch_center(jog, axis[2]);
+        check_frame(r.gfx, "prod_jog_z_ready", false);
+        r.wire.clear();
+        r.advance(800);
+        touch_center(jog, jog_pos);
+        check(r.wire == "$J=G91G21F1500Z1.000\n", "Z keeps its own feed set: index 3 is 1500 mm/min, the step stays 1 mm");
+        r.advance(3000);
+        jog.enter();
+        touch_center(jog, axis[3]);
+        check_frame(r.gfx, "prod_jog_a_ready", false);
+        r.wire.clear();
+        r.advance(800);
+        touch_center(jog, jog_neg);
+        check(r.wire == "$J=G91G21F1000A-1.000\n", "A jogs in degrees; switching from a linear axis selects 1 degree, not a tiny step");
+        r.advance(3000);
+        jog.enter();
+        touch_center(jog, axis[0]);
+        r.advance(800);
+        r.wire.clear();
+        touch_center(jog, jog_pos);
+        check(r.wire == "$J=G91G21F6000X1.000\n", "back on X: 1 mm (never 0.01 mm) and the X/Y feed set");
+        r.advance(3000);
+        jog.enter();
+
+        // A lower controller limit disables the presets above it and moves the selection DOWN, never up.
+        printf("[production jog page: the controller's axis limit]\n");
+        r.profile.axes[0].max_feed = 3500.0f;
+        r.profile.axes[0].limits_confirmed = true;
+        r.advance(300);
+        jog.tick(g_stub_millis);
+        jog.enter();
+        check_frame(r.gfx, "prod_jog_x_limit3500", false);
+        r.wire.clear();
+        touch_center(jog, jl::feed_rect(3));          // above the limit: cannot be selected
+        r.advance(800);
+        touch_center(jog, jog_pos);
+        check(r.wire == "$J=G91G21F3000X1.000\n", "a feed above the controller's limit cannot be selected; the selection moved down to 3000");
+        r.advance(3000);
+        jog.enter();
+        r.profile.axes[0].max_feed = 6000.0f;
+
+        // Cancel needs no arming and is not blocked.
+        printf("[production jog page: cancel, stale, alarm, disconnected]\n");
+        r.wire.clear();
+        r.advance(800);
+        touch_center(jog, jog_pos);
+        r.advance(150);
+        touch_center(jog, jog_stop);
+        check(r.wire.find(std::string(1, static_cast<char>(0x85))) != std::string::npos, "CANCEL JOG sends the cancel byte at once");
+        r.advance(2000);
+        r.status("Idle", 11.0f, 20.0f, 5.0f, 0.0f);
+        jog.enter();
+        // Alarm blocks the jog and says so.
+        r.status("Alarm", 11.0f, 20.0f, 5.0f, 0.0f);
+        r.advance(2000);
+        r.wire.clear();
+        jog.enter();
+        check_frame(r.gfx, "prod_jog_alarm", false);
+        touch_center(jog, jog_pos);
+        check(r.wire.empty(), "no jog is sent while the controller is in Alarm");
+        check_frame(r.gfx, "prod_jog_alarm_tapped", false);   // explained on the result row, no popup
+        // Stale status blocks it, and nothing is queued for later.
+        r.status("Idle", 11.0f, 20.0f, 5.0f, 0.0f);
+        r.advance(1000);
+        r.set_fresh(false);
+        jog.enter();
+        check_frame(r.gfx, "prod_jog_disconnected", false);
+        touch_center(jog, jog_pos);
+        touch_center(jog, ui::kDialogOk);
+        check(r.wire.empty(), "no jog is sent without fresh controller status");
+        r.status("Idle", 11.0f, 20.0f, 5.0f, 0.0f);
+        r.advance(1500);
+        check(r.wire.empty(), "recovering the connection replays nothing");
+    }
 #else
     // Controller-authoritative interface: arm once, jog straight away on all four axes, FluidNC decides.
     r.advance(500);

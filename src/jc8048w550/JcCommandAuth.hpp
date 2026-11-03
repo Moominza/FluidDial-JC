@@ -215,7 +215,14 @@ inline bool jc_is_stop_or_recovery(JcCommandClass c) {
 //                      armed, LIVE, fresh status, fresh command, no alarm, one operation at a time,
 //                      machine state for the class, and the operator's confirmation for consequential
 //                      classes. No capability, homing, travel-envelope or acknowledgement prerequisite.
-enum class JcGatePolicy : uint8_t { Plain, LiveJogRestricted, Authority };
+//                      (Used by the non-motion preview, whose rehearsal keeps the arming step.)
+//   Production:        The full-control firmware (v1.5.2). Authority, except that a routine incremental
+//                      jog needs no prior arming and no confirmation: one deliberate tap is the request.
+//                      Everything else (LIVE, fresh status and command, no alarm, Idle/Jog state, one
+//                      operation at a time) still applies, and every consequential class keeps its
+//                      arming (the confirmation of its routine) and confirmation. Jog cancel and feed
+//                      hold stay always-allowed.
+enum class JcGatePolicy : uint8_t { Plain, LiveJogRestricted, Authority, Production };
 
 namespace detail {
 
@@ -232,7 +239,9 @@ inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& c
     if (jc_is_stop_always_allowed(cls)) {
         return ctx.live ? JcAuthDecision::Allowed : JcAuthDecision::BlockedNotLive;
     }
-    if (!ctx.armed) {
+    // Production: the tap on JOG + / JOG - is the operator's request. No other class gets this exemption.
+    const bool jog_needs_no_arming = policy == JcGatePolicy::Production && cls == JcCommandClass::Jog;
+    if (!ctx.armed && !jog_needs_no_arming) {
         return JcAuthDecision::BlockedNotArmed;
     }
     if (!ctx.live) {
@@ -253,7 +262,7 @@ inline JcAuthDecision authorize_rules(JcCommandClass cls, const JcAuthContext& c
     if (ctx.operation_pending) {
         return JcAuthDecision::BlockedOperationPending;
     }
-    if (policy != JcGatePolicy::Authority) {
+    if (policy != JcGatePolicy::Authority && policy != JcGatePolicy::Production) {
         if (ctx.limits_required && !ctx.limits_confirmed) {
             return JcAuthDecision::BlockedLimitsUnconfirmed;
         }
@@ -288,7 +297,7 @@ inline JcAuthDecision jc_authorize(JcCommandClass cls, const JcAuthContext& ctx)
     (void)ctx;
     return cls == JcCommandClass::Job ? JcAuthDecision::BlockedProgramStart : JcAuthDecision::BlockedBuildPolicy;
 #else
-    return detail::authorize_rules(cls, ctx, JC_FULL_CONTROL_TEST ? JcGatePolicy::Authority
+    return detail::authorize_rules(cls, ctx, JC_FULL_CONTROL_TEST ? JcGatePolicy::Production
                                        : (JC_LIVE_JOG_TEST ? JcGatePolicy::LiveJogRestricted : JcGatePolicy::Plain));
 #endif
 }

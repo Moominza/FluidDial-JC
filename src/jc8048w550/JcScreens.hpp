@@ -29,6 +29,14 @@ public:
 protected:
     void on_draw() override;
     void on_touch(uint16_t x, uint16_t y) override;
+#if JC_FULL_CONTROL_TEST
+    void on_tick(uint32_t now) override;
+
+private:
+    void draw_status();
+    uint32_t _last_tick = 0;
+    ui::Slot _status;
+#endif
 };
 
 // The line under the jog panel in the experimental build. It must fit ONE line of the 744 px
@@ -64,6 +72,8 @@ private:
     void service_caps(uint32_t now);
     float step_value() const;
     float feed_value() const;
+    void settle_feed();                 // keep the selected feed preset within the axis limit (never raises it)
+    uint32_t live_key() const;          // production page: what must trigger a full redraw
     // Experimental live-jog build only (defined under JC_LIVE_JOG_TEST).
     void jog_live(int direction);
     void request_arm();

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "JcCommandAuth.hpp"
 #include "JcUiKit.hpp"
 
 namespace jc8048w550 {
@@ -14,9 +15,18 @@ namespace jl {
 
 constexpr ui::Rect axis_rect(uint8_t i) { return { static_cast<int16_t>(16 + i * 100), 72, 92, 46 }; }
 constexpr ui::Rect step_rect(uint8_t i) { return { static_cast<int16_t>(84 + i * 92), 126, 86, 44 }; }
+#if JC_FULL_CONTROL_TEST
+constexpr uint8_t kFeedCount = 4;     // feed presets shown
+// Production jog page: no ARM button and no mode button, so the four feed presets share the whole row.
+constexpr ui::Rect feed_rect(uint8_t i) { return { static_cast<int16_t>(84 + i * 177), 178, 169, 44 }; }
+constexpr ui::Rect kIncremental { 0, 0, 0, 0 };         // not drawn (zero size: never hit, never overlaps)
+constexpr ui::Rect kArm { 0, 0, 0, 0 };                 // removed from the production page
+#else
+constexpr uint8_t kFeedCount = 3;     // the other builds keep three, beside INCREMENTAL / ARM
 constexpr ui::Rect feed_rect(uint8_t i) { return { static_cast<int16_t>(84 + i * 130), 178, 122, 44 }; }
 constexpr ui::Rect kIncremental { 484, 178, 150, 44 };
 constexpr ui::Rect kArm { 640, 178, 144, 44 };          // ARM / READ SETTINGS (continuous in the ordinary legacy build)
+#endif
 constexpr ui::Rect kJogNeg { 16, 230, 250, 76 };
 constexpr ui::Rect kJogStop { 275, 230, 250, 76 };
 constexpr ui::Rect kJogPos { 534, 230, 250, 76 };

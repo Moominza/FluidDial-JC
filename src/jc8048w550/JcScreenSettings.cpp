@@ -56,7 +56,7 @@ void JcSettingsScreen::on_draw() {
 #if JC_JOG_PREVIEW
     ui::text(sv.display, 16, 440, "Firmware: PREVIEW ONLY - MOTION DISABLED (jog is simulated)", FontId::Body16, RED, ui::kBg);
 #elif JC_FULL_CONTROL_TEST
-    ui::text(sv.display, 16, 440, "Firmware: FULL CONTROL (no program start/resume/macros)", FontId::Body16, RED, ui::kBg);
+    // Production: no build announcement here; the firmware version and mode are under DIAGNOSTICS.
 #elif JC_JOG_UI
     ui::text(sv.display, 16, 440, "Firmware: LIVE JOG TEST BUILD (restricted jog enabled)", FontId::Body16, RED, ui::kBg);
 #else
@@ -157,9 +157,9 @@ void JcDisplaySettingsScreen::on_touch(uint16_t x, uint16_t y) {
 namespace {
 
 ui::Rect preset_rect(uint8_t row, uint8_t i) {
-    return { static_cast<int16_t>(200 + i * 98), static_cast<int16_t>(80 + row * 70), 92, 52 };
+    return { static_cast<int16_t>(200 + i * 98), static_cast<int16_t>(78 + row * 64), 92, 52 };
 }
-constexpr ui::Rect kResetDefaults { 16, 380, 300, 56 };
+constexpr ui::Rect kResetDefaults { 16, 408, 300, 56 };
 
 void jog_edit_callback(void* user, bool ok, const char* text) {
     static_cast<JcJogSettingsScreen*>(user)->edit_done(ok, text);
@@ -173,12 +173,13 @@ float* JcJogSettingsScreen::value_ptr(uint8_t row, uint8_t index) {
         case 0: return &s.linear_steps[index];
         case 1: return &s.rotary_steps[index];
         case 2: return &s.linear_feeds[index];
+        case 3: return &s.z_feeds[index];
         default: return &s.rotary_feeds[index];
     }
 }
 
 void JcJogSettingsScreen::draw_values() {
-    for (uint8_t row = 0; row < 4; ++row) {
+    for (uint8_t row = 0; row < 5; ++row) {
         const uint8_t count = row == 0 ? jc_step_count(0) : (row == 1 ? jc_step_count(3) : kJcFeedPresets);
         for (uint8_t i = 0; i < count; ++i) {
             char v[20];
@@ -189,15 +190,15 @@ void JcJogSettingsScreen::draw_values() {
 }
 
 void JcJogSettingsScreen::on_draw() {
-    const char* labels[4] = { "Linear step (mm)", "Rotary step (deg)", "Linear feed (mm/min)", "Rotary feed (deg/min)" };
-    for (uint8_t row = 0; row < 4; ++row) {
-        ui::wrap(sv.display, { 16, static_cast<int16_t>(84 + row * 70), 176, 48 }, labels[row], FontId::Body16,
+    const char* labels[5] = { "Linear step (mm)", "Rotary step (deg)", "X / Y feed (mm/min)", "Z feed (mm/min)", "A feed (deg/min)" };
+    for (uint8_t row = 0; row < 5; ++row) {
+        ui::wrap(sv.display, { 16, static_cast<int16_t>(82 + row * 64), 176, 48 }, labels[row], FontId::Body16,
                  ui::kMuted, ui::kBg);
     }
     ui::button(sv.display, kResetDefaults, "RESET TO DEFAULTS", ui::Btn::Danger);
-    ui::wrap(sv.display, { 340, 380, 444, 80 },
-             "Tap a value to edit it. Values are clamped to safe ranges; feeds above an axis limit are refused "
-             "when a jog command is built.",
+    ui::wrap(sv.display, { 340, 404, 444, 70 },
+             "Tap a value to edit it. Values are clamped to safe ranges; a feed above the axis limit (read from "
+             "the controller) cannot be selected and is refused when a jog is built.",
              FontId::Body16, ui::kMuted, ui::kBg);
     draw_values();
 }
@@ -218,7 +219,7 @@ void JcJogSettingsScreen::edit_done(bool ok, const char* text) {
 }
 
 void JcJogSettingsScreen::on_touch(uint16_t x, uint16_t y) {
-    for (uint8_t row = 0; row < 4; ++row) {
+    for (uint8_t row = 0; row < 5; ++row) {
         const uint8_t count = row == 0 ? jc_step_count(0) : (row == 1 ? jc_step_count(3) : kJcFeedPresets);
         for (uint8_t i = 0; i < count; ++i) {
             if (ui::hit(preset_rect(row, i), x, y)) {
@@ -241,6 +242,7 @@ void JcJogSettingsScreen::on_touch(uint16_t x, uint16_t y) {
         memcpy(sv.settings.linear_steps, d.linear_steps, sizeof(d.linear_steps));
         memcpy(sv.settings.rotary_steps, d.rotary_steps, sizeof(d.rotary_steps));
         memcpy(sv.settings.linear_feeds, d.linear_feeds, sizeof(d.linear_feeds));
+        memcpy(sv.settings.z_feeds, d.z_feeds, sizeof(d.z_feeds));
         memcpy(sv.settings.rotary_feeds, d.rotary_feeds, sizeof(d.rotary_feeds));
         sv.host.save_settings();
         draw_values();

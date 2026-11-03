@@ -19,7 +19,8 @@ namespace jc8048w550 {
 
 constexpr uint8_t kJcStepPresets = 6;      // array size; linear axes use 5, the rotary axis 6
 constexpr uint8_t jc_step_count(uint8_t axis) { return axis == 3 ? 6 : 5; }
-constexpr uint8_t kJcFeedPresets = 3;
+constexpr uint8_t kJcFeedPresets = 4;       // jog feed presets per axis group (X/Y, Z, A)
+constexpr uint8_t kJcFeedPresetsV2 = 3;     // format 1 and 2 stored three
 constexpr uint8_t kJcMacroSlots = 6;
 
 struct JcMacroSlot {
@@ -31,8 +32,9 @@ struct JcMacroSlot {
 struct JcUserSettings {
     float   linear_steps[kJcStepPresets];
     float   rotary_steps[kJcStepPresets];
-    float   linear_feeds[kJcFeedPresets];
-    float   rotary_feeds[kJcFeedPresets];
+    float   linear_feeds[kJcFeedPresets];   // X and Y
+    float   z_feeds[kJcFeedPresets];        // Z (its own maximum is lower)
+    float   rotary_feeds[kJcFeedPresets];   // A, degrees/min
     uint8_t brightness_percent;  // 10..100
     uint8_t coordinate_decimals; // 1..4
     uint8_t default_reference;   // 0 machine, 1 work
@@ -55,13 +57,17 @@ inline JcUserSettings jc_settings_defaults() {
     const float rot[kJcStepPresets] = { 0.1f, 1.0f, 5.0f, 15.0f, 45.0f, 90.0f };
     memcpy(s.linear_steps, lin, sizeof(lin));
     memcpy(s.rotary_steps, rot, sizeof(rot));
+    // Maxima of the owner's machine (X/Y 6000, Z 1500 mm/min, A 1000 deg/min); jc_profile_apply_caps() lowers the
+    // limit to whatever the controller reports, and a preset above an axis limit is refused when a jog is built.
 #if defined(JC_LIVE_JOG_TEST) && JC_LIVE_JOG_TEST
-    const float lf[kJcFeedPresets] = { 100.0f, 1000.0f, 3000.0f };  // restricted live-jog test image caps jog feed at 100
+    const float lf[kJcFeedPresets] = { 100.0f, 1000.0f, 3000.0f, 6000.0f };  // restricted live-jog test image caps jog feed at 100
 #else
-    const float lf[kJcFeedPresets] = { 300.0f, 1000.0f, 3000.0f };
+    const float lf[kJcFeedPresets] = { 300.0f, 1000.0f, 3000.0f, 6000.0f };
 #endif
-    const float rf[kJcFeedPresets] = { 200.0f, 500.0f, 1000.0f };
+    const float zf[kJcFeedPresets] = { 100.0f, 300.0f, 750.0f, 1500.0f };
+    const float rf[kJcFeedPresets] = { 100.0f, 250.0f, 500.0f, 1000.0f };
     memcpy(s.linear_feeds, lf, sizeof(lf));
+    memcpy(s.z_feeds, zf, sizeof(zf));
     memcpy(s.rotary_feeds, rf, sizeof(rf));
     s.brightness_percent = 100;
     s.coordinate_decimals = 3;
@@ -97,6 +103,22 @@ inline bool printable_ascii(const char* s) {
 
 }  // namespace detail
 
+// The feed presets used by an axis: X and Y share one set, Z and A have their own.
+inline const float* jc_feed_presets(const JcUserSettings& s, uint8_t axis) {
+    return axis == 3 ? s.rotary_feeds : (axis == 2 ? s.z_feeds : s.linear_feeds);
+}
+
+// Index of the preset to use when `wanted` is above the axis limit: the largest preset that does not exceed the
+// limit (never a larger one), or 0xFF when even the smallest is above it. `wanted` itself when it is allowed.
+inline uint8_t jc_feed_choice_within(const float* presets, uint8_t wanted, float axis_limit) {
+    if (wanted < kJcFeedPresets && presets[wanted] <= axis_limit) return wanted;
+    uint8_t best = 0xFF;
+    for (uint8_t i = 0; i < kJcFeedPresets; ++i) {
+        if (presets[i] <= axis_limit && (best == 0xFF || presets[i] > presets[best])) best = i;
+    }
+    return best;
+}
+
 // Brings every field into its valid range. Out-of-range or non-finite values
 // fall back to the default; invalid macros are cleared (never executed).
 inline void jc_settings_sanitize(JcUserSettings& s) {
@@ -107,6 +129,7 @@ inline void jc_settings_sanitize(JcUserSettings& s) {
     }
     for (uint8_t i = 0; i < kJcFeedPresets; ++i) {
         s.linear_feeds[i] = detail::clampf(s.linear_feeds[i], 1.0f, 10000.0f, d.linear_feeds[i]);
+        s.z_feeds[i] = detail::clampf(s.z_feeds[i], 1.0f, 10000.0f, d.z_feeds[i]);
         s.rotary_feeds[i] = detail::clampf(s.rotary_feeds[i], 1.0f, 36000.0f, d.rotary_feeds[i]);
     }
     if (s.brightness_percent < 10 || s.brightness_percent > 100) s.brightness_percent = d.brightness_percent;
@@ -148,7 +171,7 @@ inline JcMachineProfile jc_profile_from_settings(const JcUserSettings& s) {
 // ---- Versioned, checksummed encoding -------------------------------------
 
 constexpr uint32_t kJcSettingsMagic = 0x4A435331u;  // "JCS1"
-constexpr uint16_t kJcSettingsVersion = 2;  // v2: six rotary step presets; v1 blobs are migrated, not discarded
+constexpr uint16_t kJcSettingsVersion = 3;  // v3: four feed presets, own Z set; v1 and v2 blobs are migrated, not discarded
 
 struct JcSettingsBlob {
     uint32_t       magic;
@@ -173,8 +196,8 @@ inline uint32_t jc_crc32(const uint8_t* data, size_t n) {
 struct JcUserSettingsV1 {
     float   linear_steps[5];
     float   rotary_steps[5];
-    float   linear_feeds[kJcFeedPresets];
-    float   rotary_feeds[kJcFeedPresets];
+    float   linear_feeds[kJcFeedPresetsV2];
+    float   rotary_feeds[kJcFeedPresetsV2];
     uint8_t brightness_percent;
     uint8_t coordinate_decimals;
     uint8_t default_reference;
@@ -198,12 +221,42 @@ struct JcSettingsBlobV1 {
     uint32_t         crc;
 };
 
-static_assert(sizeof(JcSettingsBlob) != sizeof(JcSettingsBlobV1), "the stored length must identify the settings format");
+// Version 2 layout (six rotary step presets, three feed presets), kept only to migrate saved settings.
+struct JcUserSettingsV2 {
+    float   linear_steps[kJcStepPresets];
+    float   rotary_steps[kJcStepPresets];
+    float   linear_feeds[kJcFeedPresetsV2];
+    float   rotary_feeds[kJcFeedPresetsV2];
+    uint8_t brightness_percent;
+    uint8_t coordinate_decimals;
+    uint8_t default_reference;
+    uint8_t transport;
+    uint32_t uart_baud;
+    int8_t  uart_rx_pin;
+    int8_t  uart_tx_pin;
+    bool    a_axis_has_homing;
+    float   probe_feed;
+    float   probe_travel;
+    float   probe_retract;
+    float   plate_thickness;
+    float   tool_diameter;
+    JcMacroSlot macros[kJcMacroSlots];
+};
+struct JcSettingsBlobV2 {
+    uint32_t         magic;
+    uint16_t         version;
+    uint16_t         size;
+    JcUserSettingsV2 settings;
+    uint32_t         crc;
+};
+
+static_assert(sizeof(JcSettingsBlob) != sizeof(JcSettingsBlobV1) && sizeof(JcSettingsBlob) != sizeof(JcSettingsBlobV2)
+              && sizeof(JcSettingsBlobV1) != sizeof(JcSettingsBlobV2), "the stored length must identify the settings format");
 
 // The stored lengths the application accepts for decoding: the current format and the previous (migrated) one.
 // Anything else is not a settings blob of ours and the defaults are used (the stored bytes are left alone).
 inline bool jc_settings_stored_length_ok(size_t stored) {
-    return stored == sizeof(JcSettingsBlob) || stored == sizeof(JcSettingsBlobV1);
+    return stored == sizeof(JcSettingsBlob) || stored == sizeof(JcSettingsBlobV2) || stored == sizeof(JcSettingsBlobV1);
 }
 
 inline JcSettingsBlob jc_settings_encode(const JcUserSettings& s) {
@@ -216,6 +269,26 @@ inline JcSettingsBlob jc_settings_encode(const JcUserSettings& s) {
     blob.crc = jc_crc32(reinterpret_cast<const uint8_t*>(&blob), offsetof(JcSettingsBlob, crc));
     return blob;
 }
+
+namespace detail {
+
+// Feed presets of an older format (three per set). A set still equal to the old factory values moves to the new
+// factory values; a set the operator customised is kept as it was (its fourth preset is the new factory one) and
+// is never raised. The Z set did not exist: it starts from the factory values, whose maximum is the Z axis limit.
+inline void migrate_feeds_v2(JcUserSettings& out, const float* old_linear, const float* old_rotary) {
+    static const float old_lf[kJcFeedPresetsV2] = { 300.0f, 1000.0f, 3000.0f };
+    static const float old_lf_a[kJcFeedPresetsV2] = { 100.0f, 500.0f, 1000.0f };
+    static const float old_rf[kJcFeedPresetsV2] = { 200.0f, 500.0f, 1000.0f };
+    static const float old_rf_a[kJcFeedPresetsV2] = { 600.0f, 1800.0f, 3600.0f };
+    if (memcmp(old_linear, old_lf, sizeof(old_lf)) != 0 && memcmp(old_linear, old_lf_a, sizeof(old_lf_a)) != 0) {
+        memcpy(out.linear_feeds, old_linear, sizeof(float) * kJcFeedPresetsV2);
+    }
+    if (memcmp(old_rotary, old_rf, sizeof(old_rf)) != 0 && memcmp(old_rotary, old_rf_a, sizeof(old_rf_a)) != 0) {
+        memcpy(out.rotary_feeds, old_rotary, sizeof(float) * kJcFeedPresetsV2);
+    }
+}
+
+}  // namespace detail
 
 // Returns false (and defaults) for any wrong size, magic, version or checksum.
 // Accepted settings are sanitized before being returned.
@@ -232,8 +305,6 @@ inline bool jc_settings_decode(const void* data, size_t length, JcUserSettings& 
         // factory values; anything the operator customised is kept.
         static const float old_lin[5] = { 0.1f, 1.0f, 10.0f, 50.0f, 100.0f };
         static const float old_rot[5] = { 0.1f, 1.0f, 10.0f, 45.0f, 90.0f };
-        static const float old_lf[3] = { 100.0f, 500.0f, 1000.0f };
-        static const float old_rf[3] = { 600.0f, 1800.0f, 3600.0f };
         const JcUserSettings d = jc_settings_defaults();
         const JcUserSettingsV1& o = old.settings;
         out = d;
@@ -242,8 +313,36 @@ inline bool jc_settings_decode(const void* data, size_t length, JcUserSettings& 
             memcpy(out.rotary_steps, o.rotary_steps, sizeof(o.rotary_steps));
             out.rotary_steps[5] = d.rotary_steps[5];
         }
-        if (memcmp(o.linear_feeds, old_lf, sizeof(old_lf)) != 0) memcpy(out.linear_feeds, o.linear_feeds, sizeof(o.linear_feeds));
-        if (memcmp(o.rotary_feeds, old_rf, sizeof(old_rf)) != 0) memcpy(out.rotary_feeds, o.rotary_feeds, sizeof(o.rotary_feeds));
+        detail::migrate_feeds_v2(out, o.linear_feeds, o.rotary_feeds);
+        out.brightness_percent = o.brightness_percent;
+        out.coordinate_decimals = o.coordinate_decimals;
+        out.default_reference = o.default_reference;
+        out.transport = o.transport;
+        out.uart_baud = o.uart_baud;
+        out.uart_rx_pin = o.uart_rx_pin;
+        out.uart_tx_pin = o.uart_tx_pin;
+        out.a_axis_has_homing = o.a_axis_has_homing;
+        out.probe_feed = o.probe_feed;
+        out.probe_travel = o.probe_travel;
+        out.probe_retract = o.probe_retract;
+        out.plate_thickness = o.plate_thickness;
+        out.tool_diameter = o.tool_diameter;
+        memcpy(out.macros, o.macros, sizeof(out.macros));
+        jc_settings_sanitize(out);
+        return true;
+    }
+    if (data != nullptr && length == sizeof(JcSettingsBlobV2)) {
+        JcSettingsBlobV2 old;
+        memcpy(&old, data, sizeof(old));
+        if (old.magic != kJcSettingsMagic || old.version != 2 || old.size != sizeof(JcUserSettingsV2)
+            || old.crc != jc_crc32(reinterpret_cast<const uint8_t*>(&old), offsetof(JcSettingsBlobV2, crc))) {
+            return false;
+        }
+        const JcUserSettingsV2& o = old.settings;
+        out = jc_settings_defaults();
+        memcpy(out.linear_steps, o.linear_steps, sizeof(o.linear_steps));
+        memcpy(out.rotary_steps, o.rotary_steps, sizeof(o.rotary_steps));
+        detail::migrate_feeds_v2(out, o.linear_feeds, o.rotary_feeds);
         out.brightness_percent = o.brightness_percent;
         out.coordinate_decimals = o.coordinate_decimals;
         out.default_reference = o.default_reference;

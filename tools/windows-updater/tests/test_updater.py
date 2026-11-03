@@ -164,7 +164,7 @@ def main():
     # --- file checks (host-side compatibility validation) ---
     rc, out = run_exe(["--analyze", "--file", GOOD])
     check("analyze: JC image is compatible", rc == 0 and out.startswith("COMPATIBLE"), out)
-    rc, out = run_exe(["--analyze", "--file", os.path.join(os.path.dirname(GOOD), "fluiddial-jc-1.5.1-usb-bootloader.bin")]) if os.path.exists(os.path.join(os.path.dirname(GOOD), "fluiddial-jc-1.5.1-usb-bootloader.bin")) else (2, "REJECTED skipped")
+    rc, out = run_exe(["--analyze", "--file", os.path.join(os.path.dirname(GOOD), "fluiddial-jc-1.5.2-usb-bootloader.bin")]) if os.path.exists(os.path.join(os.path.dirname(GOOD), "fluiddial-jc-1.5.2-usb-bootloader.bin")) else (2, "REJECTED skipped")
     check("analyze: bootloader file rejected", rc == 2, out)
     # wrong target: same size, marker removed -> looks like an M5Dial/CYD image
     wrong = good.replace(b"FDJC-IMAGE-TARGET:JC8048W550C_I:ESP32-S3:V1", b"XXXX-IMAGE-TARGET:OTHER_DEVICE_ZZZZZZZZZZ:V1")
@@ -257,7 +257,7 @@ def main():
     fp.stop = True
 
     # --- diagnostic image needs explicit confirmation ---
-    diag = os.path.join(os.path.dirname(GOOD), "fluiddial-jc-1.5.1-diagnostic-motion-disabled.bin")
+    diag = os.path.join(os.path.dirname(GOOD), "fluiddial-jc-1.5.2-diagnostic-motion-disabled.bin")
     if os.path.exists(diag):
         fp = FakePendant(); fp.start()
         rc, out = run_exe(upload_args(fp.port, diag))

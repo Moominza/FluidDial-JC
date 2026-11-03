@@ -32,7 +32,7 @@ void JcDiagnosticsScreen::row_text(uint8_t row, char* label, size_t label_size, 
         case 0: snprintf(value, value_size, "%s", git_info); break;
         case 1:   // build mode, not a compile timestamp: keeps the binary reproducible from one source revision
 #if JC_FULL_CONTROL_TEST
-            snprintf(value, value_size, "%s", "FULL CONTROL (sends commands)");
+            snprintf(value, value_size, "%s", "Operational (full control)");
 #elif JC_LIVE_JOG_TEST
             snprintf(value, value_size, "%s", "LIVE JOG TEST (X/Y 1 mm)");
 #else

@@ -20,6 +20,7 @@ constexpr uint16_t kBackground = 0x0841;
 constexpr uint16_t kPanel = 0x18E3;
 constexpr uint16_t kPanelLight = 0x2965;
 constexpr uint16_t kAccentDark = 0x5000;
+constexpr uint16_t kConnBg = JC_FULL_CONTROL_TEST ? kPanel : kAccentDark;   // connection page panel
 constexpr uint16_t kMuted = 0x9CF3;
 constexpr uint16_t kBorder = 0x5ACB;
 constexpr uint16_t kSuccess = 0x07E0;
@@ -643,8 +644,8 @@ void PendantUi::draw_header(const char* title) {
         _display.drawRect(chip.x, chip.y, chip.width, chip.height, connected ? kSuccess : kBorder);
         draw_text_centered(_display, chip, link_label, FontId::Body16, connected ? WHITE : kMuted, link_fill);
     }
-#if JC_JOG_UI
-    // Build banner on every dashboard-style page of the jog-UI builds (x 482..598, clear of MENU / LINK / HOME).
+#if JC_JOG_UI && !JC_FULL_CONTROL_TEST
+    // Build banner on every dashboard-style page of the preview and live-jog test builds (the production firmware has none) (x 482..598, clear of MENU / LINK / HOME).
     {
 #if JC_JOG_PREVIEW
         static const char* const kBanners[4] = { "PREVIEW ONLY - MOTION DISABLED", "PREVIEW - NO MOTION", "PREVIEW ONLY", "PREVIEW" };
@@ -756,7 +757,15 @@ void PendantUi::draw_home() {
 
     _display.fillRect(16, 243, 768, 225, kPanel);
     _display.drawRect(16, 243, 768, 225, kBorder);
-#if JC_JOG_UI
+#if JC_FULL_CONTROL_TEST
+    draw_text_top(_display, 30, 248,
+                  _live_mode ? "LIVE STATUS" : "DEMO JOG CONTROLS",
+                  FontId::Button20, WHITE, kPanel);
+    draw_text_top(_display, 320, 253,
+                  _live_mode ? "Jogging, homing and offsets: MENU"
+                             : "LOCAL POSITION SIMULATION ONLY - NO COMMANDS SENT",
+                  FontId::Body16, _live_mode ? kMuted : ui::kWarn, kPanel);
+#elif JC_JOG_UI
     draw_text_top(_display, 30, 248,
                   _live_mode ? "LIVE STATUS" : "DEMO JOG CONTROLS",
                   FontId::Button20, WHITE, kPanel);
@@ -894,8 +903,7 @@ void PendantUi::draw_diagnostics(bool force) {
     _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Jog rehearsal: MENU > JOGGING.  PREVIEW ONLY - MOTION DISABLED.",
                   FontId::Body16, CYAN, kPanel);
 #elif JC_FULL_CONTROL_TEST
-    _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "FULL CONTROL: confirmed commands are sent.  E-stop in reach.",
-                  FontId::Body16, RED, kPanel);
+    _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Details: MENU > SETTINGS > DIAGNOSTICS", FontId::Body16, kMuted, kPanel);
 #elif JC_JOG_UI
     _diag[1].draw(_display, rect_ui(dl::kDiagLine2), "Restricted X/Y jog: MENU > JOGGING.  LIVE JOG TEST BUILD.",
                   FontId::Body16, RED, kPanel);
@@ -1309,38 +1317,47 @@ void PendantUi::draw_connections() {
         draw_transport_card(i);
     }
 
+#if JC_FULL_CONTROL_TEST
+    _display.fillRect(16, 290, 768, 152, kPanel);
+    _display.drawRect(16, 290, 768, 152, kBorder);
+#else
     _display.fillRect(16, 290, 768, 152, kAccentDark);
     _display.drawRect(16, 290, 768, 152, RED);
+#endif
 #if JC_JOG_UI
     draw_text_centered(_display, { 34, 300, 732, 34 },
 #if JC_JOG_PREVIEW
                        "STATUS CONNECTION - PREVIEW ONLY, MOTION DISABLED",
 #elif JC_FULL_CONTROL_TEST
-                       "STATUS CONNECTION - FULL CONTROL",
+                       "CONTROLLER CONNECTION",
 #else
                        "STATUS CONNECTION - LIVE JOG TEST BUILD",
 #endif
-                       FontId::Button20, WHITE, kAccentDark);
+                       FontId::Button20, WHITE, kConnBg);
     draw_text_centered(_display, { 34, 340, 732, 26 },
                        "Wi-Fi opens network and FluidNC settings.",
-                       FontId::Body16, kMuted, kAccentDark);
+                       FontId::Body16, kMuted, kConnBg);
     draw_text_centered(_display, { 34, 368, 732, 26 },
+#if JC_FULL_CONTROL_TEST
+                       "Jogging, homing and offsets: MENU.",
+#else
                        "Only a restricted X/Y jog and jog cancel can be sent (MENU > JOGGING).",
-                       FontId::Body16, WHITE, kAccentDark);
+#endif
+                       FontId::Body16, WHITE, kConnBg);
 #else
     draw_text_centered(_display, { 34, 300, 732, 34 },
                        "READ-ONLY STATUS CONNECTION",
-                       FontId::Button20, WHITE, kAccentDark);
+                       FontId::Button20, WHITE, kConnBg);
     draw_text_centered(_display, { 34, 340, 732, 26 },
                        "Wi-Fi opens network and FluidNC settings.",
-                       FontId::Body16, kMuted, kAccentDark);
+                       FontId::Body16, kMuted, kConnBg);
     draw_text_centered(_display, { 34, 368, 732, 26 },
                        "No G-code or motion commands are sent.",
-                       FontId::Body16, kMuted, kAccentDark);
+                       FontId::Body16, kMuted, kConnBg);
 #endif
     draw_text_centered(_display, { 34, 394, 732, 26 },
                        "UART and Bluetooth are not implemented.",
-                       FontId::Body16, kMuted, kAccentDark);
+                       FontId::Body16, kMuted, kConnBg);
     draw_transport_status();
 }
 

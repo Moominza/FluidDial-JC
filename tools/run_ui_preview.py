@@ -70,7 +70,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for tag, flags in (("ordinary", ["-DJC_MACHINE_CONTROL_ENABLED=0", "-DJC_LIVE_JOG_TEST=0"]),
                            ("preview", ["-DJC_MACHINE_CONTROL_ENABLED=0", "-DJC_LIVE_JOG_TEST=0", "-DJC_JOG_PREVIEW=1"]),
-                           ("live", ["-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_LIVE_JOG_TEST=1"])):
+                           ("live", ["-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_LIVE_JOG_TEST=1"]),
+                           ("production", ["-DJC_MACHINE_CONTROL_ENABLED=1", "-DJC_FULL_CONTROL_TEST=1"])):
             exe = os.path.join(tmp, f"ui_{tag}.exe")
             cmd = find_cxx() + ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",
                                 "-I", os.path.join(HOST, "ui_stubs")] + flags + SOURCES + ["-o", exe]

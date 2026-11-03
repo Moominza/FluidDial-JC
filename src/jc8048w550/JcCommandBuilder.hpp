@@ -48,8 +48,8 @@ struct JcMachineProfile {
 
 inline JcMachineProfile jc_default_profile() {
     JcMachineProfile p {};
-    p.axes[0] = { 'X', false, 100.0f, 3000.0f, true, true, 0.0f, false };
-    p.axes[1] = { 'Y', false, 100.0f, 3000.0f, true, true, 0.0f, false };
+    p.axes[0] = { 'X', false, 100.0f, 6000.0f, true, true, 0.0f, false };
+    p.axes[1] = { 'Y', false, 100.0f, 6000.0f, true, true, 0.0f, false };
     p.axes[2] = { 'Z', false, 100.0f, 1500.0f, true, true, 0.0f, false };
     // The rotary axis is not assumed to have a homing switch and is never probed.
     p.axes[3] = { 'A', true, 360.0f, 3600.0f, false, false, 0.0f, false };

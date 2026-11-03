@@ -25,7 +25,7 @@ using jl::kAck;
 constexpr ui::Rect kContinuous = jl::kArm;  // ARM / READ SETTINGS in the jog-UI builds
 
 #if JC_FULL_CONTROL_TEST
-#define JC_CMD_LABEL "COMMAND"
+#define JC_CMD_LABEL "SELECTED"
 #else
 #define JC_CMD_LABEL "PREVIEW"
 #endif
@@ -60,6 +60,71 @@ const char* live_jog_label(uint8_t axis, bool negative) {
 }
 #endif
 
+#if JC_FULL_CONTROL_TEST
+const char* prod_jog_label(uint8_t axis, bool negative) {
+    static const char* const kNeg[4] = { "JOG X  -", "JOG Y  -", "JOG Z  -", "JOG A  -" };
+    static const char* const kPos[4] = { "JOG X  +", "JOG Y  +", "JOG Z  +", "JOG A  +" };
+    return negative ? kNeg[axis & 3] : kPos[axis & 3];
+}
+
+// What the RESULT row says on the production page. Acknowledgement, motion and completion stay separate states;
+// "completed" is only ever the session's verdict from controller status (Idle again, position as expected).
+JcJogTone prod_result_line(const JcAppServices& sv, char* out, size_t size) {
+    if (!sv.live_mode) {
+        snprintf(out, size, "DEMO mode: not connected to a controller");
+        return JcJogTone::Muted;
+    }
+    const bool pending = sv.jogs.unresolved();
+    switch (sv.jogs.phase()) {
+        case JcJogPhase::AwaitingAck:
+            snprintf(out, size, "JOG REQUESTED: waiting for FluidNC");
+            return JcJogTone::Info;
+        case JcJogPhase::Accepted:
+        case JcJogPhase::Moving:
+            snprintf(out, size, "MOTION ACTIVE");
+            return JcJogTone::Warn;
+        case JcJogPhase::Cancelling:
+            snprintf(out, size, "CANCEL SENT: waiting for Idle");
+            return JcJogTone::Warn;
+        default:
+            break;
+    }
+    if (pending || sv.jogs.cancel_unconfirmed()) {
+        return jc_jog_result_line_raw(sv.jogs, sv.live_fresh(), out, size);   // failures keep their full wording
+    }
+    if (!sv.live_fresh()) {
+        snprintf(out, size, "DISCONNECTED: no fresh controller status");
+        return JcJogTone::Warn;
+    }
+    const char* state = sv.model.state();
+    if (strcmp(state, "Alarm") == 0) {
+        snprintf(out, size, "CONTROLLER ALARM: jogging is blocked");
+        return JcJogTone::Alarm;
+    }
+    if (strcmp(state, "Idle") != 0) {
+        snprintf(out, size, "Controller is %s: jogging needs Idle", state);
+        return JcJogTone::Warn;
+    }
+    if (sv.loader.running()) {
+        snprintf(out, size, "Reading controller limits: wait a moment");
+        return JcJogTone::Info;
+    }
+    const JcJogTone tone = jc_jog_result_line_raw(sv.jogs, true, out, size);
+    if (sv.jogs.result() == JcJogResult::None) {
+        snprintf(out, size, "READY");
+        return JcJogTone::Good;
+    }
+    if (sv.jogs.result() == JcJogResult::Completed) {
+        // "Last jog": the result stays after an axis change, so it names the axis and the unit it was about.
+        const JcJogRequest& rq = sv.jogs.request();
+        snprintf(out, size, "Last jog completed (%s): moved %+.3f %s (asked %+.3f)", jc_axis_name(rq.axis < 4 ? rq.axis : 0),
+                 static_cast<double>(sv.jogs.pos_delta()), jc_axis_unit(rq.axis < 4 ? rq.axis : 0), static_cast<double>(rq.distance));
+        return JcJogTone::Good;
+    }
+    return tone;
+}
+#endif
+
 }  // namespace
 
 float JcJogScreen::step_value() const {
@@ -68,12 +133,23 @@ float JcJogScreen::step_value() const {
 }
 
 float JcJogScreen::feed_value() const {
-    const float* feeds = _axis == 3 ? sv.settings.rotary_feeds : sv.settings.linear_feeds;
+    const float* feeds = jc_feed_presets(sv.settings, _axis);
     return feeds[_feed < kJcFeedPresets ? _feed : 0];
+}
+
+// The feed preset that is selected must never exceed the axis limit (the controller's, once read). When the
+// limit drops (the controller reported a lower maximum) or the axis changes, move DOWN to the largest preset that
+// fits; never up. With no fitting preset the selection stays and the jog is refused when it is built.
+void JcJogScreen::settle_feed() {
+    const uint8_t c = jc_feed_choice_within(jc_feed_presets(sv.settings, _axis), _feed, sv.profile.axes[_axis].max_feed);
+    if (c != 0xFF) _feed = c;
 }
 
 void JcJogScreen::on_enter() {
     _auto_tried = false;
+#if JC_FULL_CONTROL_TEST
+    settle_feed();
+#endif
     _drawn_step = 0xFF;
     service_caps(millis());
     _dro.invalidate();
@@ -109,10 +185,14 @@ void JcJogScreen::draw_steps() {
 
 void JcJogScreen::draw_feeds() {
     ui::text(sv.display, 16, 190, "FEED", FontId::Body16, ui::kMuted, ui::kBg);
-    const float* feeds = _axis == 3 ? sv.settings.rotary_feeds : sv.settings.linear_feeds;
-    for (uint8_t i = 0; i < kJcFeedPresets; ++i) {
+    const float* feeds = jc_feed_presets(sv.settings, _axis);
+    for (uint8_t i = 0; i < jl::kFeedCount; ++i) {
         char label[24];
+#if JC_FULL_CONTROL_TEST
+        snprintf(label, sizeof(label), "%g %s/min", static_cast<double>(feeds[i]), jc_axis_unit(_axis));
+#else
         snprintf(label, sizeof(label), "%g /min", static_cast<double>(feeds[i]));
+#endif
         ui::Btn style = i == _feed ? ui::Btn::Selected : ui::Btn::Normal;
 #if JC_JOG_UI
         if (style == ui::Btn::Normal && feeds[i] > sv.profile.axes[_axis].max_feed) {
@@ -124,6 +204,7 @@ void JcJogScreen::draw_feeds() {
 }
 
 void JcJogScreen::draw_mode() {
+#if !JC_FULL_CONTROL_TEST   // production page: no mode button and no ARM control (their row belongs to the feed presets)
     ui::button(sv.display, kIncremental, "INCREMENTAL", _continuous ? ui::Btn::Normal : ui::Btn::Selected);
 #if JC_JOG_UI
     const uint32_t now = millis();
@@ -161,9 +242,19 @@ void JcJogScreen::draw_mode() {
     ui::button(sv.display, kContinuous, "CONTINUOUS",
                _axis == 3 ? ui::Btn::Disabled : (_continuous ? ui::Btn::Selected : ui::Btn::Normal));
 #endif
+#endif
 }
 
 void JcJogScreen::draw_bottom() {
+#if JC_FULL_CONTROL_TEST
+    if (sv.jogs.needs_acknowledgement()) {
+        ui::button(sv.display, kAck, "ACKNOWLEDGE RESULT", ui::Btn::Danger);
+        return;
+    }
+    ui::wrap(sv.display, jl::kWarnRect, "JOG CANCEL and FEED HOLD are not an emergency stop. Keep the E-stop in reach.",
+             FontId::Body16, ui::kMuted, ui::kPanel);
+    return;
+#endif
 #if JC_JOG_UI
     if (sv.jogs.needs_acknowledgement()) {
         ui::button(sv.display, kAck, "ACKNOWLEDGE RESULT", ui::Btn::Danger);
@@ -182,7 +273,10 @@ void JcJogScreen::on_draw() {
     draw_steps();
     draw_feeds();
     draw_mode();
-#if JC_JOG_UI
+#if JC_FULL_CONTROL_TEST
+    ui::button(sv.display, kJogNeg, prod_jog_label(_axis, true), ui::Btn::Normal);
+    ui::button(sv.display, kJogPos, prod_jog_label(_axis, false), ui::Btn::Normal);
+#elif JC_JOG_UI
     ui::button(sv.display, kJogNeg, live_jog_label(_axis, true), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
     ui::button(sv.display, kJogPos, live_jog_label(_axis, false), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
 #else
@@ -193,14 +287,16 @@ void JcJogScreen::on_draw() {
     ui::panel(sv.display, kPanelRect);
     ui::text(sv.display, 28, jl::kLabelPreviewY, JC_CMD_LABEL, FontId::Body16, ui::kMuted, ui::kPanel);
     ui::text(sv.display, 28, jl::kLabelResultY, "RESULT", FontId::Body16, ui::kMuted, ui::kPanel);
-    ui::text(sv.display, 28, jl::kLabelMotionY, "MOTION", FontId::Body16, ui::kMuted, ui::kPanel);
+    ui::text(sv.display, 28, jl::kLabelMotionY, JC_FULL_CONTROL_TEST ? "MACHINE" : "MOTION", FontId::Body16, ui::kMuted, ui::kPanel);
     draw_bottom();
     _dro.invalidate();
     _motion.invalidate();
     _preview.invalidate();
     _result.invalidate();
     _caps.invalidate();
-#if JC_JOG_UI
+#if JC_FULL_CONTROL_TEST
+    _live_key = live_key();
+#elif JC_JOG_UI
     _live_key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(millis()) ? 2u : 0u)
                 | (static_cast<uint32_t>(caps_flow(millis()).phase) << 2);
 #endif
@@ -231,7 +327,13 @@ void JcJogScreen::service_caps(uint32_t now) {
         _auto_tried = false;   // a lost connection discards the read; allow one automatic read after recovery
     }
     const JcCapsFlow flow = caps_flow(now);
+#if JC_FULL_CONTROL_TEST
+    // Read-only queries for the axis feed limits. Started only when the limits were never read (not merely old):
+    // a read in flight blocks jogging, so it must not repeat on every visit.
+    if (flow.auto_read && flow.phase == JcCapsPhase::NotRead) {
+#else
     if (flow.auto_read) {
+#endif
         _auto_tried = true;
         if (const char* blocker = sv.host.start_caps_read()) {
             Serial.printf(JC_JOG_TAG ": automatic settings read not started: %s\n", blocker);
@@ -244,6 +346,15 @@ void JcJogScreen::service_caps(uint32_t now) {
 JcCapsFlow JcJogScreen::caps_flow(uint32_t) const { return JcCapsFlow(); }
 void JcJogScreen::read_settings() {}
 void JcJogScreen::service_caps(uint32_t) {}
+#endif
+
+#if JC_FULL_CONTROL_TEST
+// Redraw trigger of the production page: the acknowledgement button, and the limit of the selected axis (a
+// controller read that lowers it must grey out the presets above it).
+uint32_t JcJogScreen::live_key() const {
+    return (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.profile.axes[_axis].limits_confirmed ? 2u : 0u)
+           | (static_cast<uint32_t>(sv.profile.axes[_axis].max_feed) << 2);
+}
 #endif
 
 void JcJogScreen::draw_live() {
@@ -260,6 +371,40 @@ void JcJogScreen::draw_live() {
     }
     _dro.draw(sv.display, kDro, line, FontId::Button20, ok && sv.live_fresh() ? WHITE : ui::kMuted, ui::kPanel);
 
+#if JC_FULL_CONTROL_TEST
+    {
+        char step[24], sel[96];
+        jc_format_step(step, sizeof(step), step_value(), _axis);
+        snprintf(sel, sizeof(sel), "%s   step %s   feed %g %s/min", jc_axis_name(_axis), step,
+                 static_cast<double>(feed_value()), jc_axis_unit(_axis));
+        _preview.draw(sv.display, jl::kPreviewSlot, sel, FontId::Body16, WHITE, ui::kPanel);
+
+        char result[96];
+        const JcJogTone tone = prod_result_line(sv, result, sizeof(result));
+        const uint16_t color = tone == JcJogTone::Alarm ? RED : tone == JcJogTone::Warn ? ui::kWarn
+                             : tone == JcJogTone::Info ? ui::kInfo : tone == JcJogTone::Good ? ui::kGood : ui::kMuted;
+        _result.draw(sv.display, jl::kResultSlot, result, FontId::Body16, color, ui::kPanel);
+
+        char machine[96];
+        if (!sv.live_mode) {
+            snprintf(machine, sizeof(machine), "DEMO  |  no controller connected");
+        } else if (!sv.live_fresh()) {
+            snprintf(machine, sizeof(machine), "NO STATUS  |  controller not connected");
+        } else {
+            snprintf(machine, sizeof(machine), "%s  |  LIVE, connected", sv.model.state());
+        }
+        _motion.draw(sv.display, jl::kMotionSlot, machine, FontId::Body16,
+                     !sv.live_mode || !sv.live_fresh() ? ui::kMuted : (sv.model.alarm() ? RED : (sv.model.in_motion() ? ui::kWarn : ui::kGood)),
+                     ui::kPanel);
+
+        const JcAxisProfile& ap = sv.profile.axes[_axis];
+        char lim[96];
+        snprintf(lim, sizeof(lim), "Feed limit %s: %g %s/min (%s)", jc_axis_name(_axis), static_cast<double>(ap.max_feed),
+                 jc_axis_unit(_axis), ap.limits_confirmed ? "from the controller" : "default; controller not read yet");
+        _caps.draw(sv.display, jl::kCapsSlot, lim, FontId::Body16, ap.limits_confirmed ? ui::kGood : ui::kMuted, ui::kPanel);
+        return;
+    }
+#endif
     const char* motion = !sv.model.has_status() ? "UNKNOWN (no live data)"
                        : sv.model.in_motion() ? "ACTIVE" : (sv.model.alarm() ? "ALARM" : "IDLE");
     char text[96];
@@ -309,6 +454,9 @@ void JcJogScreen::draw_live() {
 
 // Why the selected axis cannot be armed now (nullptr = it may). Uses the same gate the
 // authorization context uses, so the page and the gate cannot disagree.
+#if JC_FULL_CONTROL_TEST
+const char* JcJogScreen::arm_blocker() const { return nullptr; }   // production: nothing is armed
+#else
 const char* JcJogScreen::arm_blocker() const {
 #if JC_AUTHORITY
     if (!sv.live_mode) return "DEMO mode: connect LIVE first";
@@ -330,7 +478,11 @@ const char* JcJogScreen::arm_blocker() const {
     if (g.mode == JcJogGateMode::Blocked) return jc_jog_gate_reason_text(g.reason);
     return nullptr;
 }
+#endif
 
+#if JC_FULL_CONTROL_TEST
+void JcJogScreen::request_arm() {}   // production: there is no arming
+#else
 void JcJogScreen::request_arm() {
 #if JC_AUTHORITY
     {
@@ -387,7 +539,11 @@ void JcJogScreen::request_arm() {
     dialog.add_line("Keep E-stop / power removal in reach. Not 'safe': 1 mm only.", RED);
     draw();
 }
+#endif
 
+#if JC_FULL_CONTROL_TEST
+void JcJogScreen::on_custom_confirm() {}
+#else
 void JcJogScreen::on_custom_confirm() {
 #if JC_AUTHORITY
     sv.dispatcher.arm_for(millis(), kJcJogArmTtlMs, 0x0F);
@@ -403,7 +559,48 @@ void JcJogScreen::on_custom_confirm() {
     Serial.printf(JC_JOG_TAG ": ARMED for 120 s; unprotected-micro-jog acknowledged for %s (mask 0x%02X)\n",
                   jc_axis_name(_arm_axis), static_cast<unsigned>(mask));
 }
+#endif
 
+#if JC_FULL_CONTROL_TEST
+// One deliberate tap requests one incremental jog. The shared dispatcher decides (LIVE, fresh status, fresh command,
+// no alarm, Idle, no operation pending) and the session tracks the single operation; FluidNC accepts or rejects it.
+// Nothing is queued, repeated or replayed: a refused tap is simply refused.
+void JcJogScreen::jog_live(int direction) {
+    const uint32_t now = millis();
+    const JcCommand command = jc_jog_incremental(sv.profile, _axis, direction * step_value(), feed_value());
+    if (!command.ok) {
+        char reason[64];
+        snprintf(reason, sizeof(reason), "Refused: %s", jc_cmd_error_name(command.error));
+        show_message("JOG REFUSED", reason, "Check the step and the feed.", "Nothing was sent.");
+        return;
+    }
+    if (sv.loader.running()) {
+        _result.draw(sv.display, jl::kResultSlot, "Reading controller limits: tap again in a moment", FontId::Body16,
+                     ui::kInfo, ui::kPanel);
+        return;
+    }
+    const JcJogReject why = sv.jogs.can_begin(now);
+    if (why != JcJogReject::None) {
+        // Busy / settling / debounce: shown on the result row, no popup. The row returns to the live status.
+        char line[96];
+        snprintf(line, sizeof(line), "Not sent: %s", jc_jog_reject_name(why));
+        _result.draw(sv.display, jl::kResultSlot, line, FontId::Body16, ui::kWarn, ui::kPanel);
+        return;
+    }
+    const uint32_t before = sv.dispatcher.sent();
+    const JcAuthDecision d = sv.dispatcher.submit(command, sv.dispatch_context(false));
+    if (d != JcAuthDecision::Allowed) {
+        show_message("JOG BLOCKED", jc_auth_name(d), "Nothing was sent.");
+        return;
+    }
+    if (sv.dispatcher.sent() == before) {
+        show_message("JOG NOT SENT", "Another operation is in progress, or the transport refused it.", "Nothing was sent.");
+        return;
+    }
+    Serial.printf(JC_JOG_TAG ": jog [%s]\n", command.text);
+}
+
+#else
 void JcJogScreen::jog_live(int direction) {
 #if JC_AUTHORITY
     {
@@ -504,6 +701,7 @@ void JcJogScreen::jog_live(int direction) {
                   tri_text(ax.hard_limits()), input, protection);
     stage(command, JC_STAGE_TITLE, notes, 3);
 }
+#endif
 
 void JcJogScreen::do_cancel() {
     const JcCommand cancel = jc_jog_cancel();
@@ -568,8 +766,14 @@ void JcJogScreen::do_jog(int direction) {
 void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
     for (uint8_t i = 0; i < 4; ++i) {
         if (ui::hit(axis_rect(i), x, y)) {
+            const bool was_rotary = _axis == 3;
             _axis = i;
             if (_step >= jc_step_count(_axis)) _step = 2;  // a rotary-only step button does not exist on a linear axis
+#if JC_FULL_CONTROL_TEST
+            // Crossing between the linear and the rotary axes never lands on a tiny increment: 1 mm or 1 degree.
+            if ((_axis == 3) != was_rotary) _step = _axis == 3 ? 1 : 2;
+            settle_feed();
+#endif
             if (_axis == 3) {
                 _continuous = false;  // continuous jog is never generated for the rotary axis
             }
@@ -578,8 +782,13 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             draw_feeds();
             draw_mode();
 #if JC_JOG_UI
+#if JC_FULL_CONTROL_TEST
+            ui::button(sv.display, kJogNeg, prod_jog_label(_axis, true), ui::Btn::Normal);
+            ui::button(sv.display, kJogPos, prod_jog_label(_axis, false), ui::Btn::Normal);
+#else
             ui::button(sv.display, kJogNeg, live_jog_label(_axis, true), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
             ui::button(sv.display, kJogPos, live_jog_label(_axis, false), live_axis_allowed(_axis) ? ui::Btn::Normal : ui::Btn::Disabled);
+#endif
 #else
             ui::button(sv.display, kJogNeg, _axis == 3 ? "A -  (deg)" : "JOG  -", ui::Btn::Normal);
             ui::button(sv.display, kJogPos, _axis == 3 ? "A +  (deg)" : "JOG  +", ui::Btn::Normal);
@@ -596,20 +805,36 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
             return;
         }
     }
-    for (uint8_t i = 0; i < kJcFeedPresets; ++i) {
+    for (uint8_t i = 0; i < jl::kFeedCount; ++i) {
         if (ui::hit(feed_rect(i), x, y)) {
+#if JC_FULL_CONTROL_TEST
+            if (jc_feed_presets(sv.settings, _axis)[i] > sv.profile.axes[_axis].max_feed) return;   // above the axis limit
+            _feed = i;
+            draw_feeds();
+            draw_live();
+            return;
+#else
             _feed = i;
             draw_feeds();
             return;
+#endif
         }
     }
+#if JC_FULL_CONTROL_TEST
+    if (false) {
+#else
     if (ui::hit(kIncremental, x, y)) {
+#endif
         _continuous = false;
         draw_mode();
         draw_steps();
         return;
     }
+#if JC_FULL_CONTROL_TEST
+    if (false) {
+#else
     if (ui::hit(kContinuous, x, y)) {
+#endif
 #if JC_JOG_UI
         {
             const uint32_t now = millis();
@@ -674,7 +899,15 @@ void JcJogScreen::on_touch(uint16_t x, uint16_t y) {
 void JcJogScreen::on_tick(uint32_t now) {
     if (now - _last_tick >= 250) {
         _last_tick = now;
-#if JC_JOG_UI
+#if JC_FULL_CONTROL_TEST
+        service_caps(now);
+        settle_feed();
+        const uint32_t key = live_key();
+        if (key != _live_key) {
+            draw();  // the ACK button appeared or went, or the axis limit changed (presets above it grey out)
+            return;
+        }
+#elif JC_JOG_UI
         service_caps(now);
         const uint32_t key = (sv.jogs.needs_acknowledgement() ? 1u : 0u) | (sv.dispatcher.armed_at(now) ? 2u : 0u)
                              | (static_cast<uint32_t>(caps_flow(now).phase) << 2);

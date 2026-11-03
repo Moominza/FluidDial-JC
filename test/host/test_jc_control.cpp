@@ -465,7 +465,7 @@ static void test_caps_loader() {
         CHECK((c.confirmed_axis_mask() & 0x08) != 0);          // A unaffected
         JcMachineProfile p = jc_default_profile();
         jc_profile_apply_caps(p, c);
-        CHECK(!p.axes[0].limits_confirmed && p.axes[0].max_feed == 3000.0f);
+        CHECK(!p.axes[0].limits_confirmed && p.axes[0].max_feed == 6000.0f);
     }
     // "ok" with no value is recorded as such.
     {
@@ -577,7 +577,7 @@ static void test_caps_loader() {
         CHECK(loader.state() == JcLoadState::Idle && !loader.caps().any_data() && !loader.take_finished());
         JcMachineProfile q = jc_default_profile();
         if (loader.state() == JcLoadState::Complete) jc_profile_apply_caps(q, loader.caps());
-        CHECK(jc_profile_limits_mask(q) == 0 && q.axes[0].max_feed == 3000.0f);
+        CHECK(jc_profile_limits_mask(q) == 0 && q.axes[0].max_feed == 6000.0f);
         CHECK(loader.pending_line(1000) == nullptr);   // and nothing restarts by itself
     }
     // Read preconditions.

@@ -283,7 +283,38 @@ static void test_authority_gate() {
     CHECK(jc_authorize_preview(JcCommandClass::Job, a) == JcAuthDecision::BlockedProgramStart);
     // Client-side integrity rules stay.
     JcAuthContext b = a;
-    b.armed = false;      CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::BlockedNotArmed);
+    // Production (v1.5.2): a routine incremental jog needs no arming; the preview rehearsal keeps it.
+    b.armed = false;      CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::Allowed);
+                          CHECK(jc_authorize_preview(JcCommandClass::Jog, b) == JcAuthDecision::BlockedNotArmed);
+    // ... and ONLY the jog: every other class still needs its routine's arming (and its confirmation).
+    {
+        JcAuthContext u = a; u.armed = false; u.operator_confirmed = true;
+        CHECK(jc_authorize(JcCommandClass::Home, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Probe, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::WorkOffset, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Spindle, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Macro, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Other, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Reset, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Unlock, u) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jc_authorize(JcCommandClass::Job, u) == JcAuthDecision::BlockedProgramStart);   // never, armed or not
+        // unarmed, a jog is still held to every other rule
+        u = a; u.armed = false;
+        u.live = false;                              CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedNotLive);
+        u = a; u.armed = false; u.link_fresh = false; CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedStaleLink);
+        u = a; u.armed = false; u.now_ms = 100 + kJcMaxCommandAgeMs + 1;
+                                                     CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedStaleCommand);
+        u = a; u.armed = false; strcpy(u.machine_state, "Alarm");
+                                                     CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedAlarm);
+        u = a; u.armed = false; u.operation_pending = true;
+                                                     CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedOperationPending);
+        u = a; u.armed = false; strcpy(u.machine_state, "Hold");
+                                                     CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedBadState);
+        u = a; u.armed = false; strcpy(u.machine_state, "Run");
+                                                     CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::BlockedBadState);
+        u = a; u.armed = false; strcpy(u.machine_state, "Jog");
+                                                     CHECK(jc_authorize(JcCommandClass::Jog, u) == JcAuthDecision::Allowed);   // as before
+    }
     b = a; b.live = false; CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::BlockedNotLive);
     b = a; b.link_fresh = false; CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::BlockedStaleLink);
     b = a; b.now_ms = 100 + kJcMaxCommandAgeMs + 1; CHECK(jc_authorize(JcCommandClass::Jog, b) == JcAuthDecision::BlockedStaleCommand);
@@ -634,6 +665,122 @@ static void test_four_axis_jog_and_cancel() {
     }
 }
 
+// ---- production (v1.5.2): a routine incremental jog needs no arming and no confirmation -----------------------------
+
+static int jog_lines(const Rig& r) {
+    int n = 0;
+    for (const std::string& w : r.nc.wire) if (w.rfind("$J=", 0) == 0) ++n;
+    return n;
+}
+
+static void test_production_jog_without_arming() {
+    const JcMachineProfile p = jc_default_profile();
+    {   // never armed, never confirmed: ONE submission is ONE jog, completed from the controller's own status
+        Rig r; r.disp.disarm();
+        r.run(800);
+        CHECK(!r.disp.armed());
+        CHECK(r.submit(jc_jog_incremental(p, 0, 1.0f, 300.0f), false) == JcAuthDecision::Allowed);
+        CHECK(jog_lines(r) == 1);
+        CHECK_STR(r.nc.wire.back().c_str(), "$J=G91G21F300X1.000\n");
+        CHECK(r.disp.sent() == 1 && !r.disp.armed());
+        // a second tap before the first is resolved: refused, nothing queued
+        CHECK(r.submit(jc_jog_incremental(p, 0, 1.0f, 300.0f), false) == JcAuthDecision::BlockedOperationPending);
+        CHECK(jog_lines(r) == 1);
+        r.run(3000);
+        CHECK(r.jogs.result() == JcJogResult::Completed);      // from Idle + position, not from the acknowledgement
+        CHECK(!r.jogs.needs_acknowledgement());                 // a normal success needs no acknowledgement
+        CHECK(jog_lines(r) == 1);                               // the refused tap was not replayed after completion
+        // ... and the next jog can follow straight away
+        CHECK(r.submit(jc_jog_incremental(p, 0, -1.0f, 300.0f), false) == JcAuthDecision::Allowed);
+        CHECK(jog_lines(r) == 2);
+    }
+    {   // all four axes, the production feed presets, no arming anywhere
+        const struct { uint8_t axis; float step; float feed; const char* want; } cases[] = {
+            { 0, 1.0f, 6000.0f, "$J=G91G21F6000X1.000\n" }, { 1, -10.0f, 3000.0f, "$J=G91G21F3000Y-10.000\n" },
+            { 2, 0.1f, 1500.0f, "$J=G91G21F1500Z0.100\n" }, { 3, 5.0f, 1000.0f, "$J=G91G21F1000A5.000\n" } };
+        for (const auto& c : cases) {
+            Rig r; r.disp.disarm();
+            r.run(800);
+            CHECK(r.submit(jc_jog_incremental(p, c.axis, c.step, c.feed), false) == JcAuthDecision::Allowed);
+            CHECK_STR(r.nc.wire.back().c_str(), c.want);
+        }
+    }
+    {   // a feed above the axis limit is refused when the command is built (the controller's limit, once read)
+        JcMachineProfile q = jc_default_profile();
+        q.axes[0].max_feed = 3500.0f;
+        const JcCommand c = jc_jog_incremental(q, 0, 1.0f, 6000.0f);
+        CHECK(!c.ok && c.error == JcCmdError::BadFeed);
+        CHECK(jc_jog_incremental(q, 0, 1.0f, 3000.0f).ok);
+        CHECK(!jc_jog_incremental(p, 2, 1.0f, 1501.0f).ok == (p.axes[2].max_feed < 1501.0f));   // Z default limit 1500
+        CHECK(jc_jog_incremental(p, 2, 1.0f, 1500.0f).ok);
+    }
+    {   // the other classes keep their arming and their confirmation
+        Rig r; r.disp.disarm();
+        r.run(800);
+        CHECK(r.submit(jc_home(p, 0xFF), true) == JcAuthDecision::BlockedNotArmed);
+        CHECK(r.submit(jc_zero_axis(p, 0), true) == JcAuthDecision::BlockedNotArmed);
+        CHECK(r.submit(jc_select_wcs(0), true) == JcAuthDecision::BlockedNotArmed);
+        CHECK(jog_lines(r) == 0 && r.nc.wire.empty());
+        r.disp.arm();
+        CHECK(r.submit(jc_zero_axis(p, 0), false) == JcAuthDecision::BlockedUnconfirmed);   // armed, still needs the operator
+        CHECK(r.nc.wire.empty());
+    }
+    {   // cancel and feed hold need no arming
+        Rig r; r.disp.disarm();
+        r.run(800);
+        CHECK(r.submit(jc_jog_cancel(), false) == JcAuthDecision::Allowed);
+        CHECK(r.submit(jc_feed_hold(), false) == JcAuthDecision::Allowed);
+    }
+    {   // stale status, alarm, wrong state: blocked, nothing sent, nothing queued
+        Rig r; r.disp.disarm();
+        r.run(800);
+        r.fresh = false;
+        CHECK(r.submit(jc_jog_incremental(p, 0, 1.0f, 300.0f), false) == JcAuthDecision::BlockedStaleLink);
+        r.fresh = true;
+        strcpy(r.state_buf, "Alarm");
+        CHECK(r.submit(jc_jog_incremental(p, 0, 1.0f, 300.0f), false) == JcAuthDecision::BlockedAlarm);
+        strcpy(r.state_buf, "Hold");
+        CHECK(r.submit(jc_jog_incremental(p, 0, 1.0f, 300.0f), false) == JcAuthDecision::BlockedBadState);
+        strcpy(r.state_buf, "Idle");
+        r.run(3000);
+        CHECK(jog_lines(r) == 0);                       // recovering Idle replays nothing
+    }
+    {   // an OTA transfer locks every transport: the jog is authorized but nothing leaves
+        Rig r; r.disp.disarm();
+        r.run(800);
+        r.sys.set_locked(true);
+        r.submit(jc_jog_incremental(p, 0, 1.0f, 300.0f), false);
+        CHECK(r.nc.wire.empty() && jog_lines(r) == 0 && r.sys.refused_locked() >= 1);
+        r.sys.set_locked(false);
+        r.run(1500);
+        CHECK(jog_lines(r) == 0);                       // releasing the lock does not release the refused jog
+    }
+    {   // a lost connection while a jog is outstanding: the jog is never replayed on reconnect
+        Rig r; r.disp.disarm();
+        r.run(800);
+        CHECK(r.submit(jc_jog_incremental(p, 0, 10.0f, 300.0f), false) == JcAuthDecision::Allowed);
+        r.run(100);
+        r.jogs.on_link_lost(r.nc.now, false);
+        r.disp.on_link_lost();
+        const int before = jog_lines(r);
+        r.fresh = false; r.run(1500);
+        r.fresh = true;  r.run(8000);
+        CHECK(jog_lines(r) == before);
+        CHECK(!r.disp.armed());
+    }
+    {   // program start/resume stays prohibited under the production policy, armed or not
+        Rig r; r.disp.disarm();
+        r.run(800);
+        JcCommand run; run.ok = true; run.cls = JcCommandClass::Job; strcpy(run.text, "$SD/Run=/job.nc");
+        CHECK(r.submit(run, true) == JcAuthDecision::BlockedProgramStart);
+        r.disp.arm();
+        CHECK(r.submit(run, true) == JcAuthDecision::BlockedProgramStart);
+        JcCommand cs; cs.ok = true; cs.cls = JcCommandClass::Other; cs.realtime = true; strcpy(cs.text, "~");
+        CHECK(r.submit(cs, true) == JcAuthDecision::BlockedProgramStart);
+        CHECK(r.nc.wire.empty());
+    }
+}
+
 int main() {
     test_policy_accepts_builder_output();
     test_policy_rejects_everything_else();
@@ -646,6 +793,7 @@ int main() {
     test_single_operation_and_no_duplicate();
     test_homed_tracker_and_state_facts();
     test_four_axis_jog_and_cancel();
+    test_production_jog_without_arming();
     printf("%d checks, %d failed (command interface)\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -1,6 +1,6 @@
 # Builds the portable package FluidDial-Updater-v<version>-win-x64.zip from the exe and the release firmware.
 param(
-    [string]$Version = "1.5.1",
+    [string]$Version = "1.5.2",
     [Parameter(Mandatory = $true)][string]$SourceCommit,
     [string]$ReleaseDir = ""
 )
